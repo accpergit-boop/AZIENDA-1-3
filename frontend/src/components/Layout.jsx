@@ -6,6 +6,7 @@ import {
   ClipboardList, Banknote, Wrench,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { Sparkles } from "lucide-react";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
@@ -18,6 +19,7 @@ const NAV = [
   { to: "/deliveries", label: "Deliveries", icon: Truck },
   { to: "/fleet", label: "Fleet", icon: Wrench },
   { to: "/expenses", label: "Expenses", icon: Banknote },
+  { to: "/assistant", label: "AI Assistant", icon: Sparkles },
   { to: "/settings", label: "Settings", icon: Cog },
 ];
 

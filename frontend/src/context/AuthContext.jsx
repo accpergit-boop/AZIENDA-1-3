@@ -9,8 +9,8 @@ export function AuthProvider({ children }) {
   const [booting, setBooting] = useState(true);
 
   useEffect(() => {
-    const t = localStorage.getItem("token");
-    if (!t) { setUser(false); setBooting(false); return; }
+    // Returning from Google OAuth: AuthCallback exchanges session_id first
+    if (window.location.hash?.includes("session_id=")) { setBooting(false); return; }
     api.get("/auth/me").then(setUser).catch(() => setUser(false)).finally(() => setBooting(false));
   }, []);
 
@@ -20,11 +20,19 @@ export function AuthProvider({ children }) {
     setUser(data.user);
   };
 
-  const logout = () => {
+  const completeGoogle = async (sessionId) => {
+    const data = await api.post("/auth/google/session", { session_id: sessionId });
+    localStorage.setItem("token", data.token);
+    setUser(data.user);
+    return data.user;
+  };
+
+  const logout = async () => {
+    try { await api.post("/auth/logout"); } catch { /* ignore */ }
     localStorage.removeItem("token");
     setUser(false);
     window.location.href = "/login";
   };
 
-  return <AuthCtx.Provider value={{ user, booting, login, logout, apiError }}>{children}</AuthCtx.Provider>;
+  return <AuthCtx.Provider value={{ user, setUser, booting, login, completeGoogle, logout, apiError }}>{children}</AuthCtx.Provider>;
 }

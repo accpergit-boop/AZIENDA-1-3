@@ -3,14 +3,46 @@ import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { fmtMoney } from "@/lib/format";
 import { Card, Btn, Input, Select, Badge, Modal, PageHeader } from "@/components/common";
-import { Building2, Receipt, Tag, Truck, Save, Pencil, Plus } from "lucide-react";
+import { Building2, Receipt, Tag, Truck, Save, Pencil, Plus, ShieldCheck, X } from "lucide-react";
 
 const TABS = [
   { k: "company", l: "Company", icon: Building2 },
   { k: "invoice", l: "Invoice & Tax", icon: Receipt },
   { k: "prices", l: "Price Lists", icon: Tag },
   { k: "drivers", l: "Drivers", icon: Truck },
+  { k: "access", l: "Access", icon: ShieldCheck },
 ];
+
+function AccessTab({ s, setS, save }) {
+  const [email, setEmail] = useState("");
+  const list = s.google_allowed_emails || [];
+  const add = () => {
+    const e = email.trim().toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(e)) return toast.error("Enter a valid email");
+    if (list.includes(e)) return toast.error("Already allowed");
+    setS({ ...s, google_allowed_emails: [...list, e] }); setEmail("");
+  };
+  return (
+    <Card className="p-6 max-w-2xl space-y-4" data-testid="access-tab">
+      <div>
+        <h3 className="font-bold text-slate-800 font-display">Google sign-in access</h3>
+        <p className="text-sm text-slate-500 mt-1">The owner account always has access. Only the Google emails listed here can also sign in — every other Google account is rejected. Email/password login keeps working.</p>
+      </div>
+      <div className="flex gap-2">
+        <div className="flex-1"><Input placeholder="name@gmail.com" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} data-testid="allowed-email-input" /></div>
+        <Btn variant="outline" onClick={add} data-testid="add-allowed-email-btn"><Plus size={16} /> Add</Btn>
+      </div>
+      <div className="space-y-2">
+        {list.length === 0 ? <p className="text-sm text-slate-400">No extra emails yet.</p> : list.map((e) => (
+          <div key={e} className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm" data-testid={`allowed-email-${e}`}>
+            <span className="font-mono text-slate-700">{e}</span>
+            <button onClick={() => setS({ ...s, google_allowed_emails: list.filter((x) => x !== e) })} className="text-slate-400 hover:text-red-600" data-testid={`remove-allowed-email-${e}`}><X size={15} /></button>
+          </div>))}
+      </div>
+      <Btn onClick={save} data-testid="save-access-btn"><Save size={16} /> Save Access</Btn>
+    </Card>
+  );
+}
 
 export default function Settings() {
   const [tab, setTab] = useState("company");
@@ -139,6 +171,8 @@ export default function Settings() {
           </div>
         </div>
       )}
+
+      {tab === "access" && <AccessTab s={s} setS={setS} save={saveSettings} />}
 
       <Modal open={!!pModal} onClose={() => setPModal(null)} title={pModal?.id ? "Edit Price" : "Add Price"}>
         {pModal && <div className="space-y-4">

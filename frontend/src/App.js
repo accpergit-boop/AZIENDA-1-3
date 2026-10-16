@@ -1,5 +1,7 @@
 import "@/App.css";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import AuthCallback from "@/pages/AuthCallback";
+import Assistant from "@/pages/Assistant";
 import { Toaster } from "sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import Layout from "@/components/Layout";
@@ -25,15 +27,15 @@ function Protected({ children }) {
   return children;
 }
 
-function App() {
+function AppRouter() {
+  const location = useLocation();
+  if (location.hash?.includes("session_id=")) return <AuthCallback />;
   return (
-    <AuthProvider>
-      <Toaster position="top-right" richColors />
-      <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route element={<Protected><Layout /></Protected>}>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/assistant" element={<Assistant />} />
             <Route path="/customers" element={<Customers />} />
             <Route path="/invoices" element={<InvoiceList />} />
             <Route path="/invoices/new" element={<InvoiceEditor />} />
@@ -48,6 +50,15 @@ function App() {
             <Route path="/settings" element={<Settings />} />
           </Route>
         </Routes>
+  );
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <Toaster position="top-right" richColors />
+      <BrowserRouter>
+        <AppRouter />
       </BrowserRouter>
     </AuthProvider>
   );

@@ -4,7 +4,9 @@ import os
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
+from fastapi.responses import StreamingResponse
+import json
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
@@ -108,7 +110,27 @@ def make_token(uid, email):
     payload = {"sub": uid, "email": email, "exp": datetime.now(timezone.utc) + timedelta(days=7)}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
 
+USER_PROJ = {"_id": 0, "password_hash": 0}
+
+async def user_from_session(token):
+    s = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if not s:
+        return None
+    exp = s["expires_at"]
+    if isinstance(exp, str):
+        exp = datetime.fromisoformat(exp)
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
+        return None
+    return await db.users.find_one({"id": s["user_id"]}, USER_PROJ)
+
 async def get_current_user(request: Request):
+    cookie = request.cookies.get("session_token")
+    if cookie:
+        user = await user_from_session(cookie)
+        if user:
+            return user
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(401, "Not authenticated")
@@ -118,8 +140,11 @@ async def get_current_user(request: Request):
     except jwt.ExpiredSignatureError:
         raise HTTPException(401, "Token expired")
     except jwt.InvalidTokenError:
+        user = await user_from_session(token)
+        if user:
+            return user
         raise HTTPException(401, "Invalid token")
-    user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+    user = await db.users.find_one({"id": payload["sub"]}, USER_PROJ)
     if not user:
         raise HTTPException(401, "User not found")
     return user
@@ -128,18 +153,61 @@ class LoginIn(BaseModel):
     email: str
     password: str
 
+def public_user(u):
+    return {"id": u["id"], "email": u["email"], "name": u.get("name", "Admin"), "role": u.get("role", "admin"), "picture": u.get("picture", "")}
+
 @api.post("/auth/login")
 async def login(body: LoginIn):
     email = body.email.strip().lower()
     user = await db.users.find_one({"email": email})
-    if not user or not verify_pw(body.password, user["password_hash"]):
+    if not user or not verify_pw(body.password, user.get("password_hash", "")):
         raise HTTPException(401, "Invalid email or password")
-    token = make_token(user["id"], email)
-    return {"token": token, "user": {"id": user["id"], "email": email, "name": user.get("name", "Admin"), "role": user.get("role", "admin")}}
+    return {"token": make_token(user["id"], email), "user": public_user(user)}
 
 @api.get("/auth/me")
 async def me(user=Depends(get_current_user)):
     return user
+
+async def google_allowlist():
+    s = await db.settings.find_one({"id": "singleton"}) or {}
+    extra = [e.strip().lower() for e in s.get("google_allowed_emails", []) if e and e.strip()]
+    return {os.environ["ADMIN_EMAIL"].lower(), *extra}
+
+class GoogleSessionIn(BaseModel):
+    session_id: str
+
+@api.post("/auth/google/session")
+async def google_session(body: GoogleSessionIn, response: Response):
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as hc:
+        r = await hc.get("https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data", headers={"X-Session-ID": body.session_id})
+    if r.status_code != 200:
+        raise HTTPException(401, "Google sign-in failed or expired. Please try again")
+    data = r.json()
+    email = (data.get("email") or "").strip().lower()
+    if email not in await google_allowlist():
+        raise HTTPException(403, f"{email} is not allowed to access this ERP. Ask the owner to add it in Settings > Access")
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if user:
+        await db.users.update_one({"id": user["id"]}, {"$set": {"picture": data.get("picture", ""), "google_name": data.get("name", "")}})
+    else:
+        user = {"id": new_id(), "email": email, "name": data.get("name") or email, "picture": data.get("picture", ""),
+                "role": "admin", "auth_provider": "google", "created_at": now_iso()}
+        await db.users.insert_one(dict(user))
+    token = data["session_token"]
+    await db.user_sessions.insert_one({"session_token": token, "user_id": user["id"],
+                                       "expires_at": datetime.now(timezone.utc) + timedelta(days=7), "created_at": now_iso()})
+    response.set_cookie("session_token", token, httponly=True, secure=True, samesite="none", path="/", max_age=7 * 24 * 3600)
+    await log_audit("auth", user["id"], "google_login", user)
+    return {"token": make_token(user["id"], email), "user": public_user(user)}
+
+@api.post("/auth/logout")
+async def logout(request: Request, response: Response):
+    tok = request.cookies.get("session_token")
+    if tok:
+        await db.user_sessions.delete_one({"session_token": tok})
+    response.delete_cookie("session_token", path="/", secure=True, samesite="none")
+    return {"ok": True}
 
 # ---------------- Generic helpers ----------------
 async def insert(coll, data):
@@ -1361,6 +1429,117 @@ async def del_sparepart(pid: str, user=Depends(get_current_user)):
     await db.spareparts.delete_one({"id": pid})
     await log_audit("spare_part", pid, "deleted", user, before=p)
     return {"ok": True}
+
+# ---------------- AI Business Assistant ----------------
+ASSISTANT_MODEL = ("openai", "gpt-5.2")
+
+async def business_snapshot(user):
+    dash = await dashboard(user)
+    invs = await listall("invoices", sort=("date", -1))
+    for i in invs:
+        i["status"] = derive_status(i)
+    open_inv = [{"number": i.get("number"), "customer": i.get("customer_name"), "date": i.get("date"), "due": i.get("due_date"),
+                 "total": i.get("total"), "outstanding": i.get("outstanding"), "status": i["status"]}
+                for i in invs if i["status"] in ("issued", "partially_paid", "overdue")]
+    debtors = {}
+    for i in open_inv:
+        debtors[i["customer"]] = r2(D(debtors.get(i["customer"], 0)) + D(i["outstanding"]))
+    week, month = period_starts()
+    costs = await cost_ledger(month)
+    orders = [{"ref": o.get("reference"), "customer": o.get("customer_name"), "destination": o.get("destination"), "products": o.get("products"),
+               "priority": o.get("priority"), "status": o.get("status"), "ship_date": o.get("expected_ship_date")}
+              for o in await listall("orders") if o.get("status") in OPEN_ORDER_STATUSES]
+    vrecs = await listall("vehicle_records")
+    drivers = {d["id"]: d["name"] for d in await listall("drivers")}
+    return {
+        "today": today_str(), "timezone": "Africa/Johannesburg", "currency": "ZAR",
+        "totals": {k: dash[k] for k in ("total_invoiced", "payments_received", "outstanding", "overdue", "finished_stock")},
+        "week": dash["week_profit"], "month": dash["month_profit"], "week_start": week, "month_start": month,
+        "debtors_outstanding": dict(sorted(debtors.items(), key=lambda x: -x[1])),
+        "open_invoices": open_inv[:60],
+        "stock": [{"product": s["product"], "size": s["size"], "current": s["current"], "minimum": s.get("threshold")} for s in dash["current_stock"]],
+        "low_stock": [{"product": s["product"], "size": s["size"], "current": s["current"], "minimum": s.get("threshold")} for s in dash["low_stock"]],
+        "production": {"resting": len(dash["resting"]), "ready_for_cutting": [p.get("block_ref") for p in dash["ready_cutting"]]},
+        "open_orders": orders[:40],
+        "upcoming_deliveries": [{"ref": d.get("reference"), "customer": d.get("customer_name"), "destination": d.get("destination"),
+                                 "status": d.get("status"), "driver": drivers.get(d.get("driver_id"), ""), "planned": d.get("planned_departure")} for d in dash["upcoming_deliveries"]],
+        "attendance_today": dash["attendance_today"],
+        "expenses_this_month": [{"date": c["date"], "description": c["description"], "category": c["category"], "amount": c["amount"]} for c in costs][:80],
+        "fleet": [{"name": v["name"], "type": v.get("vtype"), "length": v.get("length"), "available": v.get("available"),
+                   "pending_work": len([r for r in vrecs if r.get("vehicle_id") == v["id"] and r.get("status") in ("Needed", "Scheduled", "In Progress")])}
+                  for v in await listall("vehicles")],
+        "spare_parts_to_buy": [{"name": p["name"], "qty": p.get("quantity")} for p in await listall("spareparts", {"status": "to_buy"})],
+    }
+
+ASSISTANT_RULES = """You are the business assistant for SUPER IQ-FOAM, a foam mattress manufacturer and wholesaler in Kokstad, KwaZulu-Natal, South Africa.
+Answer the owner's questions using ONLY the JSON business data below (live from the ERP). Money is South African Rand, format like R 1,234.56.
+Rules: never invent numbers, customers, prices or dates; if the data doesn't contain the answer, say so and suggest where in the ERP to record it.
+'Estimated result' = payments received minus recorded expenses; it is NOT accounting profit (cost data is incomplete) — say this when discussing profit.
+Be concise and practical. Use short bullet lists or small markdown tables. You cannot change data; tell the owner which page to use for actions.
+BUSINESS DATA:
+"""
+
+class AssistantIn(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+
+@api.get("/assistant/sessions")
+async def assistant_sessions(user=Depends(get_current_user)):
+    return await db.assistant_sessions.find({"user_id": user["id"]}, {"_id": 0}).sort("updated_at", -1).to_list(100)
+
+@api.get("/assistant/sessions/{sid}")
+async def assistant_session(sid: str, user=Depends(get_current_user)):
+    s = await db.assistant_sessions.find_one({"id": sid, "user_id": user["id"]}, {"_id": 0})
+    if not s:
+        raise HTTPException(404, "Conversation not found")
+    s["messages"] = await db.assistant_messages.find({"session_id": sid}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    return s
+
+@api.delete("/assistant/sessions/{sid}")
+async def assistant_delete(sid: str, user=Depends(get_current_user)):
+    await db.assistant_sessions.delete_one({"id": sid, "user_id": user["id"]})
+    await db.assistant_messages.delete_many({"session_id": sid})
+    return {"ok": True}
+
+@api.post("/assistant/chat")
+async def assistant_chat(body: AssistantIn, user=Depends(get_current_user)):
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+    text = body.message.strip()
+    if not text:
+        raise HTTPException(400, "Message is empty")
+    sid = body.session_id
+    if sid and not await db.assistant_sessions.find_one({"id": sid, "user_id": user["id"]}):
+        raise HTTPException(404, "Conversation not found")
+    if not sid:
+        sid = new_id()
+        await db.assistant_sessions.insert_one({"id": sid, "user_id": user["id"], "title": text[:60], "created_at": now_iso(), "updated_at": now_iso()})
+    history = await db.assistant_messages.find({"session_id": sid}, {"_id": 0}).sort("created_at", 1).to_list(40)
+    snapshot = await business_snapshot(user)
+    system = ASSISTANT_RULES + json.dumps(snapshot, default=str)
+    initial = [{"role": "system", "content": system}] + [{"role": m["role"], "content": m["content"]} for m in history]
+    await db.assistant_messages.insert_one({"id": new_id(), "session_id": sid, "role": "user", "content": text, "created_at": now_iso()})
+    chat = LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"], session_id=sid, system_message=system, initial_messages=initial).with_model(*ASSISTANT_MODEL)
+
+    async def gen():
+        yield f"data: {json.dumps({'type': 'session', 'session_id': sid})}\n\n"
+        parts = []
+        try:
+            async for ev in chat.stream_message(UserMessage(text=text)):
+                if isinstance(ev, TextDelta):
+                    parts.append(ev.content)
+                    yield f"data: {json.dumps({'type': 'delta', 'content': ev.content})}\n\n"
+                elif isinstance(ev, StreamDone):
+                    break
+        except Exception as e:
+            logging.exception("assistant error")
+            yield f"data: {json.dumps({'type': 'error', 'message': 'The AI assistant is unavailable right now. ' + str(e)[:160]})}\n\n"
+        answer = "".join(parts)
+        if answer:
+            await db.assistant_messages.insert_one({"id": new_id(), "session_id": sid, "role": "assistant", "content": answer, "created_at": now_iso()})
+        await db.assistant_sessions.update_one({"id": sid}, {"$set": {"updated_at": now_iso()}})
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 # ---------------- Audit ----------------
 @api.get("/audit")

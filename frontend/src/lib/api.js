@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const client = axios.create({ baseURL: BASE });
+const client = axios.create({ baseURL: BASE, withCredentials: true });
 
 client.interceptors.request.use((cfg) => {
   const t = localStorage.getItem("token");
@@ -12,7 +12,7 @@ client.interceptors.request.use((cfg) => {
 client.interceptors.response.use(
   (r) => r,
   (err) => {
-    if (err.response?.status === 401 && !err.config.url.includes("/auth/login")) {
+    if (err.response?.status === 401 && !err.config.url.includes("/auth/")) {
       localStorage.removeItem("token");
       if (window.location.pathname !== "/login") window.location.href = "/login";
     }
