@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { Layers } from "lucide-react";
+import { Navigate } from "react-router-dom";
 
 export default function Login() {
-  const { login, apiError } = useAuth();
+  const { login, apiError, user } = useAuth();
   const [email, setEmail] = useState("2j2skp87z8@privaterelay.appleid.com");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
@@ -16,6 +17,8 @@ export default function Login() {
     catch (e) { setErr(apiError(e)); }
     finally { setLoading(false); }
   };
+
+  if (user) return <Navigate to="/" replace />;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-[hsl(222_47%_11%)] p-4">
