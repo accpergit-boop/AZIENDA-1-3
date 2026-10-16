@@ -132,7 +132,7 @@ export default function Customers() {
               {profile.invoices.length === 0 ? <p className="text-sm text-slate-400">No invoices.</p> : (
                 <div className="space-y-1.5">{profile.invoices.map((i) => (
                   <div key={i.id} className="flex items-center justify-between text-sm border border-border rounded-lg px-3 py-2 cursor-pointer hover:bg-slate-50" onClick={() => nav(`/invoices/${i.id}`)}>
-                    <span className="font-mono font-semibold">{i.number || "DRAFT"}</span>
+                    <span className="font-mono font-semibold">{i.number || "DRAFT"}{i.opening_balance && <span className="ml-2 rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-700 font-sans">Opening Balance</span>}</span>
                     <span className="text-slate-500">{fmtDate(i.date)}</span>
                     <span className="font-mono">{fmtMoney(i.total)}</span>
                     <Badge cls={STATUS_META[i.status]?.cls}>{STATUS_META[i.status]?.label}</Badge>

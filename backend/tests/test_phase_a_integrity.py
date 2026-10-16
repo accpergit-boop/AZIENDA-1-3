@@ -43,6 +43,18 @@ def s(token):
     return ss
 
 
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_test_stock():
+    """Owner's real stock must stay clean: delete every TEST_ stock item + its movements after the run."""
+    yield
+    from pymongo import MongoClient
+    env = dict(l.strip().split("=", 1) for l in open("/app/backend/.env") if "=" in l)
+    mdb = MongoClient(env["MONGO_URL"].strip('"'))[env["DB_NAME"].strip('"')]
+    ids = [d["id"] for d in mdb.stock.find({"product": {"$regex": "^TEST_"}}, {"id": 1})]
+    mdb.stock_movements.delete_many({"stock_id": {"$in": ids}})
+    mdb.stock.delete_many({"id": {"$in": ids}})
+
+
 @pytest.fixture(scope="session")
 def customer(s):
     r = s.post(f"{API}/customers", json={"name": f"TEST_Cust_{uuid.uuid4().hex[:6]}", "city": "Mthatha", "default_zone": 1})

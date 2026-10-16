@@ -140,7 +140,7 @@ class TestAssistant:
 
     def test_second_turn_memory(self, H):
         sid = TestAssistant.state["sid"]
-        ev = sse(H, {"message": "Who is the biggest of them?", "session_id": sid})
+        ev = sse(H, {"message": "and which of those is the largest?", "session_id": sid})
         assert ev[0]["session_id"] == sid and ev[-1]["type"] == "done"
         ans = "".join(e["content"] for e in ev if e["type"] == "delta")
         print("ANSWER2:", ans)
@@ -167,3 +167,28 @@ class TestAssistant:
         assert requests.delete(f"{API}/assistant/sessions/{sid}", headers=H).status_code == 200
         assert requests.get(f"{API}/assistant/sessions/{sid}", headers=H).status_code == 404
         assert mdb.assistant_messages.count_documents({"session_id": sid}) == 0
+
+
+    def test_stock_answer_real_data(self, H):
+        ev = sse(H, {"message": "How many Simple 910x100 are in stock? Reply with just the number."})
+        ans = "".join(e["content"] for e in ev if e["type"] == "delta")
+        print("ANSWER3:", ans)
+        assert "660" in ans
+        requests.delete(f"{API}/assistant/sessions/{ev[0]['session_id']}", headers=H)
+
+
+# ---- Real stock (owner count, 56 items, 5155 total) ----
+class TestRealStock:
+    def test_stock_totals(self, H):
+        st = requests.get(f"{API}/stock", headers=H).json()
+        assert len(st) == 56
+        assert sum(x["current"] for x in st) == 5155
+        assert not [x for x in st if x["product"].startswith("TEST_")]
+        assert {x["product"] for x in st} == {"Simple", "Ribbon", "Strong Boy", "Uncovered", "Candy", "Black"}
+
+    @pytest.mark.parametrize("prod,size,qty", [("Simple", "910x100", 660), ("Black", "1070x100", 135), ("Ribbon", "1070x120", 105),
+                                               ("Strong Boy", "1070x125", 10), ("Uncovered", "910x100", 30), ("Candy", "760x100", 10)])
+    def test_stock_values(self, H, prod, size, qty):
+        st = requests.get(f"{API}/stock", headers=H).json()
+        m = [x["current"] for x in st if x["product"] == prod and x["size"] == size]
+        assert m == [qty]

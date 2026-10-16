@@ -272,7 +272,8 @@ async def customer_summary(cid: str, user=Depends(get_current_user)):
     return {"invoices": invs, "payments": pays,
             "outstanding": dsum(i.get("outstanding", 0) for i in valid),
             "overdue": dsum(i.get("outstanding", 0) for i in valid if i["status"] == "overdue"),
-            "total_invoiced": dsum(i.get("total", 0) for i in valid),
+            "total_invoiced": dsum(i.get("total", 0) for i in valid if not i.get("opening_balance")),
+            "opening_balance": dsum(i.get("outstanding", 0) for i in valid if i.get("opening_balance")),
             "payments_received": dsum(p.get("amount", 0) for p in pays),
             "open_orders": [o for o in orders if o.get("status") in OPEN_ORDER_STATUSES],
             "upcoming_deliveries": [d for d in dels if d.get("status") in ("Planned", "Assigned", "Ready")]}
@@ -1094,7 +1095,7 @@ async def dashboard(user=Depends(get_current_user)):
     for i in invs:
         i["status"] = derive_status(i)
     valid = [i for i in invs if i["status"] not in ("void", "draft")]
-    total_invoiced = dsum(i.get("total", 0) for i in valid)
+    total_invoiced = dsum(i.get("total", 0) for i in valid if not i.get("opening_balance"))
     pays = [p for p in await listall("payments") if not p.get("reversed")]
     payments_received = dsum(p.get("amount", 0) for p in pays)
     outstanding = dsum(i.get("outstanding", 0) for i in valid)
@@ -1429,6 +1430,57 @@ async def del_sparepart(pid: str, user=Depends(get_current_user)):
     await db.spareparts.delete_one({"id": pid})
     await log_audit("spare_part", pid, "deleted", user, before=p)
     return {"ok": True}
+
+# ---------------- Customer import with opening balances ----------------
+class ImportRow(BaseModel):
+    name: str
+    balance: float = 0
+
+class ImportIn(BaseModel):
+    rows: List[ImportRow]
+
+@api.post("/customers/import")
+async def import_customers(body: ImportIn, user=Depends(get_current_user)):
+    seen, created, reused, ob_created, ob_skipped = {}, 0, 0, 0, 0
+    today = local_today()
+    for row in body.rows:
+        name = row.name.strip()
+        if not name:
+            continue
+        if row.balance < 0:
+            raise HTTPException(400, f"Negative balance for {name} is not supported")
+        k = seen.get(name, 0)
+        seen[name] = k + 1
+        same = await db.customers.find({"name": name}, {"_id": 0}).sort("created_at", 1).to_list(100)
+        if len(same) > k:
+            cust = same[k]
+            reused += 1
+        else:
+            cust = {"id": new_id(), "name": name, "phone": "", "email": "", "address": "", "city": "", "notes": "",
+                    "default_zone": 1, "payment_terms": "Due on Delivery", "active": True, "created_at": now_iso()}
+            await db.customers.insert_one(dict(cust))
+            created += 1
+        amt = r2(row.balance)
+        if amt <= 0:
+            continue
+        if await db.invoices.find_one({"customer_id": cust["id"], "opening_balance": True}):
+            ob_skipped += 1
+            continue
+        inv = {"customer_id": cust["id"], "customer_name": name, "date": today.isoformat(),
+               "due_date": (today + timedelta(days=30)).isoformat(), "zone": cust.get("default_zone", 1),
+               "payment_terms": "Opening Balance", "reference": "Opening Balance", "destination": "", "order_ids": [],
+               "notes": "Opening balance imported from previous records", "discount": 0, "extra_charges": 0,
+               "tax_enabled": False, "tax_rate": 0, "amount_paid": 0, "opening_balance": True, "status": "issued",
+               "items": [{"qty": 1, "category": "", "size": "", "description": "Opening Balance", "unit_price": amt,
+                          "price_override": True, "tax": False, "order_id": ""}],
+               "audit": [{"action": "opening_balance_imported", "at": now_iso(), "by": user["email"]}]}
+        compute_invoice(inv)
+        inv["number"] = await next_invoice_number()
+        inv["issued_at"] = now_iso()
+        rec = await insert("invoices", inv)
+        await log_audit("invoice", rec["id"], "opening_balance_imported", user, after={"customer": name, "amount": amt})
+        ob_created += 1
+    return {"customers_created": created, "customers_reused": reused, "opening_balances_created": ob_created, "opening_balances_skipped": ob_skipped}
 
 # ---------------- AI Business Assistant ----------------
 ASSISTANT_MODEL = ("openai", "gpt-5.2")

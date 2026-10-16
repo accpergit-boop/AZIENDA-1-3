@@ -52,7 +52,7 @@ export default function InvoiceList() {
               </tr></thead>
               <tbody>{filtered.map((i) => (
                 <tr key={i.id} className="border-b border-border/60 hover:bg-slate-50 cursor-pointer" onClick={() => nav(`/invoices/${i.id}`)} data-testid={`invoice-row-${i.id}`}>
-                  <td className="px-4 py-3 font-mono font-semibold text-slate-700">{i.number || "DRAFT"}</td>
+                  <td className="px-4 py-3 font-mono font-semibold text-slate-700">{i.number || "DRAFT"}{i.opening_balance && <span className="ml-2 inline-block rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-700 font-sans" data-testid={`opening-badge-${i.id}`}>Opening Balance</span>}</td>
                   <td className="px-4 text-slate-600">{i.customer_name}</td>
                   <td className="px-4 text-slate-500">{fmtDate(i.date)}</td>
                   <td className="px-4 text-slate-500">{fmtDate(i.due_date)}</td>
