@@ -1,39 +1,80 @@
-# SUPER IQ-FOAM — Real Customer List & Opening Balances
+# SUPER IQ-FOAM — Clean Start & Edit Any Invoice
 
-Loads the business's real customer list (about 290 customers) into the ERP, with each customer's current balance.
-After the import, Outstanding, debtor lists and the AI Assistant show what each customer really owes.
+Removes all test data left by automated testing, so the ERP starts clean with only real business records.
+Adds a clear "Edit" button so any invoice can be corrected at any time, with every change recorded.
 
 ## Who it's for
-The owner of SUPER IQ-FOAM. He is the only user and manages customers, invoices and payments.
+The owner of SUPER IQ-FOAM, the only user. He wants the system to contain only real data and to be able to fix any invoice mistake himself.
 
 ## Core features and experience
-- **Full customer list:** every name from the supplied list is added exactly as written, including repeats and near-repeats (e.g. FATIMA ADAM BIZANA twice, FAMILY STORE and FAMILY STORE.). The 10 customers already in the system match names in the list, so they are reused, not added again.
-- **Opening balance per customer:** each customer with a balance above R 0.00 gets one "Opening Balance" invoice for that amount in Rand (the "€" sign in the export is ignored). There are 30 such customers, totalling about R 1,033,000. LING UMTHATHA is the largest at R 400,965.00.
-- **Works like a normal invoice:** payments can be recorded against an opening balance, partly or in full, and the balance due updates. Each opening balance shows "Opening Balance" as its description.
-- **Not counted as new sales:** opening balances are included in Outstanding, Overdue, the customer summaries and the debtor list. They are not included in "Total Invoiced" for this week or month, or in revenue. Payments received on them do count as money received on the date they are paid.
-- **Customers at R 0.00:** they are added with no invoice.
-- **Fields left for later:** price zone stays at Zone 1 and town stays empty for every customer, to be edited later on the Customers page. Zone and town are not guessed from names.
-- **Re-running is safe:** running the import again does not create duplicate customers or a second opening balance for the same customer.
+
+### 1. Clean start: remove test data
+**Removed (all of it is test data):**
+- Every test invoice and its payments. This is everything except the 26 Opening Balance invoices.
+- All orders and all deliveries.
+- All expenses, including spare-part purchase expenses.
+- All production blocks.
+- All vehicle expense, repair and maintenance records, and all spare parts.
+- All attendance entries.
+- All stock movements (none are real, because stock was reloaded from the photo today).
+- All AI Assistant conversations.
+- Every customer, vehicle and employee whose name starts with "TEST_", such as TEST_UI_Van and TEST_Van2.
+
+**Kept:**
+- The 266 customers from the owner's list, with their 26 Opening Balance invoices (R 905,471.00).
+- The 56 real stock items with the quantities from the photo.
+- The fleet: Mighty Hyundai Truck, Hino 500, Hino 300, Trailer (1) 9 m, Trailer (2) 5 m, Trailer (3) 4 m.
+- Real employees and drivers (Abdul, Tkoso, Ayanda and any other non-test names).
+- Price lists Zone 1 and Zone 2.
+- Settings, including the Google access list.
+- The admin login.
+
+**Invoice numbering restarts:** the 26 Opening Balance invoices are renumbered IQF-2026-0001 to IQF-2026-0026, in alphabetical order of customer. The next real invoice will be IQF-2026-0027.
+
+**Change history:** one history entry records what the clean-up removed. The rest of the history from testing is cleared, because it refers only to test records.
+
+After the clean-up the Dashboard shows these figures:
+- Outstanding: R 905,471.00 (Opening Balances only)
+- Total Invoiced: R 0.00
+- Payments Received: R 0.00
+- Expenses: R 0.00
+- Orders: 0
+- Deliveries: 0
+
+### 2. "Edit" button on every invoice
+- An **Edit** button appears on each row of the Invoices list and at the top of every open invoice. It covers drafts, issued, partly paid, paid and overdue invoices, and Opening Balances.
+- An invoice opens read-only first. Pressing **Edit** unlocks everything that can be changed:
+  - customer, invoice date, due date, price zone, payment terms, reference and delivery destination
+  - lines: add, remove, change quantity, category, size, description or unit price
+  - discount, extra charges and notes
+  - the amount of an Opening Balance
+- **Save changes** asks for an optional short reason, such as "wrong price" or "wrong customer". **Cancel** discards the edits.
+- Each save is recorded in the invoice's **Change History** panel: date, what changed (old → new), and the reason.
+- Totals, balance due and paid/overdue status are recalculated straight away. The PDF, print view and Copy for WhatsApp always use the corrected values.
+- **Safety limit:** an invoice cannot be edited to a total lower than the payments already received on it. In that case the owner is told to reverse the payment first, then edit.
 
 ## User flow
-1. The owner opens Customers and sees the full list. Each customer card shows Outstanding, Payments Received and Overdue.
-2. On the Dashboard, Outstanding Balances now includes the opening balances.
-3. When a customer pays, the owner opens the customer's Opening Balance invoice and clicks Pay, records the amount, and the balance goes down.
-4. Overdue: opening balances are due 30 days after the import date. After that, any amount still unpaid shows as Overdue.
+1. Open **Invoices**. Only the 26 Opening Balance invoices are listed.
+2. Click **Edit** on any invoice, change what is wrong, and click **Save changes**. Optionally type a reason.
+3. The invoice shows the new totals, and the change appears in Change History.
+4. Create new real invoices as normal. They are numbered from IQF-2026-0027.
 
 ## UI/UX feel
-Same as the current ERP: dark navy sidebar, light grey background, clear tables, and money shown as R 1,234.56. Opening-balance invoices have a small "Opening Balance" badge so they stand out from normal sales invoices in the invoice list and on customer cards.
+The ERP keeps its current look: navy sidebar, light grey pages, money shown as R 1,234.56.
+- The Edit button is blue and outlined, with a pencil icon.
+- While editing, a thin amber bar across the top of the invoice reads "Editing — unsaved changes", with Save and Cancel buttons.
+- Change History is a compact timeline under Payment History.
 
 ## Implementation phases
-- **Phase 1 (MVP, built now):** import all customers and opening balances, keep opening balances out of sales totals, add the badge, and make sure payments work against opening balances.
-- **Phase 2:** the owner supplies price zone and town per customer, and these are bulk-updated. Optional clean-up of the duplicate names once the owner confirms which ones belong together.
-- **Phase 3:** customer statements (balance history per customer, printable or shareable on WhatsApp) and payment reminders for overdue opening balances.
+- **Phase 1 (MVP, built now):** the full test-data clean-up, renumbering the Opening Balances 0001–0026, the Edit button with save, cancel and optional reason, and per-invoice Change History.
+- **Phase 2:** Orders with product lines and quantity tracking, deliveries linked to orders (including partial deliveries), and warnings when a truck or driver is double-booked. This was already agreed as Phase B.
+- **Phase 3:** customer statements and overdue reminders, the Cutting & Mattress Processing module, a Reports page, and global search.
 
 ## Assumptions
-- All amounts are in Rand. "€" was a formatting artefact of the export.
-- Balances are dated today and due in 30 days. The owner picked both "due in 30 days" and "due immediately", and 30 days was chosen. If immediate is wanted, every unpaid opening balance would show as Overdue right away.
-- Names are imported exactly as listed, keeping spelling, punctuation, phone numbers inside names (e.g. "D SHOP 065 636 6068") and zone tags like "Z2" in the name.
-- Payment terms for every customer are "Due on Delivery" (the current default). The 30-day due date applies only to the opening-balance invoice.
-- Opening-balance invoices get normal invoice numbers in the existing sequence, so the next real sales invoice continues after them.
-- Customers named CASH, CASH SALES and SUPER IQ-FOAM CASH are imported as normal customers, all at R 0.00.
-- The 56-item stock list already loaded from the owner's photo stays as it is. Black stops at 1070x150, as in the photo.
+- Everything except the Opening Balances is test data, as the owner confirmed. No real invoices, orders, deliveries or expenses exist yet.
+- Attendance entries, production blocks, spare parts and vehicle repair records are all test data and are removed. Employee and driver names are kept.
+- Invoice numbers themselves cannot be edited, so the sequence never has gaps or duplicates. Every other field can be edited.
+- Voided invoices cannot be edited. A wrong void is fixed by creating a new invoice. After the clean-up there are no voided invoices.
+- Editing an invoice never changes stock. Stock only moves through Deliveries (dispatch) and Production, as today.
+- The reason when saving an edit is optional.
+- The Opening Balance total is R 905,471.00 for 26 customers, as parsed from the pasted list. The earlier "30 customers, about R 1,033,000" was an estimate.

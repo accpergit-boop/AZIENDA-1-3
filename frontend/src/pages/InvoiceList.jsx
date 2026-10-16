@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { fmtMoney, fmtDate, STATUS_META } from "@/lib/format";
 import { Card, Btn, Badge, PageHeader, Empty } from "@/components/common";
-import { FileText, Search, Plus } from "lucide-react";
+import { FileText, Search, Plus, Pencil } from "lucide-react";
 
 export default function InvoiceList() {
   const [list, setList] = useState([]);
@@ -48,7 +48,7 @@ export default function InvoiceList() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
-                <th className="px-4 py-3 font-semibold">Invoice</th><th className="px-4 font-semibold">Customer</th><th className="px-4 font-semibold">Date</th><th className="px-4 font-semibold">Due</th><th className="px-4 font-semibold">Zone</th><th className="px-4 font-semibold text-right">Total</th><th className="px-4 font-semibold text-right">Paid</th><th className="px-4 font-semibold text-right">Balance</th><th className="px-4 font-semibold text-center">Status</th>
+                <th className="px-4 py-3 font-semibold">Invoice</th><th className="px-4 font-semibold">Customer</th><th className="px-4 font-semibold">Date</th><th className="px-4 font-semibold">Due</th><th className="px-4 font-semibold">Zone</th><th className="px-4 font-semibold text-right">Total</th><th className="px-4 font-semibold text-right">Paid</th><th className="px-4 font-semibold text-right">Balance</th><th className="px-4 font-semibold text-center">Status</th><th className="px-4 font-semibold text-right">Edit</th>
               </tr></thead>
               <tbody>{filtered.map((i) => (
                 <tr key={i.id} className="border-b border-border/60 hover:bg-slate-50 cursor-pointer" onClick={() => nav(`/invoices/${i.id}`)} data-testid={`invoice-row-${i.id}`}>
@@ -61,6 +61,11 @@ export default function InvoiceList() {
                   <td className="px-4 text-right font-mono text-emerald-600">{fmtMoney(i.amount_paid)}</td>
                   <td className="px-4 text-right font-mono text-red-600">{fmtMoney(i.outstanding)}</td>
                   <td className="px-4 text-center"><Badge cls={STATUS_META[i.status]?.cls}>{STATUS_META[i.status]?.label}</Badge></td>
+                  <td className="px-4 text-right">{i.status !== "void" && (
+                    <button onClick={(e) => { e.stopPropagation(); nav(`/invoices/${i.id}?edit=1`); }} data-testid={`edit-invoice-row-${i.id}`}
+                      className="inline-flex items-center gap-1 rounded-lg border border-primary/40 px-2.5 py-1 text-xs font-semibold text-primary hover:bg-blue-50 transition-colors">
+                      <Pencil size={12} /> Edit
+                    </button>)}</td>
                 </tr>))}</tbody>
             </table>
           </div>

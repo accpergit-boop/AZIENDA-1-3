@@ -415,6 +415,20 @@ class InvoiceIn(BaseModel):
     tax_enabled: bool = False
     tax_rate: float = 0
     status: str = "draft"
+    edit_reason: Optional[str] = ""
+
+INV_DIFF_FIELDS = ("customer_name", "date", "due_date", "zone", "payment_terms", "reference", "destination", "notes", "discount", "extra_charges", "tax_enabled", "total")
+
+def _line_str(it):
+    label = " ".join(x for x in (it.get("category"), it.get("size")) if x) or it.get("description") or "item"
+    return f"{r2(it.get('qty'))}x {label} @ {r2(it.get('unit_price')):.2f}"
+
+def invoice_changes(old, new):
+    ch = [{"field": f, "old": old.get(f), "new": new.get(f)} for f in INV_DIFF_FIELDS if (old.get(f) or "") != (new.get(f) or "")]
+    ol, nl = [_line_str(i) for i in old.get("items", [])], [_line_str(i) for i in new.get("items", [])]
+    if ol != nl:
+        ch.append({"field": "items", "old": "; ".join(ol), "new": "; ".join(nl)})
+    return ch
 
 async def next_invoice_number():
     s = await db.settings.find_one({"id": "singleton"}) or {}
@@ -499,11 +513,16 @@ async def update_invoice(iid: str, body: InvoiceIn, user=Depends(get_current_use
         raise HTTPException(404, "Invoice not found")
     if existing.get("status") == "void":
         raise HTTPException(400, "Cannot edit a voided invoice")
+    reason = (body.edit_reason or "").strip()
     inv = await _prepare_invoice(body)
+    inv.pop("edit_reason", None)
     inv["amount_paid"] = existing.get("amount_paid", 0)
     compute_invoice(inv)
     inv["number"] = existing.get("number")
     inv["audit"] = existing.get("audit", [])
+    for keep in ("opening_balance", "issued_at", "void_reason"):
+        if keep in existing:
+            inv[keep] = existing[keep]
     if existing.get("number"):
         inv["status"] = existing.get("status")
     if inv["status"] != "draft":
@@ -517,12 +536,15 @@ async def update_invoice(iid: str, body: InvoiceIn, user=Depends(get_current_use
         inv["issued_at"] = now_iso()
         inv["audit"].append({"action": "issued", "at": now_iso(), "by": user["email"]})
     else:
-        inv["audit"].append({"action": "edited", "at": now_iso(), "by": user["email"]})
+        changes = invoice_changes(existing, inv)
+        inv["audit"].append({"action": "edited", "at": now_iso(), "by": user["email"], "reason": reason, "changes": changes})
     rec = await update_doc("invoices", iid, inv)
     if existing.get("number"):
         await log_audit("invoice", iid, "issued_invoice_edited", user,
                         before={"items": existing.get("items"), "total": existing.get("total")},
-                        after={"items": rec.get("items"), "total": rec.get("total")})
+                        after={"items": rec.get("items"), "total": rec.get("total")}, reason=reason)
+    rec["status"] = derive_status(rec)
+    rec["payment_records"] = await listall("payments", {"invoice_id": iid}, ("created_at", -1))
     return rec
 
 @api.post("/invoices/{iid}/issue")

@@ -1,11 +1,11 @@
 import { useEffect, useState, useMemo } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { jsPDF } from "jspdf";
 import { api, apiError } from "@/lib/api";
-import { fmtMoney, fmtDate, today, newKey, STATUS_META } from "@/lib/format";
+import { fmtMoney, fmtDate, fmtDateTime, today, newKey, STATUS_META } from "@/lib/format";
 import { Card, Btn, Input, Select, Textarea, Badge, Modal } from "@/components/common";
-import { Copy, Download, Save, Send, CreditCard, Plus, Trash2, ArrowLeft, Ban, Printer, AlertTriangle } from "lucide-react";
+import { Copy, Download, Save, Send, CreditCard, Plus, Trash2, ArrowLeft, Ban, Printer, AlertTriangle, Pencil, X, History } from "lucide-react";
 
 const CATS = {
   1: ["Standard", "Ribbon", "Candy", "Strong Boy", "Uncovered"],
@@ -32,15 +32,27 @@ export default function InvoiceEditor() {
   const [payRecords, setPayRecords] = useState([]);
   const [payModal, setPayModal] = useState(null);
   const [nextNum, setNextNum] = useState("");
+  const [sp, setSp] = useSearchParams();
+  const [editing, setEditing] = useState(false);
+  const [snapshot, setSnapshot] = useState(null);
+  const locked = !!id && !editing;
 
   useEffect(() => {
     Promise.all([api.get("/customers"), api.get("/prices"), api.get("/settings")]).then(([c, p, s]) => {
       setCustomers(c); setPrices(p); setSettings(s);
-      setInv((prev) => ({ ...prev, tax_enabled: s.tax_enabled, tax_rate: s.tax_rate }));
+      if (!id) setInv((prev) => ({ ...prev, tax_enabled: s.tax_enabled, tax_rate: s.tax_rate }));
     });
-    if (id) api.get(`/invoices/${id}`).then((d) => { setInv(d); setPayRecords(d.payment_records || []); });
+    setEditing(false);
+    if (id) api.get(`/invoices/${id}`).then((d) => {
+      setInv(d); setPayRecords(d.payment_records || []);
+      if (sp.get("edit") && d.status !== "void") { setSnapshot(d); setEditing(true); setSp({}, { replace: true }); }
+    });
     else api.get("/invoices/next-number").then((d) => setNextNum(d.number));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  const startEdit = () => { setSnapshot(inv); setEditing(true); };
+  const cancelEdit = () => { setInv(snapshot); setEditing(false); };
 
   const sizesFor = (zone, cat) => prices.filter((p) => p.zone === zone && p.category === priceCat(zone, cat) && p.active).map((p) => p.size);
 
@@ -146,6 +158,18 @@ export default function InvoiceEditor() {
       toast.success(status === "draft" ? "Saved as draft" : "Invoice saved");
       nav(`/invoices/${res.id}`);
       if (id) { setInv(res); }
+    } catch (e) { toast.error(apiError(e)); } finally { setBusy(false); }
+  };
+
+  const saveEdit = async () => {
+    if (!validate(inv.status === "draft" ? "draft" : "issued") || busy) return;
+    const reason = window.prompt("Reason for this change (optional):", "");
+    if (reason === null) return;
+    setBusy(true);
+    try {
+      const res = await api.put(`/invoices/${id}`, { ...buildPayload(inv.status === "draft" ? "draft" : "issued"), edit_reason: reason });
+      setInv(res); setPayRecords(res.payment_records || []); setEditing(false);
+      toast.success("Invoice updated");
     } catch (e) { toast.error(apiError(e)); } finally { setBusy(false); }
   };
 
@@ -319,6 +343,12 @@ export default function InvoiceEditor() {
         </button>
         <div className="flex items-center gap-2">
           <Badge cls={st.cls}>{st.label}</Badge>
+          {inv.opening_balance && <Badge cls="bg-violet-50 text-violet-700 border-violet-200">Opening Balance</Badge>}
+          {locked && inv.status !== "void" && (
+            <button onClick={startEdit} data-testid="edit-invoice-btn"
+              className="inline-flex items-center gap-1.5 h-9 rounded-lg border border-primary/50 bg-white px-3 text-sm font-semibold text-primary hover:bg-blue-50 transition-colors">
+              <Pencil size={15} /> Edit
+            </button>)}
           <button onClick={copyInvoice} title="Copy invoice to clipboard" data-testid="copy-invoice-btn"
             className="h-9 w-9 flex items-center justify-center rounded-lg border border-border bg-white text-slate-600 hover:text-primary hover:border-primary">
             <Copy size={17} />
@@ -326,8 +356,18 @@ export default function InvoiceEditor() {
         </div>
       </div>
 
+      {editing && (
+        <div className="no-print mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5" data-testid="editing-bar">
+          <span className="text-sm font-semibold text-amber-800">Editing — unsaved changes</span>
+          <div className="flex gap-2">
+            <Btn variant="outline" onClick={cancelEdit} data-testid="cancel-edit-btn"><X size={15} /> Cancel</Btn>
+            <Btn disabled={busy} onClick={saveEdit} data-testid="save-edit-btn"><Save size={15} /> {busy ? "Saving..." : "Save changes"}</Btn>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <div className="xl:col-span-2 space-y-6">
+        <fieldset disabled={locked} className="xl:col-span-2 space-y-6 min-w-0" data-testid="invoice-form">
           {/* Invoice info */}
           <Card className="p-5">
             <div className="flex items-center justify-between mb-4">
@@ -366,19 +406,23 @@ export default function InvoiceEditor() {
                       <input type="number" min="0" value={it.qty} onChange={(e) => updateItem(idx, { qty: e.target.value })} data-testid={`item-qty-${idx}`}
                         className="w-16 rounded border border-input px-2 py-1.5 text-sm" />
                     </td>
-                    <td className="pr-2">
+                    <td className="pr-2" colSpan={!it.category && it.description ? 2 : 1}>
+                      {!it.category && it.description ? (
+                        <input value={it.description} onChange={(e) => updateItem(idx, { description: e.target.value })} data-testid={`item-desc-${idx}`}
+                          className="w-full rounded border border-input px-2 py-1.5 text-sm" />
+                      ) : (
                       <select value={it.category} onChange={(e) => onCatSize(idx, { category: e.target.value, size: "" })} data-testid={`item-cat-${idx}`}
                         className="w-full rounded border border-input px-2 py-1.5 text-sm min-w-[130px]">
                         {CATS[inv.zone].map((c) => <option key={c}>{c}</option>)}
-                      </select>
+                      </select>)}
                     </td>
-                    <td className="pr-2">
+                    {!(!it.category && it.description) && <td className="pr-2">
                       <select value={it.size} onChange={(e) => onCatSize(idx, { size: e.target.value })} data-testid={`item-size-${idx}`}
                         className="w-full rounded border border-input px-2 py-1.5 text-sm min-w-[110px]">
                         <option value="">Select...</option>
                         {sizesFor(inv.zone, it.category).map((s) => <option key={s}>{s}</option>)}
                       </select>
-                    </td>
+                    </td>}
                     <td className="pr-2">
                       <div className="flex items-center gap-1">
                         <input type="number" step="0.01" value={it.unit_price}
@@ -401,13 +445,13 @@ export default function InvoiceEditor() {
           {inv.notes !== undefined && (
             <Card className="p-5"><Textarea label="Notes (optional)" rows={2} value={inv.notes} onChange={(e) => setInv({ ...inv, notes: e.target.value })} /></Card>
           )}
-        </div>
+        </fieldset>
 
         {/* Totals + payment sidebar */}
         <div className="space-y-6">
           <Card className="p-5">
             <h3 className="font-bold text-slate-800 mb-4 font-display">Totals</h3>
-            <div className="space-y-3 text-sm">
+            <fieldset disabled={locked} className="space-y-3 text-sm min-w-0">
               <div className="flex justify-between"><span className="text-slate-500">Subtotal</span><span className="font-mono font-semibold">{fmtMoney(totals.subtotal)}</span></div>
               <div className="flex justify-between items-center"><span className="text-slate-500">Discount</span>
                 <input type="number" step="0.01" value={inv.discount} onChange={(e) => setInv({ ...inv, discount: e.target.value })} data-testid="discount-input" className="w-24 rounded border border-input px-2 py-1 text-sm font-mono text-right" /></div>
@@ -419,22 +463,22 @@ export default function InvoiceEditor() {
               <div className="flex justify-between border-t border-border pt-3 text-base"><span className="font-bold text-slate-800">Total</span><span className="font-mono font-bold text-slate-900" data-testid="invoice-total">{fmtMoney(totals.total)}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">Amount Paid</span><span className="font-mono text-emerald-600">{fmtMoney(inv.amount_paid)}</span></div>
               <div className="flex justify-between"><span className="font-semibold text-slate-700">Outstanding</span><span className="font-mono font-bold text-red-600" data-testid="invoice-outstanding">{fmtMoney(totals.outstanding)}</span></div>
-            </div>
+            </fieldset>
           </Card>
 
           <Card className="p-5 space-y-2 no-print">
             <h3 className="font-bold text-slate-800 mb-3 font-display">Actions</h3>
             {inv.status === "void" ? <p className="text-sm text-slate-400" data-testid="void-reason">This invoice is voided.{inv.void_reason ? ` Reason: ${inv.void_reason}` : ""}</p> : (
               <div className="grid grid-cols-2 gap-2">
-                {(!inv.number) && <Btn variant="outline" disabled={busy} onClick={() => save("draft")} data-testid="save-draft-btn"><Save size={15} /> Draft</Btn>}
-                <Btn disabled={busy} onClick={() => save("issued")} data-testid="issue-invoice-btn"><Send size={15} /> {id && inv.number ? "Update" : "Issue"}</Btn>
+                {!id && <Btn variant="outline" disabled={busy} onClick={() => save("draft")} data-testid="save-draft-btn"><Save size={15} /> Draft</Btn>}
+                {!id && <Btn disabled={busy} onClick={() => save("issued")} data-testid="issue-invoice-btn"><Send size={15} /> Issue</Btn>}
                 <Btn variant="outline" onClick={copyInvoice} data-testid="copy-btn-2"><Copy size={15} /> Copy</Btn>
                 <Btn variant="outline" onClick={downloadPDF} data-testid="download-pdf-btn"><Download size={15} /> PDF</Btn>
                 <Btn variant="outline" onClick={() => window.print()} data-testid="print-invoice-btn"><Printer size={15} /> Print</Btn>
-                {id && inv.status !== "draft" && totals.outstanding > 0 && (
+                {id && inv.status !== "draft" && totals.outstanding > 0 && !editing && (
                   <Btn variant="success" onClick={() => setPayModal({ amount: totals.outstanding.toFixed(2), method: "Cash", date: today(), reference: "", notes: "", idempotency_key: newKey() })} data-testid="record-payment-btn"><CreditCard size={15} /> Pay</Btn>
                 )}
-                {id && inv.status === "draft" && <Btn variant="subtle" onClick={issueExisting} data-testid="issue-existing-btn"><Send size={15} /> Issue</Btn>}
+                {id && inv.status === "draft" && !editing && <Btn variant="subtle" onClick={issueExisting} data-testid="issue-existing-btn"><Send size={15} /> Issue</Btn>}
                 {id && inv.status === "draft" && !inv.number && <Btn variant="ghost" className="col-span-2 text-red-600" onClick={deleteDraft} data-testid="delete-draft-btn"><Trash2 size={15} /> Delete Draft</Btn>}
                 {id && inv.number && <Btn variant="ghost" className="col-span-2 text-red-600" onClick={voidInvoice} data-testid="void-invoice-btn"><Ban size={15} /> Void Invoice</Btn>}
               </div>
@@ -450,6 +494,22 @@ export default function InvoiceEditor() {
                   <span className={`font-mono font-semibold ${p.reversed ? "line-through text-slate-400" : "text-emerald-600"}`}>{fmtMoney(p.amount)}</span>
                   {!p.reversed && <button onClick={() => reversePayment(p)} className="text-xs text-red-500 hover:underline" data-testid={`reverse-payment-${p.id}`}>Reverse</button>}
                 </div>))}</div>
+            </Card>
+          )}
+
+          {(inv.audit || []).some((a) => a.action === "edited" && a.changes) && (
+            <Card className="p-5 no-print" data-testid="change-history">
+              <h3 className="font-bold text-slate-800 mb-3 font-display flex items-center gap-2"><History size={16} /> Change History</h3>
+              <ol className="relative border-l border-border ml-1.5 space-y-4">
+                {[...inv.audit].reverse().filter((a) => a.action === "edited" && a.changes).map((a, i) => (
+                  <li key={i} className="ml-4" data-testid={`change-entry-${i}`}>
+                    <span className="absolute -left-1.5 mt-1 h-3 w-3 rounded-full border-2 border-white bg-primary" />
+                    <p className="text-xs text-slate-400">{fmtDateTime(a.at)}{a.reason ? <span className="text-slate-600"> · {a.reason}</span> : ""}</p>
+                    {a.changes.length === 0 ? <p className="text-xs text-slate-400">No field changes</p> : a.changes.map((c, k) => (
+                      <p key={k} className="text-xs text-slate-600 mt-0.5 break-words"><span className="font-semibold">{c.field.replace("_", " ")}:</span> <span className="line-through text-slate-400">{String(c.old ?? "—")}</span> → {String(c.new ?? "—")}</p>
+                    ))}
+                  </li>))}
+              </ol>
             </Card>
           )}
         </div>
