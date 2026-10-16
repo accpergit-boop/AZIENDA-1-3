@@ -1,6 +1,26 @@
 export function fmtMoney(n) {
   const v = Number(n || 0);
-  return "R " + v.toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const s = Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (v < 0 ? "-R " : "R ") + s;
+}
+
+export const TZ = "Africa/Johannesburg";
+
+export function fmtDateTime(s) {
+  if (!s) return "-";
+  const d = new Date(s);
+  if (isNaN(d)) return s;
+  return d.toLocaleString("en-ZA", { timeZone: TZ, day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+export function nowLocalInput() {
+  const p = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(new Date());
+  const g = (t) => p.find((x) => x.type === t).value;
+  return `${g("year")}-${g("month")}-${g("day")}T${g("hour") === "24" ? "00" : g("hour")}:${g("minute")}`;
+}
+
+export function newKey() {
+  return (crypto.randomUUID && crypto.randomUUID()) || `${Date.now()}-${Math.random()}`;
 }
 
 export function fmtDate(s) {
@@ -14,7 +34,7 @@ export function fmtDate(s) {
 }
 
 export function today() {
-  return new Date().toISOString().slice(0, 10);
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Johannesburg" });
 }
 
 export const STATUS_META = {

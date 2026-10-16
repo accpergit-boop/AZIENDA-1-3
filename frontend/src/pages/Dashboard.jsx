@@ -16,6 +16,8 @@ const QUICK = [
   { label: "Production Record", icon: Factory, to: "/production?add=1" },
   { label: "Record Attendance", icon: CalendarCheck, to: "/attendance" },
   { label: "Create Delivery", icon: Truck, to: "/deliveries?add=1" },
+  { label: "Create Order", icon: ClipboardList, to: "/orders" },
+  { label: "Record Expense", icon: Banknote, to: "/expenses" },
 ];
 
 function KPI({ title, value, icon: Icon, tint, onClick }) {
@@ -72,10 +74,26 @@ export default function Dashboard() {
         <KPI title="Finished Stock" value={d.finished_stock} icon={Boxes} tint="bg-amber-50 text-amber-600" onClick={() => nav("/stock")} />
       </div>
 
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <KPI title="Overdue Balances" value={fmtMoney(d.overdue)} icon={AlertTriangle} tint="bg-red-50 text-red-700" onClick={() => nav("/invoices")} />
+        <KPI title="Revenue This Month" value={fmtMoney(d.month_profit?.revenue)} icon={TrendingUp} tint="bg-emerald-50 text-emerald-600" onClick={() => nav("/expenses")} />
+        <KPI title="Expenses This Month" value={fmtMoney(d.month_profit?.expenses)} icon={Banknote} tint="bg-orange-50 text-orange-600" onClick={() => nav("/expenses")} />
+        <KPI title="Est. Result This Month" value={fmtMoney(d.month_profit?.profit)} icon={Wallet} tint={d.month_profit?.profit < 0 ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-600"} onClick={() => nav("/expenses")} />
+      </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <KPI title="Week Revenue" value={fmtMoney(d.week_profit?.revenue)} icon={TrendingUp} tint="bg-emerald-50 text-emerald-600" onClick={() => nav("/expenses")} />
-        <KPI title="Week Expenses" value={fmtMoney(d.week_profit?.expenses)} icon={Banknote} tint="bg-orange-50 text-orange-600" onClick={() => nav("/expenses")} />
-        <KPI title="Week Profit" value={fmtMoney(d.week_profit?.profit)} icon={Wallet} tint={d.week_profit?.profit < 0 ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-600"} onClick={() => nav("/expenses")} />
+        <KPI title="Revenue This Week" value={fmtMoney(d.week_profit?.revenue)} icon={TrendingUp} tint="bg-emerald-50 text-emerald-600" onClick={() => nav("/expenses")} />
+        <KPI title="Expenses This Week" value={fmtMoney(d.week_profit?.expenses)} icon={Banknote} tint="bg-orange-50 text-orange-600" onClick={() => nav("/expenses")} />
+        <KPI title="Est. Result This Week" value={fmtMoney(d.week_profit?.profit)} icon={Wallet} tint={d.week_profit?.profit < 0 ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-600"} onClick={() => nav("/expenses")} />
+      </div>
+      <p className="text-xs text-slate-400 -mt-3">Revenue = payments actually received. Estimated result = payments − recorded expenses (incomplete cost data, not accounting profit). Weeks start Monday · Africa/Johannesburg.</p>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-3">
+        {[["Resting", d.resting.length, "/production"], ["Ready to Cut", d.ready_cutting.length, "/production"], ["Done Today", d.completed_today, "/production"],
+          ["Orders to Send", d.orders_open_count, "/orders"], ["Urgent Orders", d.urgent_orders, "/orders"], ["Vehicles Free", `${d.vehicles_available}/${d.vehicles_total}`, "/fleet"],
+          ["Parts to Buy", d.parts_to_buy_count, "/fleet"], ["Maintenance Due", d.maintenance_due, "/fleet"]].map(([l, v, to]) => (
+          <button key={l} onClick={() => nav(to)} className="rounded-xl border border-border bg-white p-3 text-left hover:border-primary transition-colors" data-testid={`op-kpi-${l.toLowerCase().replace(/\s/g, "-")}`}>
+            <p className="text-[10px] font-semibold uppercase text-slate-400">{l}</p><p className="text-xl font-bold font-mono text-slate-800 mt-1">{v}</p>
+          </button>))}
       </div>
 
       {/* Quick actions */}

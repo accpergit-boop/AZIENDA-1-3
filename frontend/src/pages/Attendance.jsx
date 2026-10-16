@@ -5,7 +5,7 @@ import { today } from "@/lib/format";
 import { Card, Btn, Input, Select, Badge, Modal, PageHeader, Empty } from "@/components/common";
 import { CalendarCheck, Plus, UserPlus } from "lucide-react";
 
-const STATUSES = ["Present", "Absent", "Sick Leave", "Annual Leave", "Other Approved Leave", "Half Day"];
+const STATUSES = ["Present", "Half Day", "Absent", "Leave", "Sick", "Other"];
 const META = {
   Present: "bg-emerald-50 text-emerald-700 border-emerald-200",
   Absent: "bg-red-50 text-red-700 border-red-200",

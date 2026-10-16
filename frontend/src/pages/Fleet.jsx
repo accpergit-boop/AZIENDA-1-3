@@ -5,16 +5,19 @@ import { fmtMoney, fmtDate, today } from "@/lib/format";
 import { Card, Btn, Input, Select, Textarea, Badge, Modal, PageHeader, Empty } from "@/components/common";
 import { Truck, Plus, Wrench, Package, Trash2, Pencil, ArrowRight, Fuel, Settings2 } from "lucide-react";
 
-const VTYPES = ["Disk", "Truck", "Bakkie", "Trailer", "Other"];
+const VTYPES = ["Medium Truck", "Large Truck", "Small Truck", "Bakkie", "Trailer", "Other"];
+const RSTATUS = ["Needed", "Scheduled", "In Progress", "Done", "Cancelled"];
+const isDone = (r) => r.status === "Done" || r.status === "done";
+const isPending = (r) => ["Needed", "Scheduled", "In Progress", "needed"].includes(r.status);
 const RTYPES = { expense: { label: "Expense", icon: Fuel, cls: "bg-orange-50 text-orange-700 border-orange-200" }, repair: { label: "Repair", icon: Wrench, cls: "bg-red-50 text-red-700 border-red-200" }, maintenance: { label: "Maintenance", icon: Settings2, cls: "bg-blue-50 text-blue-700 border-blue-200" } };
 const PSTAT = { to_buy: { label: "To Buy", cls: "bg-amber-50 text-amber-700 border-amber-200", next: "bought" }, bought: { label: "Bought", cls: "bg-blue-50 text-blue-700 border-blue-200", next: "installed" }, installed: { label: "Installed", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" } };
-const blankV = () => ({ name: "", registration: "", vtype: "Truck", capacity: "", length: "", available: true, notes: "" });
-const blankR = () => ({ type: "expense", description: "", amount: "", date: today(), status: "done" });
-const blankP = () => ({ name: "", quantity: 1, expected_price: "", vehicle_id: "", status: "to_buy", notes: "" });
+const blankV = () => ({ name: "", registration: "", vtype: "Medium Truck", capacity: "", length: "", available: true, notes: "" });
+const blankR = () => ({ type: "expense", description: "", amount: "", date: today(), status: "Done" });
+const blankP = () => ({ name: "", quantity: 1, expected_price: "", actual_cost: "", vehicle_id: "", status: "to_buy", notes: "" });
 
 function VehicleCard({ v, recs, onOpen, onEdit }) {
-  const sum = (t) => recs.filter((r) => r.type === t).reduce((s, r) => s + (r.amount || 0), 0);
-  const needed = recs.filter((r) => r.status === "needed").length;
+  const sum = (t) => recs.filter((r) => r.type === t && isDone(r)).reduce((s, r) => s + (r.amount || 0), 0);
+  const needed = recs.filter(isPending).length;
   return (
     <Card className="p-5 hover:shadow-md transition-shadow" data-testid={`vehicle-card-${v.id}`}>
       <div className="flex items-start justify-between mb-4">
@@ -31,7 +34,8 @@ function VehicleCard({ v, recs, onOpen, onEdit }) {
             <p className="text-sm font-mono font-bold text-slate-700">{fmtMoney(sum(k))}</p>
           </div>))}
       </div>
-      {needed > 0 && <p className="text-xs font-semibold text-red-600 mb-3">{needed} pending repair/maintenance</p>}
+      <p className="text-[11px] text-slate-400 mb-2">Capacity: {v.capacity || "requires confirmation"}</p>
+      {needed > 0 && <p className="text-xs font-semibold text-red-600 mb-3" data-testid={`vehicle-attention-${v.id}`}>{needed} repair/maintenance needing attention</p>}
       <div className="flex gap-2">
         <Btn variant="subtle" className="flex-1" onClick={onOpen} data-testid={`vehicle-records-${v.id}`}>Records <ArrowRight size={14} /></Btn>
         <Btn variant="outline" onClick={onEdit} data-testid={`edit-vehicle-${v.id}`}><Pencil size={14} /></Btn>
@@ -62,17 +66,29 @@ export default function Fleet() {
     if (!rForm.description.trim()) return toast.error("Description required");
     try { await api.post(`/vehicles/${detail.id}/records`, { ...rForm, amount: Number(rForm.amount) || 0 }); toast.success("Record added"); setRForm(blankR()); load(); } catch (e) { err(e); }
   };
-  const delRecord = async (r) => { if (!window.confirm("Delete this record?")) return; try { await api.del(`/vehicles/records/${r.id}`); load(); } catch (e) { err(e); } };
+  const delRecord = async (r) => { if (!window.confirm(isDone(r) && r.amount > 0 ? "This cost is already counted in reports. Mark it Cancelled?" : "Delete this record?")) return; try { await api.del(`/vehicles/records/${r.id}`); load(); } catch (e) { err(e); } };
+  const setRecStatus = async (r, status) => { try { await api.put(`/vehicles/records/${r.id}`, { ...r, status }); load(); } catch (e) { err(e); } };
   const savePart = async () => {
     if (!pModal.name.trim()) return toast.error("Part name required");
-    const payload = { ...pModal, quantity: Number(pModal.quantity) || 1, expected_price: Number(pModal.expected_price) || 0 };
+    const payload = { ...pModal, quantity: Number(pModal.quantity) || 1, expected_price: Number(pModal.expected_price) || 0, actual_cost: pModal.actual_cost === "" || pModal.actual_cost == null ? null : Number(pModal.actual_cost) };
+    if (payload.status !== "to_buy" && !(payload.actual_cost > 0)) return toast.error("Enter the actual purchase cost when the part is bought");
     try { pModal.id ? await api.put(`/spareparts/${pModal.id}`, payload) : await api.post("/spareparts", payload); toast.success("Spare part saved"); setPModal(null); load(); } catch (e) { err(e); }
   };
-  const advancePart = async (p) => { try { await api.put(`/spareparts/${p.id}`, { ...p, status: PSTAT[p.status].next }); toast.success(`Marked ${PSTAT[PSTAT[p.status].next].label}`); load(); } catch (e) { err(e); } };
+  const advancePart = async (p) => {
+    const next = PSTAT[p.status].next;
+    let actual_cost = p.actual_cost;
+    if (next === "bought") {
+      const v = window.prompt(`Actual total purchase cost for "${p.name}" (R):`, String((p.expected_price || 0) * (p.quantity || 1) || ""));
+      if (v === null) return;
+      actual_cost = Number(v);
+      if (!(actual_cost > 0)) return toast.error("Enter a valid cost");
+    }
+    try { await api.put(`/spareparts/${p.id}`, { ...p, status: next, actual_cost }); toast.success(`Marked ${PSTAT[next].label}`); load(); } catch (e) { err(e); }
+  };
   const delPart = async (p) => { if (!window.confirm(`Delete "${p.name}"?`)) return; try { await api.del(`/spareparts/${p.id}`); load(); } catch (e) { err(e); } };
 
   const vRecs = (id) => records.filter((r) => r.vehicle_id === id);
-  const partsTotal = (s) => parts.filter((p) => p.status === s).reduce((t, p) => t + (p.expected_price || 0) * (p.quantity || 1), 0);
+  const partsTotal = (s) => parts.filter((p) => p.status === s).reduce((t, p) => t + (s === "to_buy" ? (p.expected_price || 0) * (p.quantity || 1) : (p.actual_cost || 0)), 0);
 
   return (
     <div className="space-y-6">
@@ -109,7 +125,7 @@ export default function Fleet() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm min-w-[760px]">
                   <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
-                    <th className="px-4 py-3 font-semibold">Part</th><th className="px-4 font-semibold">Vehicle</th><th className="px-4 font-semibold text-right">Qty</th><th className="px-4 font-semibold text-right">Expected Price</th><th className="px-4 font-semibold">Status</th><th className="px-4 font-semibold text-right">Actions</th>
+                    <th className="px-4 py-3 font-semibold">Part</th><th className="px-4 font-semibold">Vehicle</th><th className="px-4 font-semibold text-right">Qty</th><th className="px-4 font-semibold text-right">Est. Unit</th><th className="px-4 font-semibold text-right">Actual Cost</th><th className="px-4 font-semibold">Status</th><th className="px-4 font-semibold text-right">Actions</th>
                   </tr></thead>
                   <tbody>{parts.map((p) => (
                     <tr key={p.id} className="border-b border-border/60 hover:bg-slate-50" data-testid={`part-row-${p.id}`}>
@@ -117,11 +133,12 @@ export default function Fleet() {
                       <td className="px-4 text-slate-500">{p.vehicle_name || "-"}</td>
                       <td className="px-4 text-right font-mono">{p.quantity}</td>
                       <td className="px-4 text-right font-mono">{fmtMoney(p.expected_price)}</td>
+                      <td className="px-4 text-right font-mono" data-testid={`part-actual-${p.id}`}>{p.actual_cost ? fmtMoney(p.actual_cost) : "-"}</td>
                       <td className="px-4"><Badge cls={PSTAT[p.status]?.cls}>{PSTAT[p.status]?.label}</Badge></td>
                       <td className="px-4 text-right whitespace-nowrap">
                         {PSTAT[p.status]?.next && <button onClick={() => advancePart(p)} className="inline-flex items-center gap-1 text-emerald-600 hover:underline text-xs font-semibold mr-3" data-testid={`advance-part-${p.id}`}>Mark {PSTAT[PSTAT[p.status].next].label} <ArrowRight size={12} /></button>}
                         <button onClick={() => setPModal({ ...p })} className="text-slate-400 hover:text-primary mr-3" data-testid={`edit-part-${p.id}`}><Pencil size={15} /></button>
-                        <button onClick={() => delPart(p)} className="text-slate-400 hover:text-red-600" data-testid={`delete-part-${p.id}`}><Trash2 size={15} /></button>
+                        {p.status === "to_buy" && <button onClick={() => delPart(p)} className="text-slate-400 hover:text-red-600" data-testid={`delete-part-${p.id}`}><Trash2 size={15} /></button>}
                       </td>
                     </tr>))}</tbody>
                 </table>
@@ -139,7 +156,7 @@ export default function Fleet() {
             <Input label="Amount (R)" type="number" value={rForm.amount} onChange={(e) => setRForm({ ...rForm, amount: e.target.value })} data-testid="record-amount-input" />
             <Input label="Date" type="date" value={rForm.date} onChange={(e) => setRForm({ ...rForm, date: e.target.value })} data-testid="record-date-input" />
             <Select label="Status" value={rForm.status} onChange={(e) => setRForm({ ...rForm, status: e.target.value })} data-testid="record-status-select">
-              <option value="done">Done</option><option value="needed">Needed</option>
+              {RSTATUS.map((s) => <option key={s}>{s}</option>)}
             </Select>
           </div>
           <div className="flex gap-2">
@@ -154,7 +171,9 @@ export default function Fleet() {
                   <m.icon size={16} className="text-slate-400 shrink-0" />
                   <div className="flex-1 min-w-0"><p className="text-sm font-semibold text-slate-800 truncate">{r.description}</p><p className="text-xs text-slate-400">{fmtDate(r.date)}</p></div>
                   <Badge cls={m.cls}>{m.label}</Badge>
-                  {r.status === "needed" && <Badge cls="bg-red-50 text-red-700 border-red-200">Needed</Badge>}
+                  <select value={r.status === "done" ? "Done" : r.status === "needed" ? "Needed" : r.status} onChange={(e) => setRecStatus(r, e.target.value)} className="rounded border border-input px-1.5 py-1 text-xs" data-testid={`record-status-${r.id}`}>
+                    {RSTATUS.map((s) => <option key={s}>{s}</option>)}
+                  </select>
                   <span className="font-mono text-sm text-slate-700 w-28 text-right">{fmtMoney(r.amount)}</span>
                   <button onClick={() => delRecord(r)} className="text-slate-300 hover:text-red-600" data-testid={`delete-record-${r.id}`}><Trash2 size={15} /></button>
                 </div>);
@@ -184,7 +203,8 @@ export default function Fleet() {
           <Input label="Part Name *" value={pModal.name} onChange={(e) => setPModal({ ...pModal, name: e.target.value })} data-testid="part-name-input" />
           <div className="grid grid-cols-2 gap-3">
             <Input label="Quantity" type="number" value={pModal.quantity} onChange={(e) => setPModal({ ...pModal, quantity: e.target.value })} data-testid="part-qty-input" />
-            <Input label="Expected Price (R)" type="number" value={pModal.expected_price} onChange={(e) => setPModal({ ...pModal, expected_price: e.target.value })} data-testid="part-price-input" />
+            <Input label="Est. Unit Price (R)" type="number" value={pModal.expected_price} onChange={(e) => setPModal({ ...pModal, expected_price: e.target.value })} data-testid="part-price-input" />
+            <Input label="Actual Total Cost (R)" type="number" value={pModal.actual_cost ?? ""} onChange={(e) => setPModal({ ...pModal, actual_cost: e.target.value })} data-testid="part-actual-cost-input" />
             <Select label="Vehicle" value={pModal.vehicle_id} onChange={(e) => setPModal({ ...pModal, vehicle_id: e.target.value })} data-testid="part-vehicle-select">
               <option value="">General</option>{vehicles.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
             </Select>
@@ -192,6 +212,7 @@ export default function Fleet() {
               {Object.entries(PSTAT).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
             </Select>
           </div>
+          <p className="text-[11px] text-slate-400">Buying a part creates one Vehicle expense with the actual cost. Installing does not add another expense.</p>
           <Textarea label="Notes" rows={2} value={pModal.notes} onChange={(e) => setPModal({ ...pModal, notes: e.target.value })} />
           <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setPModal(null)}>Cancel</Btn><Btn onClick={savePart} data-testid="save-part-btn">Save</Btn></div>
         </div>}

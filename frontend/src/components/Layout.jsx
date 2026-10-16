@@ -64,7 +64,7 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-background">
       {/* Desktop sidebar */}
-      <aside className="hidden lg:flex fixed inset-y-0 left-0 w-64 flex-col bg-[hsl(222_47%_11%)] z-30">
+      <aside className="no-print hidden lg:flex fixed inset-y-0 left-0 w-64 flex-col bg-[hsl(222_47%_11%)] z-30">
         <SidebarContent />
       </aside>
 
@@ -81,9 +81,9 @@ export default function Layout() {
         </div>
       )}
 
-      <div className="lg:pl-64">
+      <div className="lg:pl-64 print:pl-0">
         {/* Topbar */}
-        <header className="sticky top-0 z-20 h-16 bg-white/90 backdrop-blur border-b border-border flex items-center gap-4 px-4 sm:px-6">
+        <header className="no-print sticky top-0 z-20 h-16 bg-white/90 backdrop-blur border-b border-border flex items-center gap-4 px-4 sm:px-6">
           <button className="lg:hidden text-slate-600" onClick={() => setOpen(true)} data-testid="menu-toggle">
             <Menu size={22} />
           </button>

@@ -3,14 +3,17 @@ import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { jsPDF } from "jspdf";
 import { api, apiError } from "@/lib/api";
-import { fmtMoney, fmtDate, today, STATUS_META } from "@/lib/format";
+import { fmtMoney, fmtDate, today, newKey, STATUS_META } from "@/lib/format";
 import { Card, Btn, Input, Select, Textarea, Badge, Modal } from "@/components/common";
 import { Copy, Download, Save, Send, CreditCard, Plus, Trash2, ArrowLeft, Ban, Printer, AlertTriangle } from "lucide-react";
 
 const CATS = {
-  1: ["Standard", "Ribbon", "Strong Boy", "Uncovered"],
-  2: ["Standard", "Ribbon Black & Pink", "Strong Boy", "Uncovered Blue 16 Density"],
+  1: ["Standard", "Ribbon", "Candy", "Strong Boy", "Uncovered"],
+  2: ["Standard", "Ribbon Black & Pink", "Candy", "Strong Boy", "Uncovered Blue 16 Density"],
 };
+const RIBBON = ["Ribbon", "Ribbon Black & Pink", "Candy"];
+const priceCat = (zone, cat) => (cat === "Candy" ? (zone === 1 ? "Ribbon" : "Ribbon Black & Pink") : cat);
+const manualOnly = (cat, size) => RIBBON.includes(cat) && size === "1370x150";
 
 const emptyItem = () => ({ qty: 1, category: "Standard", size: "", description: "", unit_price: 0, price_override: false, tax: false, _needsConfig: false });
 
@@ -39,10 +42,11 @@ export default function InvoiceEditor() {
     else api.get("/invoices/next-number").then((d) => setNextNum(d.number));
   }, [id]);
 
-  const sizesFor = (zone, cat) => prices.filter((p) => p.zone === zone && p.category === cat && p.active).map((p) => p.size);
+  const sizesFor = (zone, cat) => prices.filter((p) => p.zone === zone && p.category === priceCat(zone, cat) && p.active).map((p) => p.size);
 
   const lookupPrice = (zone, cat, size) => {
-    const p = prices.find((x) => x.zone === zone && x.category === cat && x.size === size && x.active);
+    if (manualOnly(cat, size)) return { price: null, needsConfig: true };
+    const p = prices.find((x) => x.zone === zone && x.category === priceCat(zone, cat) && x.size === size && x.active);
     if (!p) return { price: null, needsConfig: false, missing: true };
     if (p.price == null || !p.confirmed) return { price: null, needsConfig: true };
     return { price: p.price, needsConfig: false };
@@ -58,41 +62,47 @@ export default function InvoiceEditor() {
 
   const onCatSize = (idx, patch) => {
     const it = { ...inv.items[idx], ...patch };
-    if (!it.price_override && it.category && it.size) {
+    patch.price_override = false;
+    if (it.category && it.size) {
       const r = lookupPrice(inv.zone, it.category, it.size);
       patch.unit_price = r.price ?? 0;
       patch._needsConfig = r.needsConfig || r.missing;
-    }
+    } else { patch.unit_price = 0; patch._needsConfig = false; }
     updateItem(idx, patch);
   };
 
+  const repriceItems = (items, zone) => items.map((it) => {
+    if (it.price_override) return it;
+    const cats = CATS[zone];
+    const cat = cats.includes(it.category) ? it.category : cats[0];
+    const r = lookupPrice(zone, cat, it.size);
+    return { ...it, category: cat, unit_price: r.price ?? 0, _needsConfig: !!it.size && (r.needsConfig || r.missing) };
+  });
+
+  const confirmReprice = (items, next) => {
+    const changes = items.map((it, i) => ({ it, n: next[i] })).filter(({ it, n }) => it.size && Number(it.unit_price) !== Number(n.unit_price));
+    if (!changes.length) return true;
+    const kept = items.filter((it) => it.price_override && it.size).length;
+    return window.confirm(`Apply new zone prices?\n\n${changes.map(({ it, n }) => `${it.category} ${it.size}: ${fmtMoney(it.unit_price)} → ${n._needsConfig ? "needs confirmation" : fmtMoney(n.unit_price)}`).join("\n")}${kept ? `\n\n${kept} manual price(s) will be kept.` : ""}`);
+  };
+
   const changeZone = (zone) => {
-    setInv((prev) => {
-      const items = prev.items.map((it) => {
-        if (it.price_override) return it;
-        const cats = CATS[zone];
-        const cat = cats.includes(it.category) ? it.category : cats[0];
-        const r = lookupPrice(zone, cat, it.size);
-        return { ...it, category: cat, unit_price: r.price ?? 0, _needsConfig: r.needsConfig || (it.size && r.missing) };
-      });
-      return { ...prev, zone, items };
-    });
+    const next = repriceItems(inv.items, zone);
+    if (!confirmReprice(inv.items, next)) return;
+    setInv({ ...inv, zone, items: next });
   };
 
   const selectCustomer = (cid) => {
     const c = customers.find((x) => x.id === cid);
     if (!c) { setInv((prev) => ({ ...prev, customer_id: "", customer_name: "" })); return; }
-    setInv((prev) => {
-      const zone = c.default_zone;
-      const items = prev.items.map((it) => {
-        if (it.price_override) return it;
-        const cats = CATS[zone];
-        const cat = cats.includes(it.category) ? it.category : cats[0];
-        const r = lookupPrice(zone, cat, it.size);
-        return { ...it, category: cat, unit_price: r.price ?? 0, _needsConfig: !!it.size && (r.needsConfig || r.missing) };
-      });
-      return { ...prev, customer_id: cid, customer_name: c.name, payment_terms: c.payment_terms, zone, items };
-    });
+    const zone = c.default_zone;
+    let items = inv.items;
+    if (zone !== inv.zone) {
+      const next = repriceItems(inv.items, zone);
+      if (confirmReprice(inv.items, next)) items = next;
+    }
+    setInv({ ...inv, customer_id: cid, customer_name: c.name, payment_terms: c.payment_terms, zone: items === inv.items ? inv.zone : zone, items, destination: inv.destination || c.city || "" });
+    if (!c.city) toast.info("This customer has no saved city. Please confirm the delivery destination.");
   };
 
   const totals = useMemo(() => {
@@ -104,12 +114,13 @@ export default function InvoiceEditor() {
     return { subtotal, tax, total, outstanding };
   }, [inv]);
 
-  const hasConfigIssue = inv.items.some((it) => it._needsConfig && it.size);
+  const hasConfigIssue = inv.items.some((it) => it._needsConfig && it.size && !(it.price_override && Number(it.unit_price) > 0));
+  const [busy, setBusy] = useState(false);
 
   const buildPayload = (status) => ({
     customer_id: inv.customer_id, customer_name: inv.customer_name, date: inv.date,
     due_date: inv.due_date, zone: inv.zone, payment_terms: inv.payment_terms,
-    reference: inv.reference, notes: inv.notes,
+    reference: inv.reference, notes: inv.notes, destination: inv.destination || "",
     items: inv.items.filter((it) => it.size || it.description).map((it) => ({
       qty: Number(it.qty) || 0, category: it.category, size: it.size, description: it.description,
       unit_price: Number(it.unit_price) || 0, price_override: it.price_override, tax: it.tax,
@@ -118,23 +129,24 @@ export default function InvoiceEditor() {
     tax_enabled: inv.tax_enabled, tax_rate: Number(inv.tax_rate) || 0, status,
   });
 
-  const validate = () => {
+  const validate = (status) => {
     if (!inv.customer_id) { toast.error("Select a customer"); return false; }
     if (!inv.items.some((it) => it.size || it.description)) { toast.error("Add at least one item"); return false; }
     if (inv.items.some((it) => (Number(it.qty) || 0) <= 0 && (it.size || it.description))) { toast.error("Quantity must be positive"); return false; }
-    if (hasConfigIssue) { toast.error("Some items need an administrator-confirmed price. Set a manual price or configure it in Settings."); return false; }
+    if (status !== "draft" && hasConfigIssue) { toast.error("Some items require administrator confirmation. Enter a manual price before issuing."); return false; }
     return true;
   };
 
   const save = async (status) => {
-    if (!validate()) return;
+    if (!validate(status) || busy) return;
+    setBusy(true);
     try {
       const payload = buildPayload(status);
       const res = id ? await api.put(`/invoices/${id}`, payload) : await api.post("/invoices", payload);
-      toast.success(status === "draft" ? "Saved as draft" : "Invoice issued");
+      toast.success(status === "draft" ? "Saved as draft" : "Invoice saved");
       nav(`/invoices/${res.id}`);
       if (id) { setInv(res); }
-    } catch (e) { toast.error(apiError(e)); }
+    } catch (e) { toast.error(apiError(e)); } finally { setBusy(false); }
   };
 
   const issueExisting = async () => {
@@ -143,18 +155,38 @@ export default function InvoiceEditor() {
   };
 
   const voidInvoice = async () => {
-    if (!window.confirm("Void this invoice? It will no longer count as a valid sale.")) return;
-    try { const res = await api.post(`/invoices/${id}/void`); setInv({ ...inv, status: res.status }); toast.success("Invoice voided"); }
+    const reason = window.prompt("Reason for voiding this invoice (required):");
+    if (reason === null) return;
+    if (!reason.trim()) return toast.error("A reason is required to void an invoice");
+    try { const res = await api.post(`/invoices/${id}/void`, { reason }); setInv({ ...inv, status: res.status, void_reason: reason }); toast.success("Invoice voided"); }
     catch (e) { toast.error(apiError(e)); }
   };
 
+  const deleteDraft = async () => {
+    if (!window.confirm("Delete this draft invoice permanently?")) return;
+    try { await api.del(`/invoices/${id}`); toast.success("Draft deleted"); nav("/invoices"); }
+    catch (e) { toast.error(apiError(e)); }
+  };
+
+  const reloadInv = async () => { const d = await api.get(`/invoices/${id}`); setInv(d); setPayRecords(d.payment_records || []); };
+
   const recordPayment = async () => {
+    if (busy) return;
+    if (!(Number(payModal.amount) > 0)) return toast.error("Amount must be greater than 0");
+    setBusy(true);
     try {
-      await api.post(`/invoices/${id}/payments`, payModal);
-      const d = await api.get(`/invoices/${id}`);
-      setInv(d); setPayRecords(d.payment_records || []); setPayModal(null);
+      await api.post(`/invoices/${id}/payments`, { ...payModal, amount: Number(payModal.amount) });
+      await reloadInv(); setPayModal(null);
       toast.success("Payment recorded");
-    } catch (e) { toast.error(apiError(e)); }
+    } catch (e) { toast.error(apiError(e)); } finally { setBusy(false); }
+  };
+
+  const reversePayment = async (p) => {
+    const reason = window.prompt(`Reverse payment of ${fmtMoney(p.amount)}? Enter a reason:`);
+    if (reason === null) return;
+    if (!reason.trim()) return toast.error("A reason is required");
+    try { await api.post(`/payments/${p.id}/reverse`, { reason }); await reloadInv(); toast.success("Payment reversed"); }
+    catch (e) { toast.error(apiError(e)); }
   };
 
   const invoiceText = () => {
@@ -167,6 +199,7 @@ export default function InvoiceEditor() {
     L.push(`Due Date: ${fmtDate(inv.due_date)}`);
     L.push(`Price Zone: Zone ${inv.zone}`);
     L.push(`Payment Terms: ${inv.payment_terms}`);
+    if (inv.destination) L.push(`Delivery To: ${inv.destination}`);
     if (inv.reference) L.push(`Reference: ${inv.reference}`);
     L.push("");
     L.push("ITEMS");
@@ -230,6 +263,8 @@ export default function InvoiceEditor() {
     doc.setTextColor(30, 41, 59); doc.setFont("helvetica", "bold");
     doc.text(inv.customer_name || "-", L, y);
     doc.setFont("helvetica", "normal");
+    const cust = customers.find((c) => c.id === inv.customer_id) || {};
+    [cust.phone, cust.address, inv.destination && `Deliver to: ${inv.destination}`].filter(Boolean).forEach((t, k) => doc.text(String(t), L, y + 13 * (k + 1)));
     doc.text(`Date: ${fmtDate(inv.date)}`, R - 180, y);
     doc.text(`Due: ${fmtDate(inv.due_date)}`, R - 180, y + 13);
     doc.text(`Zone ${inv.zone} | ${inv.payment_terms}`, R - 180, y + 26);
@@ -263,8 +298,8 @@ export default function InvoiceEditor() {
     if (inv.tax_enabled) row(`Tax (${inv.tax_rate}%)`, fmtMoney(totals.tax));
     doc.setDrawColor(226, 232, 240); doc.line(R - 180, y - 6, R, y - 6);
     row("TOTAL", fmtMoney(totals.total), true);
-    row("Amount Paid", fmtMoney(inv.amount_paid));
-    row("Outstanding", fmtMoney(totals.outstanding), true);
+    row("Payments Received", fmtMoney(inv.amount_paid));
+    row("Balance Due", fmtMoney(totals.outstanding), true);
     if (settings.banking_details) {
       y += 14; doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.text("Banking Details", L, y);
       doc.setFont("helvetica", "normal"); doc.setTextColor(100, 116, 139);
@@ -313,6 +348,7 @@ export default function InvoiceEditor() {
                 {(settings.payment_terms || ["Due on Delivery", "7 Days", "30 Days"]).map((t) => <option key={t}>{t}</option>)}
               </Select>
               <Input label="Reference (optional)" value={inv.reference} onChange={(e) => setInv({ ...inv, reference: e.target.value })} />
+              <Input label="Delivery Destination" value={inv.destination || ""} onChange={(e) => setInv({ ...inv, destination: e.target.value })} data-testid="invoice-destination-input" />
             </div>
           </Card>
 
@@ -346,11 +382,11 @@ export default function InvoiceEditor() {
                     <td className="pr-2">
                       <div className="flex items-center gap-1">
                         <input type="number" step="0.01" value={it.unit_price}
-                          onChange={(e) => updateItem(idx, { unit_price: e.target.value, price_override: true, _needsConfig: false })} data-testid={`item-price-${idx}`}
-                          className={`w-24 rounded border px-2 py-1.5 text-sm font-mono ${it._needsConfig && it.size ? "border-red-400 bg-red-50" : it.price_override ? "border-amber-400 bg-amber-50" : "border-input"}`} />
+                          onChange={(e) => updateItem(idx, { unit_price: e.target.value, price_override: true })} data-testid={`item-price-${idx}`}
+                          className={`w-24 rounded border px-2 py-1.5 text-sm font-mono ${it._needsConfig && it.size && !(it.price_override && Number(it.unit_price) > 0) ? "border-red-400 bg-red-50" : it.price_override ? "border-amber-400 bg-amber-50" : "border-input"}`} />
                         {it.price_override && <span title="Manual override" className="text-[10px] font-bold text-amber-600">M</span>}
                       </div>
-                      {it._needsConfig && it.size && <span className="text-[10px] text-red-600 flex items-center gap-0.5 mt-0.5"><AlertTriangle size={10} /> Needs price config</span>}
+                      {it._needsConfig && it.size && <span className="text-[10px] text-red-600 flex items-center gap-0.5 mt-0.5" data-testid={`item-needs-config-${idx}`}><AlertTriangle size={10} /> {manualOnly(it.category, it.size) ? "Manual price required" : "Requires administrator confirmation"}</span>}
                     </td>
                     <td className="text-right font-mono text-slate-700">{fmtMoney((Number(it.qty) || 0) * (Number(it.unit_price) || 0))}</td>
                     <td className="text-right">
@@ -388,28 +424,31 @@ export default function InvoiceEditor() {
 
           <Card className="p-5 space-y-2 no-print">
             <h3 className="font-bold text-slate-800 mb-3 font-display">Actions</h3>
-            {inv.status === "void" ? <p className="text-sm text-slate-400">This invoice is voided.</p> : (
+            {inv.status === "void" ? <p className="text-sm text-slate-400" data-testid="void-reason">This invoice is voided.{inv.void_reason ? ` Reason: ${inv.void_reason}` : ""}</p> : (
               <div className="grid grid-cols-2 gap-2">
-                <Btn variant="outline" onClick={() => save("draft")} data-testid="save-draft-btn"><Save size={15} /> Draft</Btn>
-                <Btn onClick={() => save("issued")} data-testid="issue-invoice-btn"><Send size={15} /> {id && inv.number ? "Update" : "Issue"}</Btn>
+                {(!inv.number) && <Btn variant="outline" disabled={busy} onClick={() => save("draft")} data-testid="save-draft-btn"><Save size={15} /> Draft</Btn>}
+                <Btn disabled={busy} onClick={() => save("issued")} data-testid="issue-invoice-btn"><Send size={15} /> {id && inv.number ? "Update" : "Issue"}</Btn>
                 <Btn variant="outline" onClick={copyInvoice} data-testid="copy-btn-2"><Copy size={15} /> Copy</Btn>
                 <Btn variant="outline" onClick={downloadPDF} data-testid="download-pdf-btn"><Download size={15} /> PDF</Btn>
-                <Btn variant="outline" onClick={() => window.print()}><Printer size={15} /> Print</Btn>
+                <Btn variant="outline" onClick={() => window.print()} data-testid="print-invoice-btn"><Printer size={15} /> Print</Btn>
                 {id && inv.status !== "draft" && totals.outstanding > 0 && (
-                  <Btn variant="success" onClick={() => setPayModal({ amount: totals.outstanding, method: "Cash", date: today(), reference: "", notes: "" })} data-testid="record-payment-btn"><CreditCard size={15} /> Pay</Btn>
+                  <Btn variant="success" onClick={() => setPayModal({ amount: totals.outstanding.toFixed(2), method: "Cash", date: today(), reference: "", notes: "", idempotency_key: newKey() })} data-testid="record-payment-btn"><CreditCard size={15} /> Pay</Btn>
                 )}
-                {id && inv.status === "draft" && <Btn variant="subtle" onClick={issueExisting}><Send size={15} /> Issue</Btn>}
-                {id && inv.status !== "void" && <Btn variant="ghost" className="col-span-2 text-red-600" onClick={voidInvoice}><Ban size={15} /> Void Invoice</Btn>}
+                {id && inv.status === "draft" && <Btn variant="subtle" onClick={issueExisting} data-testid="issue-existing-btn"><Send size={15} /> Issue</Btn>}
+                {id && inv.status === "draft" && !inv.number && <Btn variant="ghost" className="col-span-2 text-red-600" onClick={deleteDraft} data-testid="delete-draft-btn"><Trash2 size={15} /> Delete Draft</Btn>}
+                {id && inv.number && <Btn variant="ghost" className="col-span-2 text-red-600" onClick={voidInvoice} data-testid="void-invoice-btn"><Ban size={15} /> Void Invoice</Btn>}
               </div>
             )}
           </Card>
 
           {payRecords.length > 0 && (
-            <Card className="p-5">
+            <Card className="p-5 no-print">
               <h3 className="font-bold text-slate-800 mb-3 font-display">Payment History</h3>
               <div className="space-y-2">{payRecords.map((p) => (
-                <div key={p.id} className="flex justify-between text-sm border border-border rounded-lg px-3 py-2">
-                  <span className="text-slate-500">{fmtDate(p.date)} · {p.method}</span><span className="font-mono font-semibold text-emerald-600">{fmtMoney(p.amount)}</span>
+                <div key={p.id} className={`flex items-center justify-between gap-2 text-sm border border-border rounded-lg px-3 py-2 ${p.reversed ? "opacity-60" : ""}`} data-testid={`payment-row-${p.id}`}>
+                  <span className="text-slate-500">{fmtDate(p.date)} · {p.method}{p.reversed && <span className="ml-1 text-red-600 font-semibold">Reversed</span>}</span>
+                  <span className={`font-mono font-semibold ${p.reversed ? "line-through text-slate-400" : "text-emerald-600"}`}>{fmtMoney(p.amount)}</span>
+                  {!p.reversed && <button onClick={() => reversePayment(p)} className="text-xs text-red-500 hover:underline" data-testid={`reverse-payment-${p.id}`}>Reverse</button>}
                 </div>))}</div>
             </Card>
           )}
@@ -429,7 +468,7 @@ export default function InvoiceEditor() {
             <Input label="Reference (optional)" value={payModal.reference} onChange={(e) => setPayModal({ ...payModal, reference: e.target.value })} />
             <Textarea label="Notes (optional)" rows={2} value={payModal.notes} onChange={(e) => setPayModal({ ...payModal, notes: e.target.value })} />
             <p className="text-xs text-slate-400">Outstanding: {fmtMoney(totals.outstanding)}. Only confirmed payments count as received.</p>
-            <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setPayModal(null)}>Cancel</Btn><Btn variant="success" onClick={recordPayment} data-testid="confirm-payment-btn">Confirm Payment</Btn></div>
+            <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setPayModal(null)}>Cancel</Btn><Btn variant="success" disabled={busy} onClick={recordPayment} data-testid="confirm-payment-btn">{busy ? "Saving..." : "Confirm Payment"}</Btn></div>
           </div>
         )}
       </Modal>

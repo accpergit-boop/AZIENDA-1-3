@@ -6,7 +6,7 @@ import { fmtMoney, fmtDate, STATUS_META } from "@/lib/format";
 import { Card, Btn, Input, Select, Badge, Modal, PageHeader, Empty } from "@/components/common";
 import { Users, Search, Plus, Pencil, Eye } from "lucide-react";
 
-const blank = { name: "", phone: "", email: "", address: "", default_zone: 1, payment_terms: "Due on Delivery", active: true };
+const blank = { name: "", phone: "", email: "", address: "", city: "", notes: "", default_zone: 1, payment_terms: "Due on Delivery", active: true };
 
 export default function Customers() {
   const [list, setList] = useState([]);
@@ -90,7 +90,11 @@ export default function Customers() {
               <Input label="Phone" value={modal.phone} onChange={(e) => setModal({ ...modal, phone: e.target.value })} />
               <Input label="Email" value={modal.email} onChange={(e) => setModal({ ...modal, email: e.target.value })} />
             </div>
-            <Input label="Address" value={modal.address} onChange={(e) => setModal({ ...modal, address: e.target.value })} />
+            <div className="grid grid-cols-2 gap-3">
+              <Input label="Address" value={modal.address} onChange={(e) => setModal({ ...modal, address: e.target.value })} data-testid="customer-address-input" />
+              <Input label="City" value={modal.city || ""} onChange={(e) => setModal({ ...modal, city: e.target.value })} data-testid="customer-city-input" />
+            </div>
+            <Input label="Notes" value={modal.notes || ""} onChange={(e) => setModal({ ...modal, notes: e.target.value })} data-testid="customer-notes-input" />
             <div className="grid grid-cols-2 gap-3">
               <Select label="Default Price Zone" value={modal.default_zone} onChange={(e) => setModal({ ...modal, default_zone: Number(e.target.value) })}>
                 <option value={1}>Zone 1</option><option value={2}>Zone 2</option>
@@ -117,7 +121,11 @@ export default function Customers() {
               <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-400">Zone</p><p className="font-bold text-slate-800">Zone {profile.c.default_zone}</p></div>
               <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-400">Terms</p><p className="font-bold text-slate-800 text-sm">{profile.c.payment_terms}</p></div>
               <div className="rounded-lg bg-blue-50 p-3"><p className="text-xs text-slate-400">Total Invoiced</p><p className="font-bold text-slate-800 font-mono">{fmtMoney(profile.total_invoiced)}</p></div>
-              <div className="rounded-lg bg-red-50 p-3"><p className="text-xs text-slate-400">Outstanding</p><p className="font-bold text-red-600 font-mono">{fmtMoney(profile.outstanding)}</p></div>
+              <div className="rounded-lg bg-red-50 p-3"><p className="text-xs text-slate-400">Outstanding</p><p className="font-bold text-red-600 font-mono" data-testid="customer-outstanding">{fmtMoney(profile.outstanding)}</p></div>
+              <div className="rounded-lg bg-emerald-50 p-3"><p className="text-xs text-slate-400">Payments Received</p><p className="font-bold text-emerald-700 font-mono">{fmtMoney(profile.payments_received)}</p></div>
+              <div className="rounded-lg bg-red-50 p-3"><p className="text-xs text-slate-400">Overdue</p><p className="font-bold text-red-700 font-mono">{fmtMoney(profile.overdue)}</p></div>
+              <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-400">Open Orders</p><p className="font-bold text-slate-800 font-mono">{profile.open_orders?.length || 0}</p></div>
+              <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-400">Upcoming Deliveries</p><p className="font-bold text-slate-800 font-mono">{profile.upcoming_deliveries?.length || 0}</p></div>
             </div>
             <div>
               <h4 className="font-bold text-slate-700 mb-2 text-sm">Invoice History</h4>

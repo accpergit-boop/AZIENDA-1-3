@@ -27,6 +27,7 @@ _add(1, "Ribbon", {
     "910x100": 215.00, "910x120": 258.00, "910x150": 322.00,
     "1070x100": 255.00, "1070x120": 285.00,
     "1370x120": 335.00,
+    "1370x150": None,  # ALWAYS manual price + admin confirmation
 })
 _add(1, "Strong Boy", {
     "760x125": 285.00, "910x125": 375.00, "1070x125": 410.00, "1370x125": 550.00,
@@ -76,10 +77,15 @@ TRAILERS = [
 ]
 
 FLEET = [
-    {"name": "Disk", "registration": "", "vtype": "Disk", "capacity": "", "length": "", "available": True, "notes": ""},
-    {"name": "Truck", "registration": "", "vtype": "Truck", "capacity": "", "length": "", "available": True, "notes": ""},
-    {"name": "Bakkie", "registration": "", "vtype": "Bakkie", "capacity": "", "length": "", "available": True, "notes": ""},
+    {"name": "Mighty Hyundai Truck", "registration": "", "vtype": "Medium Truck", "capacity": "", "length": "", "available": True, "notes": ""},
+    {"name": "Hino 500", "registration": "", "vtype": "Large Truck", "capacity": "", "length": "", "available": True, "notes": "Largest truck"},
+    {"name": "Hino 300", "registration": "", "vtype": "Medium Truck", "capacity": "", "length": "", "available": True, "notes": ""},
+    {"name": "Trailer (1)", "registration": "", "vtype": "Trailer", "capacity": "", "length": "9 m", "available": True, "notes": "Largest trailer"},
+    {"name": "Trailer (2)", "registration": "", "vtype": "Trailer", "capacity": "", "length": "5 m", "available": True, "notes": ""},
+    {"name": "Trailer (3)", "registration": "", "vtype": "Trailer", "capacity": "", "length": "4 m", "available": True, "notes": ""},
 ]
+RETIRED_PLACEHOLDERS = ["Disk", "Truck", "Bakkie"]
+VEHICLE_TYPES = ["Medium Truck", "Large Truck", "Small Truck", "Bakkie", "Trailer", "Other"]
 
 EXPENSE_CATEGORIES = ["General", "Materials", "Fuel", "Salaries", "Rent", "Utilities", "Vehicle", "Maintenance", "Other"]
 
@@ -95,6 +101,10 @@ DEFAULT_SETTINGS = {
     "default_payment_terms": "Due on Delivery",
     "resting_hours": 12,
     "safety_stock": 10,
-    "departments": ["Production", "Cutting", "Dispatch", "Admin"],
+    "departments": ["Production", "Cutting", "Sewing", "Mattress Processing", "Dispatch", "Administration", "Drivers"],
     "expense_categories": EXPENSE_CATEGORIES,
+    "vehicle_types": VEHICLE_TYPES,
+    "product_categories": ["Standard", "Ribbon", "Ribbon Black & Pink", "Candy", "Strong Boy", "Uncovered", "Uncovered Blue 16 Density"],
+    "bundle_sizes": {"default": 5, "50": 10, "75": 10},
+    "timezone": "Africa/Johannesburg",
 }

@@ -84,4 +84,8 @@
 
 @media print {
   .no-print { display: none !important; }
+  body, .bg-background { background: #fff !important; }
+  main { padding: 0 !important; max-width: none !important; }
+  input, select, textarea { border: none !important; background: transparent !important; appearance: none; -webkit-appearance: none; }
+  .shadow-sm, .shadow, .shadow-md { box-shadow: none !important; }
 }

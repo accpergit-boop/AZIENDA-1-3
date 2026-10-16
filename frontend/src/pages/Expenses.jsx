@@ -6,7 +6,7 @@ import { Card, Btn, Input, Select, Badge, Modal, PageHeader, Empty } from "@/com
 import { Banknote, Plus, TrendingUp, TrendingDown, Wallet, Trash2, Pencil } from "lucide-react";
 
 const CATS = ["General", "Materials", "Fuel", "Salaries", "Rent", "Utilities", "Vehicle", "Maintenance", "Other"];
-const blank = () => ({ description: "", amount: "", date: today(), category: "General" });
+const blank = () => ({ description: "", amount: "", date: today(), category: "General", payment_method: "Cash", reference: "", vehicle_id: "", notes: "" });
 
 function Stat({ label, value, icon: Icon, tone, testid }) {
   return (
@@ -30,39 +30,49 @@ function ProfitPanel({ title, p, testid }) {
       <div className="space-y-1.5 text-sm">
         <div className="flex justify-between"><span className="text-slate-500">Revenue (payments)</span><span className="font-mono text-emerald-700">{fmtMoney(p?.revenue)}</span></div>
         <div className="flex justify-between"><span className="text-slate-500">Expenses</span><span className="font-mono text-orange-600">- {fmtMoney(p?.expenses)}</span></div>
-        <div className="flex justify-between border-t border-border pt-2 mt-2"><span className="font-bold text-slate-800">Profit</span><span className={`font-mono font-bold ${neg ? "text-red-600" : "text-slate-900"}`}>{fmtMoney(p?.profit)}</span></div>
+        <div className="flex justify-between border-t border-border pt-2 mt-2"><span className="font-bold text-slate-800">Estimated Result</span><span className={`font-mono font-bold ${neg ? "text-red-600" : "text-slate-900"}`}>{fmtMoney(p?.profit)}</span></div>
       </div>
     </Card>
   );
 }
 
 export default function Expenses() {
-  const [list, setList] = useState([]);
+  const [list, setList] = useState(null);
   const [report, setReport] = useState(null);
+  const [costs, setCosts] = useState(null);
+  const [vehicles, setVehicles] = useState([]);
   const [modal, setModal] = useState(null);
   const [cat, setCat] = useState("");
   const [month, setMonth] = useState("");
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const load = () => { api.get("/expenses").then(setList); api.get("/reports/profit").then(setReport); };
-  useEffect(() => { load(); }, []);
+  const load = () => {
+    api.get("/expenses").then(setList).catch((e) => { toast.error(apiError(e)); setList([]); });
+    api.get("/reports/profit").then(setReport); api.get("/reports/costs").then(setCosts);
+  };
+  useEffect(() => { load(); api.get("/vehicles").then(setVehicles); }, []);
 
-  const filtered = useMemo(() => list.filter((e) => (!cat || e.category === cat) && (!month || (e.date || "").startsWith(month))), [list, cat, month]);
+  const filtered = useMemo(() => (list || []).filter((e) => (!cat || e.category === cat) && (!month || (e.date || "").startsWith(month)) && (!q || `${e.description} ${e.reference || ""}`.toLowerCase().includes(q.toLowerCase()))), [list, cat, month, q]);
   const filteredTotal = filtered.reduce((s, e) => s + (e.amount || 0), 0);
 
   const save = async () => {
     if (!modal.description.trim()) return toast.error("Description required");
     if (!(Number(modal.amount) > 0)) return toast.error("Amount must be greater than 0");
+    if (busy) return; setBusy(true);
     try {
       const payload = { ...modal, amount: Number(modal.amount) };
       if (modal.id) await api.put(`/expenses/${modal.id}`, payload);
       else await api.post("/expenses", payload);
       toast.success("Expense saved"); setModal(null); load();
-    } catch (e) { toast.error(apiError(e)); }
+    } catch (e) { toast.error(apiError(e)); } finally { setBusy(false); }
   };
 
   const remove = async (e) => {
-    if (!window.confirm(`Delete expense "${e.description}"?`)) return;
-    try { await api.del(`/expenses/${e.id}`); toast.success("Expense deleted"); load(); } catch (err) { toast.error(apiError(err)); }
+    const reason = window.prompt(`Void expense "${e.description}" (${fmtMoney(e.amount)})? It stays in history. Reason:`);
+    if (reason === null) return;
+    if (!reason.trim()) return toast.error("A reason is required");
+    try { await api.post(`/expenses/${e.id}/void`, { reason }); toast.success("Expense voided"); load(); } catch (err) { toast.error(apiError(err)); }
   };
 
   return (
@@ -72,24 +82,34 @@ export default function Expenses() {
       </PageHeader>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Stat label="Week Profit" value={fmtMoney(report?.week.profit)} icon={Wallet} tone="bg-blue-50 text-blue-600" testid="stat-week-profit" />
-        <Stat label="Month Profit" value={fmtMoney(report?.month.profit)} icon={TrendingUp} tone="bg-emerald-50 text-emerald-600" testid="stat-month-profit" />
-        <Stat label="Total Expenses" value={fmtMoney(report?.total_expenses)} icon={TrendingDown} tone="bg-orange-50 text-orange-600" testid="stat-total-expenses" />
+        <Stat label="Expenses Today" value={fmtMoney(report?.today?.expenses)} icon={TrendingDown} tone="bg-orange-50 text-orange-600" testid="stat-today-expenses" />
+        <Stat label="Expenses This Week" value={fmtMoney(report?.week.expenses)} icon={Wallet} tone="bg-orange-50 text-orange-600" testid="stat-week-expenses" />
+        <Stat label="Expenses This Month" value={fmtMoney(report?.month.expenses)} icon={TrendingUp} tone="bg-orange-50 text-orange-600" testid="stat-month-expenses" />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <ProfitPanel title={`This week (from ${fmtDate(report?.week_start)})`} p={report?.week} testid="profit-week" />
         <ProfitPanel title={`This month (from ${fmtDate(report?.month_start)})`} p={report?.month} testid="profit-month" />
       </div>
-      <p className="text-xs text-slate-400 -mt-3">Profit = payments received − daily expenses − vehicle expenses, repairs & maintenance.</p>
+      <p className="text-xs text-slate-400 -mt-3">Estimated cash result — incomplete cost data. Payments received (by payment date) − expenses paid (by expense date), including fleet costs marked Done and spare-part purchases, each counted once.</p>
+
+      {costs && (Object.keys(costs.by_category).length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Card className="p-5" data-testid="costs-by-category"><p className="text-xs font-semibold text-slate-500 uppercase mb-3">All costs by category</p>
+            {Object.entries(costs.by_category).map(([k, v]) => <div key={k} className="flex justify-between text-sm py-1"><span className="text-slate-600">{k}</span><span className="font-mono">{fmtMoney(v)}</span></div>)}</Card>
+          <Card className="p-5" data-testid="costs-by-vehicle"><p className="text-xs font-semibold text-slate-500 uppercase mb-3">Costs by vehicle</p>
+            {Object.keys(costs.by_vehicle).length === 0 ? <p className="text-sm text-slate-400">No vehicle costs yet.</p> : Object.entries(costs.by_vehicle).map(([k, v]) => <div key={k} className="flex justify-between text-sm py-1"><span className="text-slate-600">{k}</span><span className="font-mono">{fmtMoney(v)}</span></div>)}</Card>
+        </div>
+      )}
 
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-end gap-3 p-4 border-b border-border">
           <div className="w-44"><Select label="Category" value={cat} onChange={(e) => setCat(e.target.value)} data-testid="expense-filter-category"><option value="">All</option>{CATS.map((c) => <option key={c}>{c}</option>)}</Select></div>
           <div className="w-44"><Input label="Month" type="month" value={month} onChange={(e) => setMonth(e.target.value)} data-testid="expense-filter-month" /></div>
+          <div className="w-56"><Input label="Search" placeholder="Description or reference" value={q} onChange={(e) => setQ(e.target.value)} data-testid="expense-search-input" /></div>
           <div className="ml-auto text-sm text-slate-500">Filtered total: <span className="font-mono font-bold text-slate-800" data-testid="expense-filtered-total">{fmtMoney(filteredTotal)}</span></div>
         </div>
-        {filtered.length === 0 ? <Empty icon={Banknote} title="No expenses recorded" hint="Add your first daily expense." /> : (
+        {list === null ? <p className="p-6 text-sm text-slate-400">Loading...</p> : filtered.length === 0 ? <Empty icon={Banknote} title="No expenses recorded" hint="Add your first daily expense." /> : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm min-w-[640px]">
               <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
@@ -98,12 +118,14 @@ export default function Expenses() {
               <tbody>{filtered.map((e) => (
                 <tr key={e.id} className="border-b border-border/60 hover:bg-slate-50" data-testid={`expense-row-${e.id}`}>
                   <td className="px-4 py-3 text-slate-500">{fmtDate(e.date)}</td>
-                  <td className="px-4 font-semibold text-slate-800">{e.description}</td>
+                  <td className="px-4 font-semibold text-slate-800">{e.description}{e.source_key && <span className="ml-2 text-[10px] text-blue-600 font-semibold">FLEET PART</span>}</td>
                   <td className="px-4"><Badge>{e.category}</Badge></td>
                   <td className="px-4 text-right font-mono text-slate-800">{fmtMoney(e.amount)}</td>
                   <td className="px-4 text-right whitespace-nowrap">
-                    <button onClick={() => setModal({ ...e })} className="text-slate-400 hover:text-primary mr-3" data-testid={`edit-expense-${e.id}`}><Pencil size={15} /></button>
-                    <button onClick={() => remove(e)} className="text-slate-400 hover:text-red-600" data-testid={`delete-expense-${e.id}`}><Trash2 size={15} /></button>
+                    {!e.source_key && <>
+                      <button onClick={() => setModal({ ...e })} className="text-slate-400 hover:text-primary mr-3" data-testid={`edit-expense-${e.id}`}><Pencil size={15} /></button>
+                      <button onClick={() => remove(e)} className="text-slate-400 hover:text-red-600" data-testid={`delete-expense-${e.id}`}><Trash2 size={15} /></button>
+                    </>}
                   </td>
                 </tr>))}</tbody>
             </table>
@@ -121,7 +143,18 @@ export default function Expenses() {
           <Select label="Category" value={modal.category} onChange={(e) => setModal({ ...modal, category: e.target.value })} data-testid="expense-category-select">
             {CATS.map((c) => <option key={c}>{c}</option>)}
           </Select>
-          <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setModal(null)}>Cancel</Btn><Btn onClick={save} data-testid="save-expense-btn">Save Expense</Btn></div>
+          <div className="grid grid-cols-2 gap-3">
+            <Select label="Payment Method" value={modal.payment_method || ""} onChange={(e) => setModal({ ...modal, payment_method: e.target.value })} data-testid="expense-method-select">
+              {["Cash", "Bank Transfer", "Card", "Other"].map((m) => <option key={m}>{m}</option>)}
+            </Select>
+            <Input label="Reference" value={modal.reference || ""} onChange={(e) => setModal({ ...modal, reference: e.target.value })} data-testid="expense-reference-input" />
+          </div>
+          <Select label="Related Vehicle (optional)" value={modal.vehicle_id || ""} onChange={(e) => setModal({ ...modal, vehicle_id: e.target.value })} data-testid="expense-vehicle-select">
+            <option value="">None</option>{vehicles.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+          </Select>
+          <p className="text-[11px] text-slate-400">Repairs & maintenance for a vehicle are recorded in Fleet — don't enter them here too.</p>
+          <Input label="Notes" value={modal.notes || ""} onChange={(e) => setModal({ ...modal, notes: e.target.value })} data-testid="expense-notes-input" />
+          <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setModal(null)}>Cancel</Btn><Btn disabled={busy} onClick={save} data-testid="save-expense-btn">Save Expense</Btn></div>
         </div>}
       </Modal>
     </div>

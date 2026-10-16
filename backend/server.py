@@ -10,7 +10,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from typing import List, Optional, Any
 from datetime import datetime, timezone, date, timedelta
+from decimal import Decimal, ROUND_HALF_UP
+from zoneinfo import ZoneInfo
 import uuid, logging, jwt, bcrypt
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 import seed_data
 
@@ -28,19 +32,45 @@ api = APIRouter(prefix="/api")
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
+TZ = ZoneInfo("Africa/Johannesburg")
+
+def local_now():
+    return datetime.now(TZ)
+
+def local_today():
+    return local_now().date()
+
 def today_str():
-    return date.today().isoformat()
+    return local_today().isoformat()
 
 def new_id():
     return str(uuid.uuid4())
 
+def D(x):
+    return Decimal(str(x or 0))
+
 def r2(x):
-    return round(float(x or 0) + 1e-9, 2)
+    return float(D(x).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+def dsum(vals):
+    return r2(sum((D(v) for v in vals), Decimal("0")))
 
 def clean(doc):
     if doc and "_id" in doc:
         doc.pop("_id", None)
     return doc
+
+def parse_dt(s):
+    if not s:
+        return None
+    dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    return dt.replace(tzinfo=TZ) if dt.tzinfo is None else dt
+
+async def log_audit(entity, eid, action, user, before=None, after=None, reason=""):
+    strip = lambda d: {k: v for k, v in (d or {}).items() if k not in ("_id", "password_hash", "audit")} if isinstance(d, dict) else d
+    await db.audit_log.insert_one({"id": new_id(), "entity": entity, "entity_id": eid, "action": action,
+                                   "before": strip(before), "after": strip(after), "reason": reason or "",
+                                   "user": (user or {}).get("email", "system"), "at": now_iso()})
 
 # ---------------- Auth ----------------
 def hash_pw(p): return bcrypt.hashpw(p.encode(), bcrypt.gensalt()).decode()
@@ -101,6 +131,11 @@ async def update_doc(coll, _id, data):
         raise HTTPException(404, "Not found")
     return clean(await db[coll].find_one({"id": _id}, {"_id": 0}))
 
+async def next_ref(key, prefix):
+    year = local_today().year
+    c = await db.counters.find_one_and_update({"id": f"{key}-{year}"}, {"$inc": {"seq": 1}}, upsert=True, return_document=ReturnDocument.AFTER)
+    return f"{prefix}-{year}-{c['seq']:04d}"
+
 async def listall(coll, flt=None, sort=None):
     cur = db[coll].find(flt or {}, {"_id": 0})
     if sort:
@@ -113,9 +148,11 @@ class CustomerIn(BaseModel):
     phone: Optional[str] = ""
     email: Optional[str] = ""
     address: Optional[str] = ""
+    city: Optional[str] = ""
     default_zone: int = 1
     payment_terms: Optional[str] = "Due on Delivery"
     active: bool = True
+    notes: Optional[str] = ""
 
 @api.get("/customers")
 async def get_customers(user=Depends(get_current_user)):
@@ -132,11 +169,19 @@ async def edit_customer(cid: str, body: CustomerIn, user=Depends(get_current_use
 @api.get("/customers/{cid}/summary")
 async def customer_summary(cid: str, user=Depends(get_current_user)):
     invs = await listall("invoices", {"customer_id": cid}, ("created_at", -1))
-    invs = [i for i in invs if i.get("status") != "void"]
-    pays = await listall("payments", {"customer_id": cid}, ("created_at", -1))
-    outstanding = r2(sum(i.get("outstanding", 0) for i in invs if i.get("status") != "draft"))
-    total_inv = r2(sum(i.get("total", 0) for i in invs if i.get("status") != "draft"))
-    return {"invoices": invs, "payments": pays, "outstanding": outstanding, "total_invoiced": total_inv}
+    for i in invs:
+        i["status"] = derive_status(i)
+    valid = [i for i in invs if i["status"] not in ("void", "draft")]
+    pays = [p for p in await listall("payments", {"customer_id": cid}, ("created_at", -1)) if not p.get("reversed")]
+    orders = await listall("orders", {"customer_id": cid}, ("created_at", -1))
+    dels = await listall("deliveries", {"customer_id": cid}, ("created_at", -1))
+    return {"invoices": invs, "payments": pays,
+            "outstanding": dsum(i.get("outstanding", 0) for i in valid),
+            "overdue": dsum(i.get("outstanding", 0) for i in valid if i["status"] == "overdue"),
+            "total_invoiced": dsum(i.get("total", 0) for i in valid),
+            "payments_received": dsum(p.get("amount", 0) for p in pays),
+            "open_orders": [o for o in orders if o.get("status") in OPEN_ORDER_STATUSES],
+            "upcoming_deliveries": [d for d in dels if d.get("status") in ("Planned", "Assigned", "Ready")]}
 
 # ---------------- Prices ----------------
 class PriceIn(BaseModel):
@@ -154,42 +199,83 @@ async def get_prices(user=Depends(get_current_user)):
 @api.post("/prices")
 async def add_price(body: PriceIn, user=Depends(get_current_user)):
     d = body.model_dump()
-    d["confirmed"] = d.get("price") is not None
-    return await insert("prices", d)
+    if await db.prices.find_one({"zone": d["zone"], "category": d["category"], "size": d["size"]}):
+        raise HTTPException(400, "A price for this zone, category and size already exists")
+    d["confirmed"] = d.get("price") is not None and d.get("confirmed", True)
+    d["updated_at"] = now_iso()
+    rec = await insert("prices", d)
+    await log_audit("price", rec["id"], "created", user, after=rec)
+    return rec
 
 @api.put("/prices/{pid}")
 async def edit_price(pid: str, body: PriceIn, user=Depends(get_current_user)):
+    before = await db.prices.find_one({"id": pid}, {"_id": 0})
     d = body.model_dump()
-    d["confirmed"] = d.get("price") is not None
-    return await update_doc("prices", pid, d)
+    d["confirmed"] = d.get("price") is not None and d.get("confirmed", True)
+    rec = await update_doc("prices", pid, d)
+    await log_audit("price", pid, "updated", user, before=before, after=rec)
+    return rec
+
+RIBBON_FAMILY = {"Ribbon", "Ribbon Black & Pink", "Candy"}
+MANUAL_ONLY_SIZES = {"1370x150"}
+
+def price_category(zone, category):
+    if category == "Candy":
+        return "Ribbon" if int(zone) == 1 else "Ribbon Black & Pink"
+    return category
+
+def is_manual_only(category, size):
+    return category in RIBBON_FAMILY and size in MANUAL_ONLY_SIZES
+
+async def resolve_price(zone, category, size):
+    if is_manual_only(category, size):
+        return {"found": True, "price": None, "needs_config": True, "reason": "Ribbon 1370x150 always requires manual price entry and administrator confirmation"}
+    p = await db.prices.find_one({"zone": int(zone), "category": price_category(zone, category), "size": size, "active": True}, {"_id": 0})
+    if not p:
+        return {"found": False, "price": None, "needs_config": True, "reason": "No matching price configured"}
+    if p.get("price") is None or not p.get("confirmed"):
+        return {"found": True, "price": None, "needs_config": True, "reason": "Requires administrator confirmation"}
+    return {"found": True, "price": p["price"]}
 
 @api.get("/prices/lookup")
 async def price_lookup(zone: int, category: str, size: str, user=Depends(get_current_user)):
-    p = await db.prices.find_one({"zone": zone, "category": category, "size": size, "active": True}, {"_id": 0})
-    if not p:
-        return {"found": False, "price": None, "reason": "No matching price configured"}
-    if p.get("price") is None or not p.get("confirmed"):
-        return {"found": True, "price": None, "needs_config": True, "reason": "Price requires administrator confirmation"}
-    return {"found": True, "price": p["price"]}
+    return await resolve_price(zone, category, size)
 
 # ---------------- Invoice calc ----------------
 def compute_invoice(inv):
-    subtotal = r2(sum(r2(it.get("qty", 0) * (it.get("unit_price") or 0)) for it in inv.get("items", [])))
-    discount = r2(inv.get("discount", 0))
-    extra = r2(inv.get("extra_charges", 0))
-    taxed = max(subtotal - discount + extra, 0)
-    tax_amount = r2(taxed * inv.get("tax_rate", 0) / 100) if inv.get("tax_enabled") else 0.0
-    total = r2(taxed + tax_amount)
-    paid = r2(inv.get("amount_paid", 0))
-    outstanding = r2(total - paid)
+    q = lambda x: x.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    subtotal = Decimal("0")
     for it in inv.get("items", []):
-        it["line_total"] = r2(it.get("qty", 0) * (it.get("unit_price") or 0))
-    inv["subtotal"] = subtotal
-    inv["tax_amount"] = tax_amount
-    inv["total"] = total
-    inv["amount_paid"] = paid
-    inv["outstanding"] = outstanding
+        lt = q(D(it.get("qty")) * D(it.get("unit_price")))
+        it["line_total"] = float(lt)
+        subtotal += lt
+    taxed = max(subtotal - D(inv.get("discount")) + D(inv.get("extra_charges")), Decimal("0"))
+    tax_amount = q(taxed * D(inv.get("tax_rate")) / 100) if inv.get("tax_enabled") else Decimal("0")
+    total = q(taxed + tax_amount)
+    paid = q(D(inv.get("amount_paid")))
+    inv["subtotal"] = float(q(subtotal))
+    inv["tax_amount"] = float(tax_amount)
+    inv["total"] = float(total)
+    inv["amount_paid"] = float(paid)
+    inv["outstanding"] = float(total - paid)
     return inv
+
+async def validate_for_issue(inv):
+    items = inv.get("items", [])
+    if not items:
+        raise HTTPException(400, "Cannot issue an invoice without items")
+    for n, it in enumerate(items, 1):
+        label = f"Line {n} ({it.get('category', '')} {it.get('size') or it.get('description', '')})".strip()
+        if (it.get("qty") or 0) <= 0:
+            raise HTTPException(400, f"{label}: quantity must be greater than 0")
+        if (it.get("unit_price") or 0) <= 0:
+            raise HTTPException(400, f"{label}: price missing. Requires administrator confirmation or manual price")
+        if it.get("size") and not it.get("price_override"):
+            r = await resolve_price(inv.get("zone", 1), it.get("category", ""), it["size"])
+            if r.get("price") is None:
+                raise HTTPException(400, f"{label}: {r['reason']}. Enter a manual price to continue")
+            if r2(r["price"]) != r2(it.get("unit_price")):
+                it["price_override"] = True
 
 def derive_status(inv):
     if inv.get("status") == "void":
@@ -215,6 +301,7 @@ class InvoiceItem(BaseModel):
     unit_price: Optional[float] = 0
     price_override: bool = False
     tax: bool = False
+    order_id: Optional[str] = ""
 
 class InvoiceIn(BaseModel):
     customer_id: str
@@ -224,6 +311,8 @@ class InvoiceIn(BaseModel):
     zone: int = 1
     payment_terms: str = "Due on Delivery"
     reference: Optional[str] = ""
+    destination: Optional[str] = ""
+    order_ids: List[str] = []
     notes: Optional[str] = ""
     items: List[InvoiceItem] = []
     discount: float = 0
@@ -235,10 +324,10 @@ class InvoiceIn(BaseModel):
 async def next_invoice_number():
     s = await db.settings.find_one({"id": "singleton"}) or {}
     prefix = s.get("invoice_prefix", "IQF")
-    year = date.today().year
+    year = local_today().year
     counter = await db.counters.find_one_and_update(
         {"id": f"inv-{year}"}, {"$inc": {"seq": 1}},
-        upsert=True, return_document=True)
+        upsert=True, return_document=ReturnDocument.AFTER)
     seq = counter["seq"]
     return f"{prefix}-{year}-{seq:04d}"
 
@@ -246,7 +335,7 @@ async def next_invoice_number():
 async def get_next_number(user=Depends(get_current_user)):
     s = await db.settings.find_one({"id": "singleton"}) or {}
     prefix = s.get("invoice_prefix", "IQF")
-    year = date.today().year
+    year = local_today().year
     c = await db.counters.find_one({"id": f"inv-{year}"})
     seq = (c["seq"] + 1) if c else 1
     return {"number": f"{prefix}-{year}-{seq:04d}"}
@@ -267,6 +356,17 @@ async def get_invoice(iid: str, user=Depends(get_current_user)):
     inv["payment_records"] = await listall("payments", {"invoice_id": iid}, ("created_at", -1))
     return inv
 
+@api.delete("/invoices/{iid}")
+async def delete_draft_invoice(iid: str, user=Depends(get_current_user)):
+    inv = await db.invoices.find_one({"id": iid}, {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    if inv.get("status") != "draft" or inv.get("number"):
+        raise HTTPException(400, "Issued invoices cannot be deleted. Use Void with a reason instead")
+    await db.invoices.delete_one({"id": iid})
+    await log_audit("invoice", iid, "draft_deleted", user, before=inv)
+    return {"ok": True}
+
 async def _prepare_invoice(body: InvoiceIn):
     cust = await db.customers.find_one({"id": body.customer_id})
     if not cust:
@@ -283,6 +383,8 @@ async def _prepare_invoice(body: InvoiceIn):
 async def create_invoice(body: InvoiceIn, user=Depends(get_current_user)):
     inv = await _prepare_invoice(body)
     if inv["status"] != "draft":
+        inv["status"] = "issued"
+        await validate_for_issue(inv)
         inv["number"] = await next_invoice_number()
         inv["issued_at"] = now_iso()
         inv["audit"] = [{"action": "issued", "at": now_iso(), "by": user["email"]}]
@@ -303,21 +405,36 @@ async def update_invoice(iid: str, body: InvoiceIn, user=Depends(get_current_use
     compute_invoice(inv)
     inv["number"] = existing.get("number")
     inv["audit"] = existing.get("audit", [])
-    # If moving from draft to issued, assign number
+    if existing.get("number"):
+        inv["status"] = existing.get("status")
+    if inv["status"] != "draft":
+        await validate_for_issue(inv)
+        compute_invoice(inv)
+        if inv["total"] < inv["amount_paid"]:
+            raise HTTPException(400, f"Invoice total cannot be lower than payments already received (R {inv['amount_paid']:.2f})")
     if existing.get("status") == "draft" and inv["status"] != "draft" and not inv["number"]:
+        inv["status"] = "issued"
         inv["number"] = await next_invoice_number()
         inv["issued_at"] = now_iso()
         inv["audit"].append({"action": "issued", "at": now_iso(), "by": user["email"]})
     else:
         inv["audit"].append({"action": "edited", "at": now_iso(), "by": user["email"]})
-    return await update_doc("invoices", iid, inv)
+    rec = await update_doc("invoices", iid, inv)
+    if existing.get("number"):
+        await log_audit("invoice", iid, "issued_invoice_edited", user,
+                        before={"items": existing.get("items"), "total": existing.get("total")},
+                        after={"items": rec.get("items"), "total": rec.get("total")})
+    return rec
 
 @api.post("/invoices/{iid}/issue")
 async def issue_invoice(iid: str, user=Depends(get_current_user)):
     inv = await db.invoices.find_one({"id": iid})
     if not inv:
         raise HTTPException(404, "Invoice not found")
-    upd = {}
+    if inv.get("status") == "void":
+        raise HTTPException(400, "Cannot issue a voided invoice")
+    await validate_for_issue(inv)
+    upd = {"items": inv["items"]}
     if not inv.get("number"):
         upd["number"] = await next_invoice_number()
         upd["issued_at"] = now_iso()
@@ -327,14 +444,25 @@ async def issue_invoice(iid: str, user=Depends(get_current_user)):
     upd["audit"] = audit
     return await update_doc("invoices", iid, upd)
 
+class ReasonIn(BaseModel):
+    reason: str
+
 @api.post("/invoices/{iid}/void")
-async def void_invoice(iid: str, user=Depends(get_current_user)):
-    inv = await db.invoices.find_one({"id": iid})
+async def void_invoice(iid: str, body: ReasonIn, user=Depends(get_current_user)):
+    inv = await db.invoices.find_one({"id": iid}, {"_id": 0})
     if not inv:
         raise HTTPException(404, "Invoice not found")
+    if not body.reason.strip():
+        raise HTTPException(400, "A reason is required to void an invoice")
+    if inv.get("status") == "void":
+        raise HTTPException(400, "Invoice is already void")
+    if await db.payments.count_documents({"invoice_id": iid, "reversed": {"$ne": True}}):
+        raise HTTPException(400, "This invoice has payments. Reverse the payments first, then void it")
     audit = inv.get("audit", [])
-    audit.append({"action": "voided", "at": now_iso(), "by": user["email"]})
-    return await update_doc("invoices", iid, {"status": "void", "audit": audit})
+    audit.append({"action": "voided", "reason": body.reason, "at": now_iso(), "by": user["email"]})
+    rec = await update_doc("invoices", iid, {"status": "void", "void_reason": body.reason, "audit": audit})
+    await log_audit("invoice", iid, "voided", user, before={"status": inv.get("status")}, after={"status": "void"}, reason=body.reason)
+    return rec
 
 # ---------------- Payments ----------------
 class PaymentIn(BaseModel):
@@ -343,40 +471,72 @@ class PaymentIn(BaseModel):
     date: str = Field(default_factory=today_str)
     reference: Optional[str] = ""
     notes: Optional[str] = ""
+    idempotency_key: Optional[str] = None
+
+async def recalc_invoice_payments(iid):
+    inv = await db.invoices.find_one({"id": iid}, {"_id": 0})
+    pays = await listall("payments", {"invoice_id": iid, "reversed": {"$ne": True}})
+    inv["amount_paid"] = dsum(p.get("amount", 0) for p in pays)
+    compute_invoice(inv)
+    await db.invoices.update_one({"id": iid}, {"$set": {"amount_paid": inv["amount_paid"], "outstanding": inv["outstanding"], "updated_at": now_iso()}})
+    return inv
 
 @api.post("/invoices/{iid}/payments")
 async def record_payment(iid: str, body: PaymentIn, user=Depends(get_current_user)):
+    if body.idempotency_key:
+        dup = await db.payments.find_one({"idempotency_key": body.idempotency_key}, {"_id": 0})
+        if dup:
+            return dup
     inv = await db.invoices.find_one({"id": iid})
     if not inv:
         raise HTTPException(404, "Invoice not found")
     if inv.get("status") == "void":
         raise HTTPException(400, "Cannot pay a voided invoice")
+    if inv.get("status") == "draft" or not inv.get("number"):
+        raise HTTPException(400, "Issue the invoice before recording payments")
     amt = r2(body.amount)
     if amt <= 0:
         raise HTTPException(400, "Amount must be positive")
-    outstanding = r2(inv.get("outstanding", 0))
-    if amt > outstanding + 0.001:
-        raise HTTPException(400, f"Amount exceeds outstanding balance of R {outstanding:.2f}")
-    pay = body.model_dump()
-    pay["invoice_id"] = iid
-    pay["invoice_number"] = inv.get("number")
-    pay["customer_id"] = inv.get("customer_id")
-    pay["customer_name"] = inv.get("customer_name")
-    pay_rec = await insert("payments", pay)
-    new_paid = r2(inv.get("amount_paid", 0) + amt)
-    inv["amount_paid"] = new_paid
-    compute_invoice(inv)
-    status = inv.get("status")
-    if status == "draft":
-        status = "issued"
-        if not inv.get("number"):
-            inv["number"] = await next_invoice_number()
-    audit = inv.get("audit", [])
-    audit.append({"action": "payment", "amount": amt, "at": now_iso(), "by": user["email"]})
-    await update_doc("invoices", iid, {
-        "amount_paid": new_paid, "outstanding": inv["outstanding"],
-        "status": status, "number": inv.get("number"), "audit": audit})
-    return pay_rec
+    lock = await db.invoices.find_one_and_update({"id": iid, "payment_lock": {"$ne": True}}, {"$set": {"payment_lock": True}})
+    if not lock:
+        raise HTTPException(409, "Another payment for this invoice is being processed. Please retry")
+    try:
+        current = await recalc_invoice_payments(iid)
+        outstanding = r2(current["outstanding"])
+        if amt > outstanding:
+            raise HTTPException(400, f"Amount exceeds outstanding balance of R {outstanding:.2f}")
+        pay = body.model_dump()
+        if not pay.get("idempotency_key"):
+            pay.pop("idempotency_key")
+        pay.update({"amount": amt, "invoice_id": iid, "invoice_number": inv.get("number"),
+                    "customer_id": inv.get("customer_id"), "customer_name": inv.get("customer_name"),
+                    "reversed": False, "user": user["email"]})
+        try:
+            pay_rec = await insert("payments", pay)
+        except DuplicateKeyError:
+            return await db.payments.find_one({"idempotency_key": body.idempotency_key}, {"_id": 0})
+        await recalc_invoice_payments(iid)
+        audit = inv.get("audit", [])
+        audit.append({"action": "payment", "amount": amt, "at": now_iso(), "by": user["email"]})
+        await db.invoices.update_one({"id": iid}, {"$set": {"audit": audit}})
+        await log_audit("payment", pay_rec["id"], "recorded", user, after=pay_rec)
+        return pay_rec
+    finally:
+        await db.invoices.update_one({"id": iid}, {"$unset": {"payment_lock": ""}})
+
+@api.post("/payments/{pid}/reverse")
+async def reverse_payment(pid: str, body: ReasonIn, user=Depends(get_current_user)):
+    if not body.reason.strip():
+        raise HTTPException(400, "A reason is required to reverse a payment")
+    p = await db.payments.find_one_and_update(
+        {"id": pid, "reversed": {"$ne": True}},
+        {"$set": {"reversed": True, "reversed_reason": body.reason, "reversed_at": now_iso(), "reversed_by": user["email"]}},
+        projection={"_id": 0}, return_document=ReturnDocument.AFTER)
+    if not p:
+        raise HTTPException(400, "Payment not found or already reversed")
+    await recalc_invoice_payments(p["invoice_id"])
+    await log_audit("payment", pid, "reversed", user, before={"reversed": False}, after={"reversed": True}, reason=body.reason)
+    return p
 
 @api.get("/payments")
 async def get_payments(user=Depends(get_current_user)):
@@ -389,17 +549,36 @@ class StockIn(BaseModel):
     opening: float = 0
     threshold: float = 5
 
+INC_TYPES = ("production", "adjustment_in", "return")
+DEC_TYPES = ("dispatch", "adjustment_out", "damage")
+OPEN_ORDER_STATUSES = ("To Send", "Preparing", "Assigned", "Partially Delivered")
+
+def mov_sign(m):
+    if m.get("direction") in (1, -1):
+        return m["direction"]
+    return 1 if m["type"] in INC_TYPES else -1
+
 async def stock_current(s):
     movs = await listall("stock_movements", {"stock_id": s["id"]})
-    delta = 0
-    for m in movs:
-        delta += m["quantity"] if m["type"] in ("production", "adjustment_in", "return") else -m["quantity"]
-    s["current"] = r2(s.get("opening", 0) + delta)
-    s["production_received"] = r2(sum(m["quantity"] for m in movs if m["type"] == "production"))
-    s["dispatched"] = r2(sum(m["quantity"] for m in movs if m["type"] == "dispatch"))
-    s["adjustments"] = r2(sum((m["quantity"] if m["type"] in ("adjustment_in", "return") else -m["quantity"]) for m in movs if m["type"] in ("adjustment_in", "adjustment_out", "return")))
+    s["current"] = r2(D(s.get("opening", 0)) + sum((D(m["quantity"]) * mov_sign(m) for m in movs), Decimal("0")))
+    s["production_received"] = dsum(m["quantity"] for m in movs if m["type"] == "production")
+    s["dispatched"] = dsum(m["quantity"] for m in movs if m["type"] == "dispatch")
+    s["adjustments"] = r2(sum((D(m["quantity"]) * mov_sign(m) for m in movs if m["type"] not in ("production", "dispatch")), Decimal("0")))
     s["last_movement"] = max([m["created_at"] for m in movs], default=None)
     return s
+
+async def post_movement(stock, mtype, qty, user, reason="", reference="", notes="", dedupe_key=None, direction=None, allow_negative=False, extra=None):
+    sign = direction or (1 if mtype in INC_TYPES else -1)
+    if sign < 0 and not allow_negative:
+        await stock_current(stock)
+        if D(qty) > D(stock["current"]):
+            raise HTTPException(400, f"Insufficient stock for {stock['product']} {stock['size']}: available {stock['current']}, requested {qty}")
+    m = {"stock_id": stock["id"], "product": stock["product"], "size": stock["size"], "type": mtype,
+         "direction": sign, "quantity": r2(qty), "reason": reason, "reference": reference, "notes": notes,
+         "date": today_str(), "user": user["email"] if user else "system", **(extra or {})}
+    if dedupe_key:
+        m["dedupe_key"] = dedupe_key
+    return await insert("stock_movements", m)
 
 @api.get("/stock")
 async def get_stock(user=Depends(get_current_user)):
@@ -414,73 +593,178 @@ async def add_stock(body: StockIn, user=Depends(get_current_user)):
 
 @api.put("/stock/{sid}")
 async def edit_stock(sid: str, body: StockIn, user=Depends(get_current_user)):
-    return await update_doc("stock", sid, body.model_dump())
+    before = await db.stock.find_one({"id": sid}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Stock item not found")
+    d = body.model_dump()
+    if r2(d["opening"]) != r2(before.get("opening", 0)) and await db.stock_movements.count_documents({"stock_id": sid}):
+        raise HTTPException(400, "Opening balance cannot change after movements exist. Use a manual adjustment instead")
+    rec = await update_doc("stock", sid, d)
+    await log_audit("stock", sid, "edited", user, before=before, after=rec)
+    return rec
 
 class MovementIn(BaseModel):
-    type: str  # production, dispatch, adjustment_in, adjustment_out, return
+    type: str  # adjustment_in, adjustment_out, return, damage
     quantity: float
     reason: Optional[str] = ""
     reference: Optional[str] = ""
+    notes: Optional[str] = ""
 
 @api.post("/stock/{sid}/movements")
 async def add_movement(sid: str, body: MovementIn, user=Depends(get_current_user)):
-    s = await db.stock.find_one({"id": sid})
+    s = await db.stock.find_one({"id": sid}, {"_id": 0})
     if not s:
         raise HTTPException(404, "Stock item not found")
+    if body.type not in ("adjustment_in", "adjustment_out", "return", "damage"):
+        raise HTTPException(400, "Production receipts come from Production and dispatches from Deliveries")
     if body.quantity <= 0:
         raise HTTPException(400, "Quantity must be positive")
-    m = body.model_dump()
-    m["stock_id"] = sid
-    m["product"] = s["product"]
-    m["size"] = s["size"]
-    m["user"] = user["email"]
-    return await insert("stock_movements", m)
+    if not (body.reason or "").strip():
+        raise HTTPException(400, "A reason is required for manual stock movements")
+    m = await post_movement(s, body.type, body.quantity, user, body.reason, body.reference, body.notes)
+    await log_audit("stock_movement", m["id"], "posted", user, after=m, reason=body.reason)
+    return m
+
+@api.post("/stock/movements/{mid}/reverse")
+async def reverse_movement(mid: str, body: ReasonIn, user=Depends(get_current_user)):
+    if not body.reason.strip():
+        raise HTTPException(400, "A reason is required to reverse a movement")
+    orig = await db.stock_movements.find_one({"id": mid}, {"_id": 0})
+    if not orig:
+        raise HTTPException(404, "Movement not found")
+    if orig.get("type") == "reversal":
+        raise HTTPException(400, "A reversal cannot be reversed")
+    claimed = await db.stock_movements.find_one_and_update({"id": mid, "reversed": {"$ne": True}}, {"$set": {"reversed": True}})
+    if not claimed:
+        raise HTTPException(400, "Movement already reversed")
+    s = await db.stock.find_one({"id": orig["stock_id"]}, {"_id": 0})
+    try:
+        rev = await post_movement(s, "reversal", orig["quantity"], user, body.reason, orig.get("reference", ""),
+                                  direction=-mov_sign(orig), dedupe_key=f"reversal:{mid}", extra={"reverses": mid})
+    except HTTPException:
+        await db.stock_movements.update_one({"id": mid}, {"$unset": {"reversed": ""}})
+        raise
+    await log_audit("stock_movement", mid, "reversed", user, reason=body.reason, after=rev)
+    return rev
 
 @api.get("/stock/movements")
 async def get_movements(user=Depends(get_current_user)):
     return await listall("stock_movements", sort=("created_at", -1))
 
 # ---------------- Production ----------------
+PROD_STATUSES = ["Planned", "In Production", "Resting", "Ready for Cutting", "Completed", "Cancelled"]
+
 class ProductionIn(BaseModel):
     block_ref: str
+    product: Optional[str] = ""
+    size: Optional[str] = ""
+    quantity: float = 1
     production_date: str = Field(default_factory=today_str)
+    production_time: Optional[str] = None  # ISO datetime local
+    team: Optional[str] = ""
+    weather: Optional[str] = ""  # Suitable, Caution, Unsuitable
+    rain_risk: bool = False
+    cold_risk: bool = False
+    override_reason: Optional[str] = ""
     status: str = "Planned"
-    resting_start: Optional[str] = None
-    resting_end: Optional[str] = None
     planned_cutting: Optional[str] = None
-    confirmed_qty: float = 0
-    stock_id: Optional[str] = None
     notes: Optional[str] = ""
+
+async def resting_hours():
+    s = await db.settings.find_one({"id": "singleton"}) or {}
+    return float(s.get("resting_hours", 12) or 12)
+
+def enrich_production(p, hours):
+    start = parse_dt(p.get("production_time"))
+    p["ready_at"] = (start + timedelta(hours=hours)).isoformat() if start else None
+    p["rest_elapsed"] = bool(start and datetime.now(TZ) >= start + timedelta(hours=hours))
+    return p
+
+async def check_production_rules(d, existing, hours):
+    if d["status"] not in PROD_STATUSES:
+        raise HTTPException(400, f"Invalid status. Use one of: {', '.join(PROD_STATUSES)}")
+    if d["status"] in ("In Production", "Resting", "Ready for Cutting", "Completed"):
+        if not d.get("weather"):
+            raise HTTPException(400, "Record a manual weather assessment (Suitable / Caution / Unsuitable) before production starts")
+        risky = d["weather"] == "Unsuitable" or d.get("rain_risk")
+        if risky and not (d.get("override_reason") or "").strip():
+            raise HTTPException(400, "Weather is unsuitable (rain is a critical risk). Enter an override reason to proceed")
+    if d["status"] in ("Resting", "Ready for Cutting", "Completed") and not d.get("production_time"):
+        raise HTTPException(400, "Production date and time is required to calculate the resting period")
+    if d["status"] in ("Ready for Cutting", "Completed"):
+        enrich_production(d, hours)
+        if not d["rest_elapsed"]:
+            raise HTTPException(400, f"Block is still resting. It can be cut after {d['ready_at']} ({hours:g}h resting period)")
 
 @api.get("/production")
 async def get_production(user=Depends(get_current_user)):
-    return await listall("production", sort=("created_at", -1))
+    hours = await resting_hours()
+    return [enrich_production(p, hours) for p in await listall("production", sort=("created_at", -1))]
 
 @api.post("/production")
 async def add_production(body: ProductionIn, user=Depends(get_current_user)):
-    return await insert("production", body.model_dump())
+    d = body.model_dump()
+    hours = await resting_hours()
+    await check_production_rules(d, None, hours)
+    d["stock_added"] = False
+    rec = await insert("production", {k: v for k, v in d.items() if k not in ("ready_at", "rest_elapsed")})
+    await log_audit("production", rec["id"], "created", user, after=rec)
+    return enrich_production(rec, hours)
 
 @api.put("/production/{pid}")
 async def edit_production(pid: str, body: ProductionIn, user=Depends(get_current_user)):
-    existing = await db.production.find_one({"id": pid})
+    existing = await db.production.find_one({"id": pid}, {"_id": 0})
     if not existing:
         raise HTTPException(404, "Not found")
     d = body.model_dump()
-    # When confirmed as Consumed with qty and stock link, add production stock movement once
-    if d.get("status") == "Consumed" and d.get("confirmed_qty", 0) > 0 and d.get("stock_id") and not existing.get("stock_added"):
-        await insert("stock_movements", {
-            "stock_id": d["stock_id"], "type": "production", "quantity": d["confirmed_qty"],
-            "reason": f"Production block {d['block_ref']}", "reference": d["block_ref"], "user": user["email"],
-            "product": "", "size": ""})
-        d["stock_added"] = True
-    else:
-        d["stock_added"] = existing.get("stock_added", False)
-    return await update_doc("production", pid, d)
+    hours = await resting_hours()
+    await check_production_rules(d, existing, hours)
+    d = {k: v for k, v in d.items() if k not in ("ready_at", "rest_elapsed")}
+    rec = await update_doc("production", pid, d)
+    await log_audit("production", pid, "updated", user, before=existing, after=rec)
+    return enrich_production(rec, hours)
+
+class ReceiveIn(BaseModel):
+    stock_id: str
+    quantity: float
+
+@api.post("/production/{pid}/receive")
+async def receive_production(pid: str, body: ReceiveIn, user=Depends(get_current_user)):
+    p = await db.production.find_one({"id": pid}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Production record not found")
+    if body.quantity <= 0:
+        raise HTTPException(400, "Quantity must be positive")
+    if p.get("status") == "Cancelled":
+        raise HTTPException(400, "Cancelled production cannot be received into stock")
+    hours = await resting_hours()
+    enrich_production(p, hours)
+    if not p["rest_elapsed"]:
+        raise HTTPException(400, f"Block is still resting until {p['ready_at']}")
+    s = await db.stock.find_one({"id": body.stock_id}, {"_id": 0})
+    if not s:
+        raise HTTPException(404, "Stock item not found")
+    claimed = await db.production.find_one_and_update({"id": pid, "stock_added": {"$ne": True}}, {"$set": {"stock_added": True}})
+    if not claimed:
+        raise HTTPException(400, "This production has already been received into stock")
+    try:
+        m = await post_movement(s, "production", body.quantity, user, f"Production {p['block_ref']}", p["block_ref"],
+                                dedupe_key=f"production:{pid}", extra={"production_id": pid})
+    except DuplicateKeyError:
+        raise HTTPException(400, "This production has already been received into stock")
+    except Exception:
+        await db.production.update_one({"id": pid}, {"$set": {"stock_added": False}})
+        raise
+    await db.production.update_one({"id": pid}, {"$set": {"status": "Completed", "received_qty": r2(body.quantity), "stock_id": body.stock_id}})
+    await log_audit("production", pid, "received_into_stock", user, after=m)
+    return m
 
 # ---------------- Employees & Attendance ----------------
 class EmployeeIn(BaseModel):
     name: str
     department: str = "Production"
+    skills: Optional[str] = ""
+    notes: Optional[str] = ""
     active: bool = True
 
 @api.get("/employees")
@@ -510,6 +794,8 @@ async def add_attendance(body: AttendanceIn, user=Depends(get_current_user)):
     emp = await db.employees.find_one({"id": body.employee_id})
     if not emp:
         raise HTTPException(400, "Employee not found")
+    if body.status not in ("Present", "Half Day", "Absent", "Leave", "Sick", "Other", "Sick Leave", "Annual Leave", "Other Approved Leave"):
+        raise HTTPException(400, "Invalid attendance status")
     existing = await db.attendance.find_one({"employee_id": body.employee_id, "date": body.date})
     data = body.model_dump()
     data["employee_name"] = emp["name"]
@@ -585,8 +871,7 @@ async def get_deliveries(user=Depends(get_current_user)):
 async def add_delivery(body: DeliveryIn, user=Depends(get_current_user)):
     d = body.model_dump()
     if not d.get("reference"):
-        cnt = await db.deliveries.count_documents({})
-        d["reference"] = f"DEL-{date.today().year}-{cnt+1:04d}"
+        d["reference"] = await next_ref("del", "DEL")
     if d.get("customer_id"):
         cust = await db.customers.find_one({"id": d["customer_id"]})
         if cust:
@@ -602,29 +887,59 @@ async def edit_delivery(did: str, body: DeliveryIn, user=Depends(get_current_use
     d = body.model_dump()
     d["reference"] = existing.get("reference")
     d["dispatched"] = existing.get("dispatched", False)
+    if existing.get("dispatched"):
+        d["items"] = existing.get("items", [])
+        if d["status"] in ("Planned", "Assigned", "Ready"):
+            raise HTTPException(400, "A dispatched delivery cannot go back to a pre-dispatch status. Record a return instead")
     if d.get("customer_id"):
         cust = await db.customers.find_one({"id": d["customer_id"]})
         if cust:
             d["customer_name"] = cust["name"]
-    return await update_doc("deliveries", did, d)
+    rec = await update_doc("deliveries", did, d)
+    if existing.get("status") != rec.get("status"):
+        await log_audit("delivery", did, "status_changed", user, before={"status": existing.get("status")}, after={"status": rec.get("status")})
+    return rec
 
 @api.post("/deliveries/{did}/dispatch")
 async def dispatch_delivery(did: str, user=Depends(get_current_user)):
-    d = await db.deliveries.find_one({"id": did})
+    d = await db.deliveries.find_one({"id": did}, {"_id": 0})
     if not d:
         raise HTTPException(404, "Not found")
-    if d.get("dispatched"):
-        raise HTTPException(400, "This delivery has already deducted stock")
-    for it in d.get("items", []):
-        if it.get("stock_id") and it.get("qty", 0) > 0:
-            s = await db.stock.find_one({"id": it["stock_id"]})
-            if s:
-                await insert("stock_movements", {
-                    "stock_id": it["stock_id"], "type": "dispatch", "quantity": it["qty"],
-                    "reason": f"Dispatch {d['reference']}", "reference": d["reference"],
-                    "user": user["email"], "product": s["product"], "size": s["size"]})
-    audit = {"status": "Dispatched", "dispatched": True, "actual_departure": d.get("actual_departure") or now_iso()}
-    return await update_doc("deliveries", did, audit)
+    if d.get("status") in ("Cancelled", "Failed"):
+        raise HTTPException(400, f"Cannot dispatch a {d['status'].lower()} delivery")
+    claimed = await db.deliveries.find_one_and_update(
+        {"id": did, "dispatched": {"$ne": True}, "dispatching": {"$ne": True}}, {"$set": {"dispatching": True}})
+    if not claimed:
+        raise HTTPException(400, "This delivery has already been dispatched (stock deducted once)")
+    try:
+        need = {}
+        for it in d.get("items", []):
+            if it.get("stock_id") and (it.get("qty") or 0) > 0:
+                need[it["stock_id"]] = D(need.get(it["stock_id"], 0)) + D(it["qty"])
+        if not need:
+            raise HTTPException(400, "Add at least one stock item to dispatch")
+        stocks = {}
+        for sid, qty in need.items():
+            s = await db.stock.find_one({"id": sid}, {"_id": 0})
+            if not s:
+                raise HTTPException(400, "A dispatch item references a missing stock product")
+            await stock_current(s)
+            if qty > D(s["current"]):
+                raise HTTPException(400, f"Insufficient stock for {s['product']} {s['size']}: available {s['current']}, needed {float(qty):g}")
+            stocks[sid] = s
+        for sid, qty in need.items():
+            try:
+                await post_movement(stocks[sid], "dispatch", float(qty), user, f"Dispatch {d['reference']}", d["reference"],
+                                    dedupe_key=f"dispatch:{did}:{sid}", allow_negative=True, extra={"delivery_id": did})
+            except DuplicateKeyError:
+                pass
+        upd = {"status": "Dispatched", "dispatched": True, "dispatched_at": now_iso(),
+               "actual_departure": d.get("actual_departure") or local_now().strftime("%Y-%m-%dT%H:%M")}
+        rec = await update_doc("deliveries", did, upd)
+        await log_audit("delivery", did, "dispatched", user, after={"items": d.get("items")})
+        return rec
+    finally:
+        await db.deliveries.update_one({"id": did}, {"$unset": {"dispatching": ""}})
 
 @api.get("/deliveries/recommend")
 async def recommend_driver(size: str = "small", user=Depends(get_current_user)):
@@ -647,14 +962,19 @@ async def recommend_driver(size: str = "small", user=Depends(get_current_user)):
 @api.get("/settings")
 async def get_settings(user=Depends(get_current_user)):
     s = await db.settings.find_one({"id": "singleton"}, {"_id": 0})
-    return s or seed_data.DEFAULT_SETTINGS
+    return {**seed_data.DEFAULT_SETTINGS, **(s or {})}
 
 @api.put("/settings")
 async def update_settings(body: dict, user=Depends(get_current_user)):
     body.pop("_id", None)
     body["id"] = "singleton"
+    before = await db.settings.find_one({"id": "singleton"}, {"_id": 0})
     await db.settings.update_one({"id": "singleton"}, {"$set": body}, upsert=True)
-    return clean(await db.settings.find_one({"id": "singleton"}, {"_id": 0}))
+    after = clean(await db.settings.find_one({"id": "singleton"}, {"_id": 0}))
+    changed = {k: v for k, v in after.items() if (before or {}).get(k) != v and k != "updated_at"}
+    if changed:
+        await log_audit("settings", "singleton", "updated", user, before={k: (before or {}).get(k) for k in changed}, after=changed)
+    return after
 
 # ---------------- Dashboard ----------------
 @api.get("/dashboard")
@@ -663,10 +983,11 @@ async def dashboard(user=Depends(get_current_user)):
     for i in invs:
         i["status"] = derive_status(i)
     valid = [i for i in invs if i["status"] not in ("void", "draft")]
-    total_invoiced = r2(sum(i.get("total", 0) for i in valid))
-    pays = await listall("payments")
-    payments_received = r2(sum(p.get("amount", 0) for p in pays))
-    outstanding = r2(sum(i.get("outstanding", 0) for i in valid))
+    total_invoiced = dsum(i.get("total", 0) for i in valid)
+    pays = [p for p in await listall("payments") if not p.get("reversed")]
+    payments_received = dsum(p.get("amount", 0) for p in pays)
+    outstanding = dsum(i.get("outstanding", 0) for i in valid)
+    overdue = dsum(i.get("outstanding", 0) for i in valid if i["status"] == "overdue")
 
     stock = await listall("stock")
     for s in stock:
@@ -675,8 +996,12 @@ async def dashboard(user=Depends(get_current_user)):
     low_stock = [s for s in stock if s.get("current", 0) <= s.get("threshold", 0)]
 
     prod = await listall("production")
-    ready_cutting = [p for p in prod if p.get("status") == "Ready for Cutting"]
-    resting = [p for p in prod if p.get("status") == "Resting"]
+    hours = await resting_hours()
+    for p in prod:
+        enrich_production(p, hours)
+    ready_cutting = [p for p in prod if p.get("status") == "Ready for Cutting" or (p.get("status") == "Resting" and p["rest_elapsed"])]
+    resting = [p for p in prod if p.get("status") == "Resting" and not p["rest_elapsed"]]
+    completed_today = [p for p in prod if p.get("status") == "Completed" and (p.get("updated_at") or "")[:10] == today_str()]
 
     att_today = await listall("attendance", {"date": today_str()})
     deliveries = await listall("deliveries")
@@ -685,39 +1010,53 @@ async def dashboard(user=Depends(get_current_user)):
     recent_invoices = sorted(invs, key=lambda x: x.get("created_at", ""), reverse=True)[:8]
 
     orders = await listall("orders", sort=("created_at", -1))
-    orders_to_send = [o for o in orders if o.get("status") in ("To Send", "Preparing", "Assigned")][:8]
-    week, _ = period_starts()
+    open_orders = [o for o in orders if o.get("status") in OPEN_ORDER_STATUSES]
+    orders_to_send = open_orders[:8]
+    week, month = period_starts()
     week_profit = await profit_for(week)
+    month_profit = await profit_for(month)
     parts_to_buy = await listall("spareparts", {"status": "to_buy"})
+    vehicles = await listall("vehicles")
+    vrecs = await listall("vehicle_records")
+    maint_due = [r for r in vrecs if r.get("status") in ("Needed", "Scheduled", "needed")]
 
-    # production recommendations: finished stock below safety stock
     settings = await db.settings.find_one({"id": "singleton"}) or {}
-    safety = settings.get("safety_stock", 10)
     recommendations = []
     for s in stock:
-        if s.get("current", 0) < s.get("threshold", 0):
-            need = max(s.get("threshold", 0) * 2 - s.get("current", 0), 0)
-            recommendations.append({"product": s["product"], "size": s["size"],
-                                    "recommend_qty": need,
-                                    "reason": f"Current {s['current']} is below low-stock threshold {s['threshold']}"})
+        target = s.get("target", 0) or s.get("threshold", 0) * 2
+        demand = 0
+        avail = s.get("current", 0)
+        need = max(r2(target - avail + demand), 0)
+        if avail < s.get("threshold", 0) and need > 0:
+            recommendations.append({"product": s["product"], "size": s["size"], "recommend_qty": need,
+                                    "reason": f"Available {avail} is below minimum {s['threshold']}; target stock {target}"})
 
     return {
         "total_invoiced": total_invoiced,
         "payments_received": payments_received,
         "outstanding": outstanding,
+        "overdue": overdue,
         "finished_stock": finished_stock,
         "low_stock": low_stock,
         "recommendations": recommendations,
         "ready_cutting": ready_cutting,
         "resting": resting,
+        "completed_today": len(completed_today),
         "attendance_today": att_today,
         "upcoming_deliveries": upcoming,
         "recent_invoices": recent_invoices,
         "current_stock": stock,
         "invoice_count": len(valid),
         "orders_to_send": orders_to_send,
+        "orders_open_count": len(open_orders),
+        "urgent_orders": len([o for o in open_orders if o.get("priority") == "Urgent"]),
         "week_profit": week_profit,
+        "month_profit": month_profit,
         "parts_to_buy_count": len(parts_to_buy),
+        "vehicles_available": len([v for v in vehicles if v.get("available")]),
+        "vehicles_total": len(vehicles),
+        "maintenance_due": len(maint_due),
+        "timezone": "Africa/Johannesburg",
     }
 
 # ---------------- Expenses ----------------
@@ -726,59 +1065,123 @@ class ExpenseIn(BaseModel):
     amount: float
     date: str = Field(default_factory=today_str)
     category: str = "General"
+    payment_method: Optional[str] = "Cash"
+    reference: Optional[str] = ""
+    vehicle_id: Optional[str] = ""
+    notes: Optional[str] = ""
+
+def _check_expense(body):
+    if body.amount <= 0:
+        raise HTTPException(400, "Amount must be greater than 0")
+    if not body.description.strip():
+        raise HTTPException(400, "Description is required")
 
 @api.get("/expenses")
-async def get_expenses(user=Depends(get_current_user)):
-    return await listall("expenses", sort=("date", -1))
+async def get_expenses(include_voided: bool = False, user=Depends(get_current_user)):
+    flt = {} if include_voided else {"voided": {"$ne": True}}
+    return await listall("expenses", flt, sort=("date", -1))
 
 @api.post("/expenses")
 async def add_expense(body: ExpenseIn, user=Depends(get_current_user)):
-    return await insert("expenses", body.model_dump())
+    _check_expense(body)
+    d = body.model_dump()
+    d["amount"] = r2(d["amount"])
+    rec = await insert("expenses", d)
+    await log_audit("expense", rec["id"], "created", user, after=rec)
+    return rec
 
 @api.put("/expenses/{eid}")
 async def edit_expense(eid: str, body: ExpenseIn, user=Depends(get_current_user)):
-    return await update_doc("expenses", eid, body.model_dump())
+    _check_expense(body)
+    before = await db.expenses.find_one({"id": eid}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Expense not found")
+    if before.get("source_key"):
+        raise HTTPException(400, "This expense is linked to a spare-part purchase. Edit it from Fleet > Spare Parts")
+    d = body.model_dump()
+    d["amount"] = r2(d["amount"])
+    rec = await update_doc("expenses", eid, d)
+    await log_audit("expense", eid, "updated", user, before=before, after=rec)
+    return rec
+
+@api.post("/expenses/{eid}/void")
+async def void_expense(eid: str, body: ReasonIn, user=Depends(get_current_user)):
+    if not body.reason.strip():
+        raise HTTPException(400, "A reason is required")
+    rec = await db.expenses.find_one_and_update({"id": eid, "voided": {"$ne": True}},
+                                                {"$set": {"voided": True, "void_reason": body.reason, "voided_at": now_iso()}},
+                                                projection={"_id": 0}, return_document=ReturnDocument.AFTER)
+    if not rec:
+        raise HTTPException(400, "Expense not found or already voided")
+    await log_audit("expense", eid, "voided", user, reason=body.reason)
+    return rec
 
 @api.delete("/expenses/{eid}")
 async def del_expense(eid: str, user=Depends(get_current_user)):
-    await db.expenses.delete_one({"id": eid})
-    return {"ok": True}
+    raise HTTPException(400, "Expenses are kept for history. Use Void with a reason instead")
 
 def period_starts():
-    t = date.today()
+    t = local_today()
     week = (t - timedelta(days=t.weekday())).isoformat()
     month = t.replace(day=1).isoformat()
     return week, month
 
-async def profit_for(since):
-    pays = await listall("payments")
-    exps = await listall("expenses")
-    vrecs = await listall("vehicle_records")
-    revenue = r2(sum(p.get("amount", 0) for p in pays if (p.get("date") or "") >= since))
-    expense = r2(sum(x.get("amount", 0) for x in exps if (x.get("date") or "") >= since)
-                 + sum(x.get("amount", 0) or 0 for x in vrecs if (x.get("date") or "") >= since))
-    return {"revenue": revenue, "expenses": expense, "profit": r2(revenue - expense)}
+VEHICLE_COST_DONE = ("Done", "done")
+
+async def cost_ledger(since=None, until=None):
+    rows = []
+    for x in await listall("expenses", {"voided": {"$ne": True}}):
+        rows.append({"id": x["id"], "date": x.get("date"), "description": x.get("description"), "category": x.get("category", "General"),
+                     "amount": x.get("amount", 0), "vehicle_id": x.get("vehicle_id", ""), "source": "spare_part" if x.get("source_key") else "expense"})
+    vnames = {v["id"]: v["name"] for v in await listall("vehicles")}
+    for x in await listall("vehicle_records"):
+        if x.get("status") in VEHICLE_COST_DONE and (x.get("amount") or 0) > 0:
+            rows.append({"id": x["id"], "date": x.get("date"), "description": f"{vnames.get(x.get('vehicle_id'), '')}: {x.get('description', '')}",
+                         "category": f"Vehicle {x.get('type', 'expense').title()}", "amount": x.get("amount", 0),
+                         "vehicle_id": x.get("vehicle_id"), "source": "fleet"})
+    for r in rows:
+        r["vehicle_name"] = vnames.get(r.get("vehicle_id"), "")
+    return [r for r in rows if (not since or (r["date"] or "") >= since) and (not until or (r["date"] or "") <= until)]
+
+async def profit_for(since, until=None):
+    pays = [p for p in await listall("payments") if not p.get("reversed")]
+    revenue = dsum(p.get("amount", 0) for p in pays if (p.get("date") or "") >= since and (not until or (p.get("date") or "") <= until))
+    expense = dsum(x["amount"] for x in await cost_ledger(since, until))
+    return {"revenue": revenue, "expenses": expense, "profit": r2(D(revenue) - D(expense)),
+            "label": "Estimated cash result — incomplete cost data", "basis": "payment dates & expense dates"}
 
 @api.get("/reports/profit")
 async def profit_report(user=Depends(get_current_user)):
     week, month = period_starts()
-    all_exp = await listall("expenses")
-    vrecs = await listall("vehicle_records")
+    t = today_str()
     return {
+        "today": await profit_for(t, t),
         "week": await profit_for(week),
         "month": await profit_for(month),
-        "total_expenses": r2(sum(x.get("amount", 0) for x in all_exp)
-                             + sum(x.get("amount", 0) or 0 for x in vrecs)),
-        "week_start": week, "month_start": month,
+        "total_expenses": dsum(x["amount"] for x in await cost_ledger()),
+        "week_start": week, "month_start": month, "timezone": "Africa/Johannesburg",
     }
 
+@api.get("/reports/costs")
+async def cost_report(since: Optional[str] = None, until: Optional[str] = None, user=Depends(get_current_user)):
+    rows = sorted(await cost_ledger(since, until), key=lambda r: r["date"] or "", reverse=True)
+    by_cat, by_veh = {}, {}
+    for r in rows:
+        by_cat[r["category"]] = r2(D(by_cat.get(r["category"], 0)) + D(r["amount"]))
+        if r.get("vehicle_name"):
+            by_veh[r["vehicle_name"]] = r2(D(by_veh.get(r["vehicle_name"], 0)) + D(r["amount"]))
+    return {"rows": rows, "total": dsum(r["amount"] for r in rows), "by_category": by_cat, "by_vehicle": by_veh}
+
 # ---------------- Vehicle records (expenses/repairs/maintenance) ----------------
+VREC_STATUSES = ("Needed", "Scheduled", "In Progress", "Done", "Cancelled")
+
 class VehicleRecordIn(BaseModel):
     type: str = "expense"  # expense, repair, maintenance
     description: str = ""
     amount: float = 0
     date: str = Field(default_factory=today_str)
-    status: str = "done"  # needed, done
+    status: str = "Done"
+    notes: Optional[str] = ""
 
 @api.get("/vehicles/records/all")
 async def all_vehicle_records(user=Depends(get_current_user)):
@@ -788,27 +1191,84 @@ async def all_vehicle_records(user=Depends(get_current_user)):
 async def get_vehicle_records(vid: str, user=Depends(get_current_user)):
     return await listall("vehicle_records", {"vehicle_id": vid}, ("date", -1))
 
+def _check_vrec(d):
+    d["status"] = {"done": "Done", "needed": "Needed"}.get(d["status"], d["status"])
+    if d["status"] not in VREC_STATUSES:
+        raise HTTPException(400, f"Status must be one of {', '.join(VREC_STATUSES)}")
+    if d["type"] not in ("expense", "repair", "maintenance"):
+        raise HTTPException(400, "Type must be expense, repair or maintenance")
+    if not d["description"].strip():
+        raise HTTPException(400, "Description is required")
+    if d["amount"] < 0:
+        raise HTTPException(400, "Amount cannot be negative")
+    d["amount"] = r2(d["amount"])
+    return d
+
 @api.post("/vehicles/{vid}/records")
 async def add_vehicle_record(vid: str, body: VehicleRecordIn, user=Depends(get_current_user)):
     v = await db.vehicles.find_one({"id": vid})
-    d = body.model_dump()
+    if not v:
+        raise HTTPException(404, "Vehicle not found")
+    d = _check_vrec(body.model_dump())
     d["vehicle_id"] = vid
-    d["vehicle_name"] = v["name"] if v else ""
-    return await insert("vehicle_records", d)
+    d["vehicle_name"] = v["name"]
+    rec = await insert("vehicle_records", d)
+    await log_audit("vehicle_record", rec["id"], "created", user, after=rec)
+    return rec
+
+@api.put("/vehicles/records/{rid}")
+async def edit_vehicle_record(rid: str, body: VehicleRecordIn, user=Depends(get_current_user)):
+    before = await db.vehicle_records.find_one({"id": rid}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Record not found")
+    rec = await update_doc("vehicle_records", rid, _check_vrec(body.model_dump()))
+    await log_audit("vehicle_record", rid, "updated", user, before=before, after=rec)
+    return rec
 
 @api.delete("/vehicles/records/{rid}")
 async def del_vehicle_record(rid: str, user=Depends(get_current_user)):
+    before = await db.vehicle_records.find_one({"id": rid}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Record not found")
+    if before.get("status") in VEHICLE_COST_DONE and (before.get("amount") or 0) > 0:
+        rec = await update_doc("vehicle_records", rid, {"status": "Cancelled"})
+        await log_audit("vehicle_record", rid, "cancelled", user, before=before)
+        return rec
     await db.vehicle_records.delete_one({"id": rid})
+    await log_audit("vehicle_record", rid, "deleted", user, before=before)
     return {"ok": True}
 
 # ---------------- Spare parts ----------------
+PART_FLOW = {"to_buy": 0, "bought": 1, "installed": 2}
+
 class SparePartIn(BaseModel):
     name: str
     quantity: float = 1
     expected_price: float = 0
+    actual_cost: Optional[float] = None
     vehicle_id: Optional[str] = ""
     status: str = "to_buy"  # to_buy, bought, installed
     notes: Optional[str] = ""
+
+async def sync_part_expense(part, user):
+    key = f"sparepart:{part['id']}"
+    if PART_FLOW.get(part["status"], 0) < 1:
+        return
+    cost = part.get("actual_cost")
+    if cost is None or cost <= 0:
+        raise HTTPException(400, "Enter the actual purchase cost (total) when marking a part as bought")
+    existing = await db.expenses.find_one({"source_key": key})
+    data = {"description": f"Spare part: {part['name']} x{part.get('quantity', 1):g}", "amount": r2(cost),
+            "category": "Vehicle", "vehicle_id": part.get("vehicle_id", ""), "source_key": key,
+            "date": part.get("bought_date") or today_str(), "payment_method": "", "reference": "", "notes": ""}
+    if existing:
+        if r2(existing.get("amount")) != r2(cost):
+            await db.expenses.update_one({"source_key": key}, {"$set": {"amount": r2(cost), "updated_at": now_iso()}})
+    else:
+        try:
+            await insert("expenses", data)
+        except DuplicateKeyError:
+            pass
 
 @api.get("/spareparts")
 async def get_spareparts(user=Depends(get_current_user)):
@@ -820,16 +1280,50 @@ async def get_spareparts(user=Depends(get_current_user)):
 
 @api.post("/spareparts")
 async def add_sparepart(body: SparePartIn, user=Depends(get_current_user)):
-    return await insert("spareparts", body.model_dump())
+    d = body.model_dump()
+    if d["status"] not in PART_FLOW:
+        raise HTTPException(400, "Invalid status")
+    if d["status"] != "to_buy":
+        d["bought_date"] = today_str()
+    d["id"] = new_id()
+    await sync_part_expense(d, user)
+    rec = await insert("spareparts", d)
+    await log_audit("spare_part", rec["id"], "created", user, after=rec)
+    return rec
 
 @api.put("/spareparts/{pid}")
 async def edit_sparepart(pid: str, body: SparePartIn, user=Depends(get_current_user)):
-    return await update_doc("spareparts", pid, body.model_dump())
+    before = await db.spareparts.find_one({"id": pid}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Part not found")
+    d = body.model_dump()
+    if d["status"] not in PART_FLOW:
+        raise HTTPException(400, "Invalid status")
+    if PART_FLOW[d["status"]] < PART_FLOW.get(before.get("status"), 0):
+        raise HTTPException(400, "A part cannot move back to an earlier status")
+    d["bought_date"] = before.get("bought_date") or (today_str() if d["status"] != "to_buy" else None)
+    d["id"] = pid
+    await sync_part_expense(d, user)
+    rec = await update_doc("spareparts", pid, d)
+    await log_audit("spare_part", pid, "updated", user, before=before, after=rec)
+    return rec
 
 @api.delete("/spareparts/{pid}")
 async def del_sparepart(pid: str, user=Depends(get_current_user)):
+    p = await db.spareparts.find_one({"id": pid}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Part not found")
+    if p.get("status") != "to_buy":
+        raise HTTPException(400, "Bought or installed parts are kept for history and cannot be deleted")
     await db.spareparts.delete_one({"id": pid})
+    await log_audit("spare_part", pid, "deleted", user, before=p)
     return {"ok": True}
+
+# ---------------- Audit ----------------
+@api.get("/audit")
+async def get_audit(entity: Optional[str] = None, entity_id: Optional[str] = None, user=Depends(get_current_user)):
+    flt = {k: v for k, v in {"entity": entity, "entity_id": entity_id}.items() if v}
+    return await db.audit_log.find(flt, {"_id": 0}).sort("at", -1).to_list(500)
 
 # ---------------- Orders to send ----------------
 class OrderIn(BaseModel):
@@ -850,8 +1344,7 @@ async def get_orders(user=Depends(get_current_user)):
 @api.post("/orders")
 async def add_order(body: OrderIn, user=Depends(get_current_user)):
     d = body.model_dump()
-    cnt = await db.orders.count_documents({})
-    d["reference"] = f"ORD-{date.today().year}-{cnt+1:04d}"
+    d["reference"] = await next_ref("ord", "ORD")
     if d.get("customer_id"):
         c = await db.customers.find_one({"id": d["customer_id"]})
         if c:
@@ -903,34 +1396,58 @@ async def attendance_summary(user=Depends(get_current_user)):
 async def seed():
     admin_email = os.environ["ADMIN_EMAIL"].lower()
     admin_pw = os.environ["ADMIN_PASSWORD"]
-    existing = await db.users.find_one({"email": admin_email})
-    if not existing:
+    if not await db.users.find_one({"email": admin_email}):
         await db.users.insert_one({"id": new_id(), "email": admin_email,
                                    "password_hash": hash_pw(admin_pw), "name": "Admin",
                                    "role": "admin", "created_at": now_iso()})
-    elif not verify_pw(admin_pw, existing["password_hash"]):
-        await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_pw(admin_pw)}})
 
-    if await db.customers.count_documents({}) == 0:
-        for n in seed_data.CUSTOMERS:
+    for n in seed_data.CUSTOMERS:
+        if not await db.customers.find_one({"name": n}):
             await db.customers.insert_one({"id": new_id(), "name": n, "phone": "", "email": "",
-                                           "address": "", "default_zone": 1,
+                                           "address": "", "city": "", "notes": "", "default_zone": 1,
                                            "payment_terms": "Due on Delivery", "active": True,
                                            "created_at": now_iso()})
-    if await db.prices.count_documents({}) == 0:
-        for p in seed_data.PRICES:
-            await db.prices.insert_one({"id": new_id(), **p, "created_at": now_iso()})
-    if await db.stock.count_documents({}) == 0:
-        for s in seed_data.STOCK:
+    for p in seed_data.PRICES:
+        if not await db.prices.find_one({"zone": p["zone"], "category": p["category"], "size": p["size"]}):
+            await db.prices.insert_one({"id": new_id(), **p, "updated_at": now_iso(), "created_at": now_iso()})
+    for s in seed_data.STOCK:
+        if not await db.stock.find_one({"product": s["product"], "size": s["size"]}):
             await db.stock.insert_one({"id": new_id(), **s, "created_at": now_iso()})
-    if await db.drivers.count_documents({}) == 0:
-        for d in seed_data.DRIVERS:
+    for d in seed_data.DRIVERS:
+        if not await db.drivers.find_one({"name": d["name"]}):
             await db.drivers.insert_one({"id": new_id(), **d, "created_at": now_iso()})
-    for v in seed_data.TRAILERS + seed_data.FLEET:
+
+    # fleet migration: rename first trailer, retire placeholder vehicles without history
+    await db.vehicles.update_one({"name": "Trailer", "length": "9 m"}, {"$set": {"name": "Trailer (1)"}})
+    for name in seed_data.RETIRED_PLACEHOLDERS:
+        v = await db.vehicles.find_one({"name": name})
+        if v:
+            used = sum([await db[c].count_documents({"vehicle_id": v["id"]}) for c in ("vehicle_records", "spareparts", "orders", "deliveries", "expenses")])
+            if used == 0:
+                await db.vehicles.delete_one({"id": v["id"]})
+    for v in seed_data.FLEET:
         if not await db.vehicles.find_one({"name": v["name"]}):
             await db.vehicles.insert_one({"id": new_id(), **v, "created_at": now_iso()})
+
     if await db.settings.count_documents({}) == 0:
         await db.settings.insert_one({**seed_data.DEFAULT_SETTINGS, "created_at": now_iso()})
+    await db.vehicle_records.update_many({"status": "done"}, {"$set": {"status": "Done"}})
+    await db.vehicle_records.update_many({"status": "needed"}, {"$set": {"status": "Needed"}})
+    year = local_today().year
+    for key, coll in (("del", "deliveries"), ("ord", "orders")):
+        if not await db.counters.find_one({"id": f"{key}-{year}"}):
+            await db.counters.insert_one({"id": f"{key}-{year}", "seq": await db[coll].count_documents({})})
+
+    for coll, keys, kw in (("payments", "idempotency_key", {"unique": True, "sparse": True}),
+                           ("stock_movements", "dedupe_key", {"unique": True, "sparse": True}),
+                           ("expenses", "source_key", {"unique": True, "sparse": True}),
+                           ("attendance", [("employee_id", 1), ("date", 1)], {"unique": True}),
+                           ("prices", [("zone", 1), ("category", 1), ("size", 1)], {"unique": True}),
+                           ("audit_log", [("entity", 1), ("entity_id", 1)], {})):
+        try:
+            await db[coll].create_index(keys, **kw)
+        except Exception as e:
+            logging.warning(f"Index on {coll} not created: {e}")
 
 @app.on_event("startup")
 async def on_startup():
