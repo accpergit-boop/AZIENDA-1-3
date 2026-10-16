@@ -1,0 +1,234 @@
+{
+  "project_identity": {
+    "app_name": "SUPER IQ-FOAM Business Management System",
+    "app_type": "Internal ERP & Wholesale Manufacturing Dashboard",
+    "company": "SUPER IQ-FOAM",
+    "location": "Kokstad, KwaZulu-Natal, South Africa",
+    "currency_symbol": "R",
+    "currency_code": "ZAR",
+    "target_users": "Factory Managers, Operations Leads, Wholesale Sales Reps, Dispatch Coordinators"
+  },
+  "design_archetype": {
+    "name": "Swiss Tactical Industrial ERP",
+    "vibe": "High-density precision, crisp readability, authoritative manufacturing control center",
+    "contrast_strategy": "High contrast dark navy navigation sidebar paired with immaculate light slate background and card surfaces",
+    "forbidden_fonts": ["Inter", "Roboto", "Space Grotesk", "Comic Sans"],
+    "forbidden_colors": ["#7351B7", "#1B93A4", "full screen rainbow gradients"]
+  },
+  "color_palette": {
+    "sidebar": {
+      "bg": "#0F172A",
+      "text": "#94A3B8",
+      "text_hover": "#F8FAFC",
+      "active_bg": "#2563EB",
+      "active_text": "#FFFFFF",
+      "hover_bg": "#1E293B",
+      "border": "#1E293B"
+    },
+    "topbar": {
+      "bg": "rgba(255, 255, 255, 0.95)",
+      "border": "#E2E8F0",
+      "text": "#0F172A",
+      "icon": "#64748B"
+    },
+    "canvas": {
+      "bg": "#F8FAFC"
+    },
+    "surfaces": {
+      "card_bg": "#FFFFFF",
+      "card_border": "#E2E8F0",
+      "card_shadow": "0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)"
+    },
+    "primary_actions": {
+      "blue_btn": "#2563EB",
+      "blue_btn_hover": "#1D4ED8",
+      "blue_btn_active": "#1E40AF",
+      "blue_focus_ring": "rgba(37, 99, 235, 0.25)"
+    },
+    "status_indicators": {
+      "green_paid_completed": {
+        "text": "#047857",
+        "bg": "#ECFDF5",
+        "border": "#A7F3D0",
+        "dot": "#10B981"
+      },
+      "amber_pending_warning": {
+        "text": "#B45309",
+        "bg": "#FFFBEB",
+        "border": "#FDE68A",
+        "dot": "#F59E0B"
+      },
+      "red_overdue_lowstock": {
+        "text": "#B91C1C",
+        "bg": "#FEF2F2",
+        "border": "#FCA5A5",
+        "dot": "#EF4444"
+      }
+    },
+    "text_hierarchy": {
+      "heading_navy": "#0F172A",
+      "body": "#334155",
+      "muted": "#64748B",
+      "light_label": "#94A3B8"
+    }
+  },
+  "typography": {
+    "google_fonts_imports": [
+      "https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap"
+    ],
+    "headings_font": "'Outfit', -apple-system, sans-serif",
+    "body_font": "'Plus Jakarta Sans', -apple-system, sans-serif",
+    "mono_font": "'JetBrains Mono', monospace",
+    "scales": {
+      "h1_title": "text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900",
+      "h2_section": "text-xl font-bold tracking-tight text-slate-900",
+      "h3_card": "text-base font-semibold text-slate-900",
+      "overline_label": "text-xs font-semibold uppercase tracking-wider text-slate-500",
+      "body_text": "text-sm font-medium text-slate-700",
+      "caption_text": "text-xs text-slate-500",
+      "table_data": "text-sm text-slate-800",
+      "currency_zar": "font-mono font-semibold text-slate-900"
+    }
+  },
+  "layout_architecture": {
+    "sidebar": {
+      "width": "256px (w-64)",
+      "position": "fixed left-0 top-0 bottom-0 z-50",
+      "branding": {
+        "logo_icon": "Cubic blue/white polyfoam block icon with rounded edges",
+        "title": "SUPER IQ-FOAM",
+        "subtitle": "KOKSTAD ERP • WHOLSALE & MFG"
+      },
+      "nav_items": [
+        {"id": "dashboard", "label": "Dashboard", "icon": "LayoutDashboard"},
+        {"id": "customers", "label": "Customers", "icon": "Users"},
+        {"id": "invoices", "label": "Invoices", "icon": "FileText"},
+        {"id": "stock", "label": "Finished Stock", "icon": "Boxes"},
+        {"id": "production", "label": "Foam Production", "icon": "Factory"},
+        {"id": "attendance", "label": "Attendance", "icon": "CalendarCheck"},
+        {"id": "deliveries", "label": "Deliveries & Drivers", "icon": "Truck"},
+        {"id": "settings", "label": "Settings & Price Lists", "icon": "Sliders"}
+      ]
+    },
+    "topbar": {
+      "height": "64px (h-16)",
+      "position": "fixed top-0 right-0 left-64 z-40 bg-white/95 backdrop-blur-sm border-b border-slate-200 px-6 flex items-center justify-between",
+      "elements": [
+        "Global search bar with instant query matching for Invoices, Customers & Stock",
+        "Kokstad Factory Location Indicator Badge",
+        "Quick Action (+ New Invoice)",
+        "Notifications bell with active warning badges",
+        "Admin Profile menu (Plant Operations Manager)"
+      ]
+    },
+    "main_content_area": {
+      "margin": "ml-64 pt-20 p-6 sm:p-8 bg-slate-50 min-h-screen"
+    }
+  },
+  "key_pages_and_components": {
+    "dashboard": {
+      "kpi_summary_cards": [
+        {"title": "Total Invoiced (This Month)", "format": "currency", "metric": "R 1,482,900", "trend": "+12.4% vs last mo"},
+        {"title": "Payments Received", "format": "currency", "metric": "R 1,120,450", "status": "green"},
+        {"title": "Outstanding Balances", "format": "currency", "metric": "R 362,450", "status": "red"},
+        {"title": "Finished Stock In Store", "format": "units_m3", "metric": "1,420 Blocks (385 m³)", "status": "amber"}
+      ],
+      "sections": [
+        "Low Stock & Density Warning Alert Banner",
+        "Production Recommendations Engine (Auto cutting schedule based on pending orders)",
+        "Foam Blocks Ready for Cutting (Block ID, Density Grade, Dimensions L×W×H, Age)",
+        "Today's Staff Attendance (Present count, Shift log, Overtime status)",
+        "Upcoming Deliveries & Driver Assignment Panel",
+        "Recent Invoices Quick Table with status badges and quick actions"
+      ]
+    },
+    "unified_invoice_creation": {
+      "style": "Professional South Africa Tax Invoice Layout",
+      "header_controls": [
+        "Invoice Number Generator (INV-2026-XXXX)",
+        "Issue Date & Payment Due Date picker",
+        "Price List Zone Selector Toggle: [Zone 1: Kokstad / Local] vs [Zone 2: Regional / Long Haul Dispatch]"
+      ],
+      "customer_section": [
+        "Customer Select dropdown with tax/VAT number, physical delivery address, account limit, credit terms"
+      ],
+      "product_line_items_table": [
+        "Columns: Foam Item & Code | Density & Grade (e.g., High Density HD30, Medium Density MD20, Rebond R80) | Dimensions (L x W x H mm) | Zone Unit Price (ZAR) | Qty | Line Total (ZAR) | Actions",
+        "Auto-calculation of Subtotal, VAT (15% SARS standard), Delivery Freight Charge, Total Incl VAT"
+      ],
+      "action_toolbar": [
+        "Save Invoice Draft",
+        "Record Payment (EFT / Cash / Credit)",
+        "Copy Invoice Data to Clipboard",
+        "Download / Print PDF Tax Invoice",
+        "Send Email to Customer"
+      ]
+    },
+    "price_lists_management": {
+      "zones": [
+        {"zone": "Zone 1", "desc": "Kokstad Local & Factory Pickup"},
+        {"zone": "Zone 2", "desc": "Eastern Cape & KwaZulu-Natal Regional Wholesale"}
+      ]
+    }
+  },
+  "component_styling_specifications": {
+    "buttons": {
+      "primary": "bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold px-4 py-2.5 rounded-lg shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50",
+      "secondary": "border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium px-4 py-2.5 rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-slate-200",
+      "danger": "bg-red-600 hover:bg-red-700 active:bg-red-800 text-white font-semibold px-4 py-2.5 rounded-lg shadow-sm transition-all",
+      "success": "bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-semibold px-4 py-2.5 rounded-lg shadow-sm transition-all"
+    },
+    "tables": {
+      "container": "w-full text-left border-collapse bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden",
+      "thead": "bg-slate-50/80 border-b border-slate-200 text-xs font-semibold uppercase tracking-wider text-slate-500 px-4 py-3",
+      "tbody_tr": "border-b border-slate-100 hover:bg-slate-50/70 transition-colors",
+      "td": "px-4 py-3 text-sm text-slate-800",
+      "mono_col": "font-mono font-medium text-slate-900"
+    },
+    "forms": {
+      "input": "w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all",
+      "select": "w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20",
+      "label": "block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1.5"
+    },
+    "cards": {
+      "container": "bg-white rounded-xl border border-slate-200 p-5 shadow-sm"
+    }
+  },
+  "testing_requirements": {
+    "mandatory_data_testid_rule": "Every interactive and key informational element MUST include a data-testid attribute in kebab-case format.",
+    "sample_test_ids": [
+      "sidebar-nav-dashboard",
+      "sidebar-nav-customers",
+      "sidebar-nav-invoices",
+      "sidebar-nav-stock",
+      "sidebar-nav-production",
+      "sidebar-nav-attendance",
+      "sidebar-nav-deliveries",
+      "sidebar-nav-settings",
+      "dashboard-kpi-total-invoiced",
+      "dashboard-kpi-payments-received",
+      "dashboard-kpi-outstanding-balances",
+      "dashboard-kpi-finished-stock",
+      "invoice-create-btn",
+      "invoice-customer-select",
+      "invoice-zone-toggle-zone1",
+      "invoice-zone-toggle-zone2",
+      "invoice-add-line-item-btn",
+      "invoice-subtotal-amount",
+      "invoice-vat-amount",
+      "invoice-total-amount",
+      "invoice-copy-clipboard-btn",
+      "invoice-download-pdf-btn",
+      "invoice-record-payment-btn"
+    ]
+  },
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "Strictly follow light slate canvas (#F8FAFC) and pure white card (#FFFFFF) layout with dark navy vertical sidebar (#0F172A).",
+    "Use South African Rand symbol (R) for all financial numbers formatted with comma group separators (e.g. R 42,500.00).",
+    "Font imports MUST be added to public/index.html or index.css: Outfit for headings, Plus Jakarta Sans for UI, JetBrains Mono for monetary values and item codes.",
+    "Implement status badges with strict color mapping: Green (Emerald) for Paid/Completed/In Stock, Amber for Warning/Pending/Medium Stock, Red for Overdue/Low Stock/Outstanding.",
+    "Ensure responsiveness across Desktop (1440px+), Tablet (768px-1024px), and Mobile (375px+). Mobile layout must include a collapsible left drawer for sidebar navigation.",
+    "Add interactive state micro-animations (hover transition 150ms, active scaling/shadow, focus ring 2px).",
+    "All forms and tables must support complete workflow operations (adding customers, creating invoices, filtering stock, recording production, tracking driver deliveries, switching Zone 1 vs Zone 2 pricing)."
+  ]
+}
