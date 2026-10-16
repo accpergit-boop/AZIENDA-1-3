@@ -71,7 +71,7 @@ export default function Stock() {
                   <td className="px-4 text-slate-500 font-mono">{s.size}</td>
                   <td className="px-4 text-right font-mono text-slate-500">{s.opening}</td>
                   <td className="px-4 text-right font-mono text-emerald-600">+{s.production_received || 0}</td>
-                  <td className="px-4 text-right font-mono text-red-500">-{s.dispatched || 0}</td>
+                  <td className="px-4 text-right font-mono text-red-500">{s.dispatched ? `-${s.dispatched}` : 0}</td>
                   <td className="px-4 text-right font-mono text-slate-500">{s.adjustments || 0}</td>
                   <td className="px-4 text-right"><span className={`font-mono font-bold ${s.current < s.threshold ? "text-red-600" : "text-slate-800"}`} data-testid={`stock-current-${s.id}`}>{s.current}</span>{s.current < s.threshold && <Badge cls="bg-red-50 text-red-700 border-red-200 ml-2">Low</Badge>}</td>
                   <td className="px-4 text-right font-mono text-slate-400">{s.threshold}</td>
@@ -117,7 +117,7 @@ export default function Stock() {
               <span className="col-span-3 text-slate-400 text-xs truncate">{m.reason || m.reference}</span>
               <span className={`col-span-1 text-right font-mono font-semibold ${sign(m) > 0 ? "text-emerald-600" : "text-red-600"}`}>{sign(m) > 0 ? "+" : "-"}{m.quantity}</span>
               <span className="col-span-2 text-slate-400 text-xs">{fmtDateTime(m.created_at)}</span>
-              <span className="col-span-1 text-right">{!m.reversed && m.type !== "reversal" && <button onClick={() => reverse(m)} title="Reverse" className="text-slate-400 hover:text-red-600" data-testid={`reverse-movement-${m.id}`}><Undo2 size={15} /></button>}</span>
+              <span className="col-span-1 text-right">{!m.reversed && ["adjustment_in", "adjustment_out", "return", "damage"].includes(m.type) && <button onClick={() => reverse(m)} title="Reverse" className="text-slate-400 hover:text-red-600" data-testid={`reverse-movement-${m.id}`}><Undo2 size={15} /></button>}</span>
             </div>))}</div>
         )}
       </Modal>

@@ -1,0 +1,51 @@
+{
+  "summary": "Phase A (P0 data-integrity) tested end-to-end. Backend: new pytest suite /app/backend/tests/test_phase_a_integrity.py (44 tests covering auth 401, Decimal invoice calc + IQF-YYYY-NNNN numbering, price lookup zones/Candy/Ribbon 1370x150 manual-only, issue validation, price snapshot, payments partial/full/over/draft/idempotency (incl. 3 concurrent)/reverse, void/delete rules, stock ledger types/reason/no-negative/reverse-once/opening lock, dispatch once/concurrent/insufficient/cancelled, production weather/override/resting/receive-once, fleet repair + spare part counted once, expense validate/void/no-delete, profit labels & Monday week, revenue by payment date excl. reversed, dashboard/customer summary/audit keys, backend restart seeding idempotent + fleet list) -> 44/44 PASS. Extra edge probes found 2 medium + several low issues (below). Frontend: Playwright verified invoice editor (Candy in categories, Ribbon 1370x150 'Manual price required' + issue blocked with toast, category change resets size/price, zone change confirm listing 171->181, issue, overpay error, partial + full pay, Paid status, void blocked while paid, reverse payments via prompt, copy, PDF download IQF-2026-0024.pdf, print media hides .no-print/aside, void with reason, delete draft), Stock adjust modal (reason required, over-decrease error toast, ledger + reverse), Production (weather/status options, rain shows override, too-early Ready for Cutting toast, 13h-ago OK, Receive only after rest, once), Fleet (6 real vehicles + 2 old TEST vans, records modal statuses, spare part Mark Bought prompt -> actual cost R150, installed, one FLEET PART expense, costs-by-category/vehicle), Expenses void via prompt, Dashboard new KPIs/Est. Result labels, Customers (notes, profile Payments Received/Overdue/Open Orders/Upcoming Deliveries, no-city info toast on invoice). All requested UI flows PASS.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "PUT /api/deliveries/{id}", "issue": "Status can be set to 'Dispatched' or 'Delivered' via PUT without calling /dispatch -> stock is never deducted (repro: create delivery with items qty 2, PUT status Delivered -> 200, dispatched=false, stock unchanged). Block Dispatched/Delivered (and later statuses) via PUT unless dispatched==true, or route through dispatch_delivery.", "priority": "HIGH"},
+      {"endpoint": "POST /api/production/{pid}/receive", "issue": "Receive only checks rest_elapsed, not status/weather. A 'Planned' block with no weather assessment and an old production_time can be received into stock and is auto-set to Completed (repro: POST /production {status:Planned, production_time:'2025-01-01T08:00'} then /receive -> 200). Bypasses the weather/override rule. Require status in (Resting, Ready for Cutting, Completed) and weather recorded (and override_reason if risky). Frontend Production.jsx also shows Receive button for Planned rows (condition only uses rest_elapsed).", "priority": "MEDIUM"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/invoices/{iid}/payments", "issue": "idempotency_key lookup is global, not scoped to invoice: reusing a key on a different invoice silently returns the OTHER invoice's payment with 200. Scope by invoice_id or return 409 on mismatch."},
+      {"endpoint": "POST/PUT /api/invoices", "issue": "Negative discount / extra_charges accepted (discount -50 increases total from 10 to 60). Add ge=0 validation."},
+      {"endpoint": "POST /api/stock/{sid}/movements & dispatch across different deliveries", "issue": "Stock decrease is check-then-insert (not atomic). Not reproduced in a 5-parallel probe, but two concurrent decreases on the same stock item could go negative. Consider a per-stock lock (like payment_lock)."},
+      {"endpoint": "POST /api/auth/login", "issue": "No brute-force lockout (7 consecutive failures all 401). bcrypt $2b$ hash confirmed. Admin password intentionally not reset on restart (user requirement)."},
+      {"endpoint": "POST /api/stock/movements/{mid}/reverse", "issue": "Dispatch and production-receipt movements can be reversed from the stock ledger while the delivery stays 'Dispatched' / production stays received -> stock and delivery/production state diverge. Consider restricting reversal to manual movement types or syncing linked records."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Production.jsx receive button", "issue": "Receive button shown for Planned (unassessed weather) blocks once rest time elapsed (matches backend gap above)", "selector": "[data-testid^='receive-production-']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Stock table", "issues": ["Dispatched/Other columns show '-0' for zero values; show '0'"]},
+      {"screen": "Production", "issues": ["'Still resting' error toast shows raw ISO timestamp '2026-10-16T21:53:00+02:00' - format as '16 Oct, 21:53'"]},
+      {"screen": "Invoice/Production/Expenses forms", "issues": ["Native browser date / datetime-local / month pickers used instead of shadcn calendar"]},
+      {"screen": "Expenses", "issues": ["FLEET PART expense rows have no action (intended), and bought parts cannot be deleted - there is no UI path to void a part bought by mistake (only cost edit)"]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_phase_a_integrity.py", "/app/test_reports/pytest/phase_a_results.xml"],
+  "action_items": [
+    "Block PUT /api/deliveries status Dispatched/Delivered unless stock was dispatched via /dispatch (or call dispatch automatically)",
+    "Production receive: require valid post-Planned status + weather assessment (and override reason if risky); hide Receive button for Planned/no-weather rows",
+    "Scope payment idempotency_key to invoice_id",
+    "Validate discount/extra_charges >= 0",
+    "Optional: per-stock atomic lock for decreases; restrict ledger reversal of dispatch/production movements; brute-force lockout; format resting toast datetime; fix '-0' display"
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1465 lines - split into routers (invoices/payments, stock/production, fleet/expenses, seed)",
+    "edit_delivery lets status jump to Dispatched/Delivered bypassing stock ledger",
+    "receive_production does not reuse check_production_rules",
+    "record_payment idempotency dup check happens before invoice validation and is not invoice-scoped",
+    "Old /app/backend/tests/test_iqfoam_erp.py contains outdated expectations (void without body, payments on drafts, DELETE expenses, 'Consumed' status) - should be updated or retired"
+  ],
+  "updated_files": ["/app/backend/tests/test_phase_a_integrity.py"],
+  "success_rate": {"backend": "100% of requested scenarios (44/44); 2 medium + 5 low issues from extra edge probes", "frontend": "100% of requested flows"},
+  "test_credentials": "Admin 2j2skp87z8@privaterelay.appleid.com / iqfoam2026 (from /app/memory/test_credentials.md) - works",
+  "seed_data_creation": "Created TEST_ prefixed customers (TEST_Cust_*, TEST_UI_NoCity), TEST_Prod_*/TEST_probe* stock items, TEST invoices (IQF-2026-00xx, several voided), TEST deliveries, TEST production blocks (TEST_B_*, TEST_rest, TEST_ok, TEST_UI_ok, TEST_planned), TEST_ vehicle records/spare parts/expenses (voided). Price Standard 910x100 zone1 was changed to 999 and restored to 171. Voided TEST_UI_Diesel expense from earlier run. No business data deleted.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app/backend && python -m pytest tests/test_phase_a_integrity.py -n 0 (pytest.ini forces xdist -n 2 loadscope; use -n 0 because TestZSeed restarts backend). After fixes, add tests: PUT delivery status Delivered without dispatch should 400; receive on Planned block should 400; cross-invoice idempotency key should not return other invoice payment; negative discount 400. Phase B/C features not built yet.",
+  "rca of the issue": "Delivery bypass: edit_delivery only guards going BACK from dispatched; forward status changes are unrestricted and dispatched flag stays False. Production bypass: receive_production checks only enrich_production rest_elapsed (time-based) and Cancelled, never the weather/status rules in check_production_rules."
+}

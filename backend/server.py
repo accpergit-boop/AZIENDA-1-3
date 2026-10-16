@@ -66,6 +66,32 @@ def parse_dt(s):
     dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
     return dt.replace(tzinfo=TZ) if dt.tzinfo is None else dt
 
+def fmt_local(s):
+    return parse_dt(s).astimezone(TZ).strftime("%d %b %Y, %H:%M")
+
+class StockLock:
+    def __init__(self, ids):
+        self.ids = sorted(set(ids))
+        self.held = []
+
+    async def __aenter__(self):
+        import asyncio
+        for sid in self.ids:
+            for _ in range(50):
+                if await db.stock.find_one_and_update({"id": sid, "lock": {"$ne": True}}, {"$set": {"lock": True}}):
+                    self.held.append(sid)
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                await self.__aexit__()
+                raise HTTPException(409, "Stock is being updated by another operation. Please retry")
+        return self
+
+    async def __aexit__(self, *a):
+        if self.held:
+            await db.stock.update_many({"id": {"$in": self.held}}, {"$unset": {"lock": ""}})
+        self.held = []
+
 async def log_audit(entity, eid, action, user, before=None, after=None, reason=""):
     strip = lambda d: {k: v for k, v in (d or {}).items() if k not in ("_id", "password_hash", "audit")} if isinstance(d, dict) else d
     await db.audit_log.insert_one({"id": new_id(), "entity": entity, "entity_id": eid, "action": action,
@@ -372,6 +398,10 @@ async def _prepare_invoice(body: InvoiceIn):
     if not cust:
         raise HTTPException(400, "Customer not found")
     inv = body.model_dump()
+    if inv.get("discount", 0) < 0 or inv.get("extra_charges", 0) < 0 or inv.get("tax_rate", 0) < 0:
+        raise HTTPException(400, "Discount, additional charges and tax rate cannot be negative")
+    if any((it.get("unit_price") or 0) < 0 for it in inv.get("items", [])):
+        raise HTTPException(400, "Unit prices cannot be negative")
     inv["customer_name"] = cust["name"]
     if not inv.get("due_date"):
         inv["due_date"] = inv["date"]
@@ -486,6 +516,8 @@ async def record_payment(iid: str, body: PaymentIn, user=Depends(get_current_use
     if body.idempotency_key:
         dup = await db.payments.find_one({"idempotency_key": body.idempotency_key}, {"_id": 0})
         if dup:
+            if dup.get("invoice_id") != iid:
+                raise HTTPException(409, "This payment key was already used for a different invoice")
             return dup
     inv = await db.invoices.find_one({"id": iid})
     if not inv:
@@ -619,9 +651,10 @@ async def add_movement(sid: str, body: MovementIn, user=Depends(get_current_user
         raise HTTPException(400, "Production receipts come from Production and dispatches from Deliveries")
     if body.quantity <= 0:
         raise HTTPException(400, "Quantity must be positive")
-    if not (body.reason or "").strip():
+    if body.reason is None or not body.reason.strip():
         raise HTTPException(400, "A reason is required for manual stock movements")
-    m = await post_movement(s, body.type, body.quantity, user, body.reason, body.reference, body.notes)
+    async with StockLock([sid]):
+        m = await post_movement(s, body.type, body.quantity, user, body.reason, body.reference, body.notes)
     await log_audit("stock_movement", m["id"], "posted", user, after=m, reason=body.reason)
     return m
 
@@ -632,15 +665,16 @@ async def reverse_movement(mid: str, body: ReasonIn, user=Depends(get_current_us
     orig = await db.stock_movements.find_one({"id": mid}, {"_id": 0})
     if not orig:
         raise HTTPException(404, "Movement not found")
-    if orig.get("type") == "reversal":
-        raise HTTPException(400, "A reversal cannot be reversed")
+    if orig.get("type") not in ("adjustment_in", "adjustment_out", "return", "damage"):
+        raise HTTPException(400, "Only manual movements can be reversed here. Dispatches and production receipts are corrected with a Return or Adjustment")
     claimed = await db.stock_movements.find_one_and_update({"id": mid, "reversed": {"$ne": True}}, {"$set": {"reversed": True}})
     if not claimed:
         raise HTTPException(400, "Movement already reversed")
     s = await db.stock.find_one({"id": orig["stock_id"]}, {"_id": 0})
     try:
-        rev = await post_movement(s, "reversal", orig["quantity"], user, body.reason, orig.get("reference", ""),
-                                  direction=-mov_sign(orig), dedupe_key=f"reversal:{mid}", extra={"reverses": mid})
+        async with StockLock([s["id"]]):
+            rev = await post_movement(s, "reversal", orig["quantity"], user, body.reason, orig.get("reference", ""),
+                                      direction=-mov_sign(orig), dedupe_key=f"reversal:{mid}", extra={"reverses": mid})
     except HTTPException:
         await db.stock_movements.update_one({"id": mid}, {"$unset": {"reversed": ""}})
         raise
@@ -694,7 +728,7 @@ async def check_production_rules(d, existing, hours):
     if d["status"] in ("Ready for Cutting", "Completed"):
         enrich_production(d, hours)
         if not d["rest_elapsed"]:
-            raise HTTPException(400, f"Block is still resting. It can be cut after {d['ready_at']} ({hours:g}h resting period)")
+            raise HTTPException(400, f"Block is still resting. It can be cut after {fmt_local(d['ready_at'])} ({hours:g}h resting period)")
 
 @api.get("/production")
 async def get_production(user=Depends(get_current_user)):
@@ -737,10 +771,16 @@ async def receive_production(pid: str, body: ReceiveIn, user=Depends(get_current
         raise HTTPException(400, "Quantity must be positive")
     if p.get("status") == "Cancelled":
         raise HTTPException(400, "Cancelled production cannot be received into stock")
+    if p.get("status") not in ("Resting", "Ready for Cutting"):
+        raise HTTPException(400, "Only Resting or Ready for Cutting blocks can be received into stock")
+    if not p.get("weather"):
+        raise HTTPException(400, "Record a weather assessment for this block first")
+    if (p.get("weather") == "Unsuitable" or p.get("rain_risk")) and not (p.get("override_reason") or "").strip():
+        raise HTTPException(400, "Unsuitable weather requires a recorded override reason")
     hours = await resting_hours()
     enrich_production(p, hours)
     if not p["rest_elapsed"]:
-        raise HTTPException(400, f"Block is still resting until {p['ready_at']}")
+        raise HTTPException(400, f"Block is still resting until {fmt_local(p['ready_at'])}")
     s = await db.stock.find_one({"id": body.stock_id}, {"_id": 0})
     if not s:
         raise HTTPException(404, "Stock item not found")
@@ -891,6 +931,8 @@ async def edit_delivery(did: str, body: DeliveryIn, user=Depends(get_current_use
         d["items"] = existing.get("items", [])
         if d["status"] in ("Planned", "Assigned", "Ready"):
             raise HTTPException(400, "A dispatched delivery cannot go back to a pre-dispatch status. Record a return instead")
+    elif d["status"] in ("Dispatched", "Partially Delivered", "Delivered"):
+        raise HTTPException(400, "Use the Dispatch action first — it checks and deducts stock once")
     if d.get("customer_id"):
         cust = await db.customers.find_one({"id": d["customer_id"]})
         if cust:
@@ -918,21 +960,22 @@ async def dispatch_delivery(did: str, user=Depends(get_current_user)):
                 need[it["stock_id"]] = D(need.get(it["stock_id"], 0)) + D(it["qty"])
         if not need:
             raise HTTPException(400, "Add at least one stock item to dispatch")
-        stocks = {}
-        for sid, qty in need.items():
-            s = await db.stock.find_one({"id": sid}, {"_id": 0})
-            if not s:
-                raise HTTPException(400, "A dispatch item references a missing stock product")
-            await stock_current(s)
-            if qty > D(s["current"]):
-                raise HTTPException(400, f"Insufficient stock for {s['product']} {s['size']}: available {s['current']}, needed {float(qty):g}")
-            stocks[sid] = s
-        for sid, qty in need.items():
-            try:
-                await post_movement(stocks[sid], "dispatch", float(qty), user, f"Dispatch {d['reference']}", d["reference"],
-                                    dedupe_key=f"dispatch:{did}:{sid}", allow_negative=True, extra={"delivery_id": did})
-            except DuplicateKeyError:
-                pass
+        async with StockLock(need.keys()):
+            stocks = {}
+            for sid, qty in need.items():
+                s = await db.stock.find_one({"id": sid}, {"_id": 0})
+                if not s:
+                    raise HTTPException(400, "A dispatch item references a missing stock product")
+                await stock_current(s)
+                if qty > D(s["current"]):
+                    raise HTTPException(400, f"Insufficient stock for {s['product']} {s['size']}: available {s['current']}, needed {float(qty):g}")
+                stocks[sid] = s
+            for sid, qty in need.items():
+                try:
+                    await post_movement(stocks[sid], "dispatch", float(qty), user, f"Dispatch {d['reference']}", d["reference"],
+                                        dedupe_key=f"dispatch:{did}:{sid}", allow_negative=True, extra={"delivery_id": did})
+                except DuplicateKeyError:
+                    pass
         upd = {"status": "Dispatched", "dispatched": True, "dispatched_at": now_iso(),
                "actual_departure": d.get("actual_departure") or local_now().strftime("%Y-%m-%dT%H:%M")}
         rec = await update_doc("deliveries", did, upd)
