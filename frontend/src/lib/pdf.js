@@ -1,14 +1,66 @@
-import html2canvas from "html2canvas";
+import html2canvas from "html2canvas-pro";
 import { jsPDF } from "jspdf";
 
-export async function elementToPdf(el, filename) {
-  const canvas = await html2canvas(el, { scale: 2, backgroundColor: "#ffffff", useCORS: true });
-  const pdf = new jsPDF({ unit: "mm", format: "a4" });
-  const w = 210, page = 297, h = (canvas.height * w) / canvas.width;
-  const img = canvas.toDataURL("image/jpeg", 0.95);
-  pdf.addImage(img, "JPEG", 0, 0, w, h);
-  for (let left = h - page, y = -page; left > 0; left -= page, y -= page) { pdf.addPage(); pdf.addImage(img, "JPEG", 0, y, w, h); }
-  pdf.save(filename);
+export async function elementToPdf(el, filename = "document.pdf") {
+  if (!el) throw new Error("PDF target is not ready yet.");
+
+  const clone = el.cloneNode(true);
+  clone.style.position = "fixed";
+  clone.style.left = "0";
+  clone.style.top = "0";
+  clone.style.width = `${el.scrollWidth || el.offsetWidth || 794}px`;
+  clone.style.maxWidth = "none";
+  clone.style.zIndex = "2147483647";
+  clone.style.visibility = "visible";
+  clone.style.opacity = "1";
+  clone.style.background = "#ffffff";
+  clone.style.pointerEvents = "none";
+  clone.style.overflow = "visible";
+
+  clone.querySelectorAll(".no-print").forEach((node) => {
+    node.style.display = "none";
+  });
+
+  const wrapper = document.createElement("div");
+  wrapper.style.position = "absolute";
+  wrapper.style.left = "-99999px";
+  wrapper.style.top = "0";
+  wrapper.style.width = "max-content";
+  wrapper.style.pointerEvents = "none";
+  wrapper.appendChild(clone);
+  document.body.appendChild(wrapper);
+
+  try {
+    const canvas = await html2canvas(clone, {
+      scale: 2,
+      backgroundColor: "#ffffff",
+      useCORS: true,
+      allowTaint: true,
+      logging: false,
+      width: clone.scrollWidth || clone.offsetWidth || 794,
+      height: clone.scrollHeight || clone.offsetHeight || 1200,
+      scrollX: 0,
+      scrollY: 0,
+      windowWidth: Math.max(document.documentElement.clientWidth, window.innerWidth || 1200),
+      windowHeight: Math.max(document.documentElement.clientHeight, window.innerHeight || 1200),
+    });
+
+    const pdf = new jsPDF({ unit: "mm", format: "a4" });
+    const pageWidth = 210;
+    const pageHeight = 297;
+    const renderedHeight = (canvas.height * pageWidth) / canvas.width;
+    const img = canvas.toDataURL("image/png");
+
+    pdf.addImage(img, "PNG", 0, 0, pageWidth, renderedHeight);
+    for (let offset = renderedHeight - pageHeight; offset > 0; offset -= pageHeight) {
+      pdf.addPage();
+      pdf.addImage(img, "PNG", 0, -offset, pageWidth, renderedHeight);
+    }
+
+    pdf.save(filename);
+  } finally {
+    wrapper.remove();
+  }
 }
 
 export function printElement(el, title) {

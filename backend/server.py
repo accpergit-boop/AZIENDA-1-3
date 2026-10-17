@@ -45,6 +45,13 @@ def local_today():
 def today_str():
     return local_today().isoformat()
 
+def diesel_price_is_current(effective_date):
+    try:
+        age_days = (local_today() - date.fromisoformat(str(effective_date))).days
+        return 0 <= age_days <= 45
+    except (TypeError, ValueError):
+        return False
+
 def new_id():
     return str(uuid.uuid4())
 
@@ -111,6 +118,13 @@ def make_token(uid, email):
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
 
 USER_PROJ = {"_id": 0, "password_hash": 0}
+OWNER_EMAIL_ALIASES = {"2j2skp87z8@privaterelay.appleid.com"}
+
+def canonical_email(email):
+    normalized = (email or "").strip().lower()
+    if normalized in OWNER_EMAIL_ALIASES:
+        return os.environ["ADMIN_EMAIL"].strip().lower()
+    return normalized
 
 async def user_from_session(token):
     s = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
@@ -153,12 +167,48 @@ class LoginIn(BaseModel):
     email: str
     password: str
 
+class RegisterIn(BaseModel):
+    name: str
+    email: str
+    password: str
+
+class DeviceIn(BaseModel):
+    device_id: str
+    device_name: str = "Unknown device"
+    timezone: str = ""
+    share_location: bool = False
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+class UserRoleIn(BaseModel):
+    role: str
+
 def public_user(u):
-    return {"id": u["id"], "email": u["email"], "name": u.get("name", "Admin"), "role": u.get("role", "admin"), "picture": u.get("picture", "")}
+    return {"id": u["id"], "email": u["email"], "name": u.get("name", "Admin"), "role": u.get("role", "admin"),
+            "is_admin": u.get("role") == "admin", "picture": u.get("picture", "")}
+
+@api.post("/auth/register")
+async def register(body: RegisterIn):
+    email = canonical_email(body.email)
+    name = body.name.strip()
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise HTTPException(400, "Enter a valid email address")
+    if len(body.password) < 8:
+        raise HTTPException(400, "Password must contain at least 8 characters")
+    if not name:
+        raise HTTPException(400, "Name is required")
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(409, "An account with this email already exists")
+    user = {"id": new_id(), "email": email, "name": name, "password_hash": hash_pw(body.password),
+            "role": "admin" if email == os.environ["ADMIN_EMAIL"].lower() else "user",
+            "created_at": now_iso(), "auth_provider": "password"}
+    await db.users.insert_one(dict(user))
+    await log_audit("auth", user["id"], "account_registered", user)
+    return {"token": make_token(user["id"], email), "user": public_user(user)}
 
 @api.post("/auth/login")
 async def login(body: LoginIn):
-    email = body.email.strip().lower()
+    email = canonical_email(body.email)
     user = await db.users.find_one({"email": email})
     if not user or not verify_pw(body.password, user.get("password_hash", "")):
         raise HTTPException(401, "Invalid email or password")
@@ -166,12 +216,75 @@ async def login(body: LoginIn):
 
 @api.get("/auth/me")
 async def me(user=Depends(get_current_user)):
-    return user
+    return {**user, "is_admin": user.get("role") == "admin"}
 
-async def google_allowlist():
-    s = await db.settings.find_one({"id": "singleton"}) or {}
-    extra = [e.strip().lower() for e in s.get("google_allowed_emails", []) if e and e.strip()]
-    return {os.environ["ADMIN_EMAIL"].lower(), *extra}
+@api.post("/auth/device")
+async def register_device(body: DeviceIn, request: Request, user=Depends(get_current_user)):
+    if not body.device_id.strip():
+        raise HTTPException(400, "Device ID is required")
+    updates = {"device_name": body.device_name[:180], "timezone": body.timezone[:100],
+               "ip_address": request.client.host if request.client else "", "last_seen": now_iso()}
+    if body.share_location and body.latitude is not None and body.longitude is not None:
+        if not (-90 <= body.latitude <= 90 and -180 <= body.longitude <= 180):
+            raise HTTPException(400, "Invalid location coordinates")
+        updates["location"] = {"latitude": body.latitude, "longitude": body.longitude, "shared_at": now_iso()}
+    elif not body.share_location:
+        updates["location"] = None
+    await db.user_devices.update_one({"user_id": user["id"], "device_id": body.device_id.strip()},
+        {"$set": updates, "$setOnInsert": {"user_id": user["id"], "device_id": body.device_id.strip(), "first_seen": now_iso()}}, upsert=True)
+    return {"ok": True}
+
+def require_admin(user):
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Administrator access required")
+
+@api.get("/access/users")
+async def access_users(user=Depends(get_current_user)):
+    require_admin(user)
+    users = await listall("users", sort=("created_at", 1))
+    devices = await listall("user_devices", sort=("last_seen", -1))
+    device_map = {}
+    for device in devices:
+        device_map.setdefault(device["user_id"], []).append(device)
+    return [{"id": u["id"], "name": u.get("name", ""), "email": u.get("email", ""),
+             "role": u.get("role", "user"), "is_owner": u.get("email", "").lower() == os.environ["ADMIN_EMAIL"].lower(),
+             "created_at": u.get("created_at", ""),
+             "devices": device_map.get(u["id"], [])} for u in users]
+
+@api.put("/access/users/{uid}/role")
+async def update_user_role(uid: str, body: UserRoleIn, user=Depends(get_current_user)):
+    require_admin(user)
+    if body.role not in ("admin", "user"):
+        raise HTTPException(400, "Role must be admin or user")
+    target = await db.users.find_one({"id": uid}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("email", "").lower() == os.environ["ADMIN_EMAIL"].lower() and body.role != "admin":
+        raise HTTPException(400, "The owner account must remain an administrator")
+    if body.role == "admin" and target.get("role") != "admin":
+        if await db.users.count_documents({"role": "admin"}) >= 6:
+            raise HTTPException(400, "Maximum of 6 administrators reached")
+    await db.users.update_one({"id": uid}, {"$set": {"role": body.role}})
+    await log_audit("user", uid, "role_updated", user, before={"role": target.get("role")}, after={"role": body.role})
+    return {"id": uid, "role": body.role}
+
+@api.delete("/access/users/{uid}")
+async def remove_access_user(uid: str, user=Depends(get_current_user)):
+    require_admin(user)
+    if uid == user["id"]:
+        raise HTTPException(400, "You cannot remove your own account")
+    target = await db.users.find_one({"id": uid}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("email", "").lower() == os.environ["ADMIN_EMAIL"].lower():
+        raise HTTPException(400, "The owner account cannot be removed")
+    await log_audit("user", uid, "account_removed", user,
+                    before={"email": target.get("email"), "name": target.get("name"), "role": target.get("role")})
+    await db.user_sessions.delete_many({"user_id": uid})
+    await db.user_devices.delete_many({"user_id": uid})
+    await db.assistant_sessions.delete_many({"user_id": uid})
+    await db.users.delete_one({"id": uid})
+    return {"ok": True}
 
 class GoogleSessionIn(BaseModel):
     session_id: str
@@ -184,15 +297,14 @@ async def google_session(body: GoogleSessionIn, response: Response):
     if r.status_code != 200:
         raise HTTPException(401, "Google sign-in failed or expired. Please try again")
     data = r.json()
-    email = (data.get("email") or "").strip().lower()
-    if email not in await google_allowlist():
-        raise HTTPException(403, f"{email} is not allowed to access this ERP. Ask the owner to add it in Settings > Access")
+    email = canonical_email(data.get("email"))
     user = await db.users.find_one({"email": email}, {"_id": 0})
     if user:
         await db.users.update_one({"id": user["id"]}, {"$set": {"picture": data.get("picture", ""), "google_name": data.get("name", "")}})
     else:
         user = {"id": new_id(), "email": email, "name": data.get("name") or email, "picture": data.get("picture", ""),
-                "role": "admin", "auth_provider": "google", "created_at": now_iso()}
+                "role": "admin" if email == os.environ["ADMIN_EMAIL"].lower() else "user",
+                "auth_provider": "google", "created_at": now_iso()}
         await db.users.insert_one(dict(user))
     token = data["session_token"]
     await db.user_sessions.insert_one({"session_token": token, "user_id": user["id"],
@@ -1119,13 +1231,15 @@ async def recommend_driver(size: str = "small", user=Depends(get_current_user)):
 @api.get("/settings")
 async def get_settings(user=Depends(get_current_user)):
     s = await db.settings.find_one({"id": "singleton"}, {"_id": 0})
-    extra = {"city_distances": seed_data.CITY_DISTANCES_KM, "diesel_price": None, "diesel_price_date": "",
+    extra = {"city_distances": seed_data.CITY_DISTANCES_KM, "diesel_price": None, "diesel_price_date": "", "diesel_updated_at": "",
              "avg_speed_kmh": 60, "offload_minutes_per_stop": 45, "piece_weights_kg": {}}
     return {**seed_data.DEFAULT_SETTINGS, **extra, **(s or {})}
 
 @api.put("/settings")
 async def update_settings(body: dict, user=Depends(get_current_user)):
     body.pop("_id", None)
+    for key in ("diesel_price", "diesel_price_date", "diesel_updated_at", "diesel_sources", "diesel_checked_date", "diesel_lookup_attempt_date"):
+        body.pop(key, None)
     body["id"] = "singleton"
     before = await db.settings.find_one({"id": "singleton"}, {"_id": 0})
     await db.settings.update_one({"id": "singleton"}, {"$set": body}, upsert=True)
@@ -1133,6 +1247,25 @@ async def update_settings(body: dict, user=Depends(get_current_user)):
     changed = {k: v for k, v in after.items() if (before or {}).get(k) != v and k != "updated_at"}
     if changed:
         await log_audit("settings", "singleton", "updated", user, before={k: (before or {}).get(k) for k in changed}, after=changed)
+    return after
+
+class DieselPriceUpdate(BaseModel):
+    price_per_l: float
+
+@api.put("/settings/diesel")
+async def update_diesel_price(body: DieselPriceUpdate, user=Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Only an administrator can update the diesel price")
+    if body.price_per_l <= 0 or body.price_per_l > 100:
+        raise HTTPException(400, "Enter a valid diesel price per litre")
+    updated_at = now_iso()
+    updates = {"diesel_price": r2(body.price_per_l), "diesel_price_date": today_str(),
+               "diesel_updated_at": updated_at, "diesel_sources": ["https://petrolprices.co.za/"]}
+    before = await db.settings.find_one({"id": "singleton"}, {"_id": 0}) or {}
+    await db.settings.update_one({"id": "singleton"}, {"$set": updates}, upsert=True)
+    after = {**before, **updates}
+    await log_audit("settings", "singleton", "diesel_price_updated", user,
+                    before={k: before.get(k) for k in updates}, after=updates)
     return after
 
 # ---------------- Dashboard ----------------
@@ -1193,6 +1326,11 @@ async def dashboard(user=Depends(get_current_user)):
     return {
         "total_invoiced": total_invoiced,
         "payments_received": payments_received,
+        "diesel_price": settings.get("diesel_price"),
+        "diesel_price_date": settings.get("diesel_price_date") or "",
+        "diesel_updated_at": settings.get("diesel_updated_at") or "",
+        "diesel_sources": settings.get("diesel_sources") or [],
+        "diesel_price_current": diesel_price_is_current(settings.get("diesel_price_date")) and settings.get("diesel_price") is not None,
         "outstanding": outstanding,
         "overdue": overdue,
         "finished_stock": finished_stock,
@@ -1582,11 +1720,25 @@ async def business_snapshot(user):
     }
 
 ASSISTANT_RULES = """You are the business assistant for SUPER IQ-FOAM, a foam mattress manufacturer and wholesaler in Kokstad, KwaZulu-Natal, South Africa.
-Answer business questions using the JSON business data below (live from the ERP). Money is South African Rand, format like R 1,234.56.
-For general or current-events questions (fuel prices, news, weather, regulations, suppliers, etc.) use web search and ALWAYS end with a "Sources:" list of the URLs you used.
-Rules: never invent business numbers, customers, prices or dates; if the ERP data doesn't contain the answer, say so and suggest where in the ERP to record it.
-'Estimated result' = payments received minus recorded expenses; it is NOT accounting profit (cost data is incomplete) — say this when discussing profit.
-Be concise and practical. Use short bullet lists or small markdown tables. You cannot change data; tell the owner which page to use for actions.
+
+STRICT OPERATING RULES
+1) Answer only using the ERP business data provided below. Do not invent business facts, customer names, numbers, dates, prices, statuses, or stock levels.
+2) If the answer is not in the ERP data, say exactly that. Do not guess. Suggest the page or record where the owner can verify it.
+3) For non-business / general questions (weather, fuel prices, news, current market, regulations, suppliers, general advice, personal questions, unrelated topics), respond: "This is outside the ERP data. I can help with business questions only." You may use web search only for genuine current-events or general business info that is relevant to the factory/business. If you do use web search, you MUST end with a "Sources:" list of URLs.
+4) Keep answers concise, practical and business-focused. Prefer short bullets, brief summary tables, and action-led responses.
+5) Always use South African Rand formatting, e.g. R 1,234.56.
+6) If discussing profit, explicitly say: "Estimated result = payments received minus recorded expenses; it is not accounting profit because not all costs are recorded."
+7) You cannot create, edit, delete, or change data. You can only explain what exists and tell the user which ERP page to use for the action.
+8) If the user asks for a number but the ERP does not contain it, say: "I don't have enough data in the ERP to confirm this." Do not answer from memory.
+9) If the question is ambiguous, ask one short clarifying question instead of guessing.
+10) The assistant should behave like a disciplined operations analyst for the business, not like a general chatbot.
+
+RESPONSE FORMAT
+- Start with the direct answer in 1 sentence.
+- Then add a short bullet list with the relevant facts.
+- If needed, finish with a "Next step:" suggestion pointing to the ERP page or record to check.
+- If no answer exists in ERP, finish with: "I don't have enough data in the ERP to confirm this."
+
 BUSINESS DATA:
 """
 
@@ -1845,11 +1997,11 @@ async def plan_trip(body: TripPlanIn, user=Depends(get_current_user)):
             cons *= 1.15
         need = round(route_km * cons / 100 * 1.1, 1)  # +10% reserve
         to_buy = max(round(need - (body.fuel_in_tank_l or 0), 1), 0)
-        price = st.get("diesel_price")
+        price = st.get("diesel_price") if diesel_price_is_current(st.get("diesel_price_date")) else None
         fuel = {"consumption_l_100km": round(cons, 1), "needed_l": need, "in_tank_l": body.fuel_in_tank_l, "to_give_l": to_buy,
                 "price_per_l": price, "price_date": st.get("diesel_price_date"), "cost": round(to_buy * price, 2) if price else None}
         if not price:
-            warnings.append("Diesel price not set — use 'Check today's price' or enter it in Settings")
+            warnings.append("Current diesel price unavailable or outdated — check today's price before relying on the fuel cost")
     timing = None
     if route_km is not None:
         drive_h = route_km / float(st.get("avg_speed_kmh") or 60)
@@ -1862,17 +2014,6 @@ async def plan_trip(body: TripPlanIn, user=Depends(get_current_user)):
     return {"stops": stops, "missing": missing, "warnings": warnings, "total_pieces": total_pieces, "total_kg": total_kg,
             "route_km": route_km, "vehicle": sel, "trailer": trailer, "fuel": fuel, "timing": timing,
             "note": "Distances, consumption and times are ESTIMATES based on configured values"}
-
-@api.post("/diesel/lookup")
-async def diesel_lookup(user=Depends(get_current_user)):
-    q = (f"Today is {today_str()}. Find the current official retail price of diesel 50ppm per litre in South Africa (inland / KwaZulu-Natal, Kokstad area) "
-         'in Rand. Reply ONLY JSON: {"price_per_l": number, "effective_date": "YYYY-MM-DD", "summary": "short text", "sources": ["url", ...]}')
-    try:
-        txt = await web_search(q)
-        m = re.search(r"\{.*\}", txt, re.S)
-        return json.loads(m.group(0)) if m else {"summary": txt, "sources": []}
-    except Exception as e:
-        raise HTTPException(502, f"Web search unavailable: {str(e)[:150]}")
 
 @api.get("/attendance/summary")
 async def attendance_summary(user=Depends(get_current_user)):

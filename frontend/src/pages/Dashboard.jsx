@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "@/lib/api";
-import { fmtMoney, fmtDate, STATUS_META } from "@/lib/format";
-import { Card, Badge } from "@/components/common";
+import { toast } from "sonner";
+import { api, apiError } from "@/lib/api";
+import { fmtMoney, fmtDate, fmtDateTime, STATUS_META } from "@/lib/format";
+import { Card, Badge, Btn, Input, Modal } from "@/components/common";
 import {
   Receipt, Wallet, AlertTriangle, Boxes, Plus, UserPlus, CreditCard,
-  PackagePlus, Factory, CalendarCheck, Truck, TrendingUp, Scissors, ArrowRight, Banknote, ClipboardList, Wrench,
+  PackagePlus, Factory, CalendarCheck, Truck, TrendingUp, Scissors, ArrowRight, Banknote, ClipboardList, Wrench, Fuel, Pencil,
 } from "lucide-react";
 
 const QUICK = [
@@ -52,9 +53,25 @@ function Section({ title, icon: Icon, children, action }) {
 
 export default function Dashboard() {
   const [d, setD] = useState(null);
+  const [dieselModal, setDieselModal] = useState(false);
+  const [dieselPrice, setDieselPrice] = useState("");
+  const [dieselSaving, setDieselSaving] = useState(false);
   const nav = useNavigate();
 
   useEffect(() => { api.get("/dashboard").then(setD).catch(() => {}); }, []);
+
+  const saveDieselPrice = async () => {
+    const price = Number(dieselPrice);
+    if (!Number.isFinite(price) || price <= 0) return toast.error("Enter a valid diesel price");
+    setDieselSaving(true);
+    try {
+      const saved = await api.put("/settings/diesel", { price_per_l: price });
+      setD((current) => ({ ...current, diesel_price: saved.diesel_price, diesel_price_date: saved.diesel_price_date,
+        diesel_updated_at: saved.diesel_updated_at, diesel_sources: saved.diesel_sources, diesel_price_current: true }));
+      setDieselModal(false);
+      toast.success("Diesel price updated");
+    } catch (e) { toast.error(apiError(e)); } finally { setDieselSaving(false); }
+  };
 
   if (!d) return <div className="text-slate-400">Loading dashboard...</div>;
 
@@ -67,9 +84,33 @@ export default function Dashboard() {
         <p className="text-sm text-slate-500 mt-1">Overview of your business performance</p>
       </div>
 
+      <section className="rounded-xl border border-sky-200 bg-sky-50 px-5 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" data-testid="dashboard-diesel-price">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">Official diesel 50ppm wholesale maximum · Kokstad zone</p>
+          <p className="mt-1 text-2xl font-bold font-mono text-slate-900">{d.diesel_price_current ? `R ${Number(d.diesel_price).toFixed(2)}/L` : "Current price unavailable"}</p>
+          {!d.diesel_price_current && d.diesel_price != null && <p className="text-sm font-semibold text-amber-800 mt-1">Last saved: R {Number(d.diesel_price).toFixed(2)}/L · OUTDATED</p>}
+          {d.diesel_updated_at && <p className="text-xs text-slate-600 mt-1">Updated {fmtDateTime(d.diesel_updated_at)}</p>}
+        </div>
+        <div className="flex items-center gap-4">
+          {d.diesel_sources?.[0] && <a href={d.diesel_sources[0]} target="_blank" rel="noreferrer" className="text-xs font-semibold text-sky-700 underline">View price source</a>}
+          <Btn variant="outline" onClick={() => { setDieselPrice(d.diesel_price == null ? "" : String(d.diesel_price)); setDieselModal(true); }} data-testid="change-diesel-price-btn"><Pencil size={15} /> Change price</Btn>
+        </div>
+      </section>
+
+      <Modal open={dieselModal} onClose={() => setDieselModal(false)} title="Change Diesel Price">
+        <div className="space-y-4">
+          <Input label="Diesel price per litre (R)" type="number" min="0" step="0.01" value={dieselPrice} onChange={(e) => setDieselPrice(e.target.value)} data-testid="dashboard-diesel-price-input" />
+          <p className="text-xs text-slate-500">Check the current Kokstad price at <a href="https://petrolprices.co.za/" target="_blank" rel="noreferrer" className="font-semibold text-primary underline">PetrolPrices.co.za</a>.</p>
+          <div className="flex justify-end gap-2">
+            <Btn variant="outline" onClick={() => setDieselModal(false)}>Cancel</Btn>
+            <Btn onClick={saveDieselPrice} disabled={dieselSaving} data-testid="save-dashboard-diesel-price-btn">{dieselSaving ? "Saving..." : "Save price"}</Btn>
+          </div>
+        </div>
+      </Modal>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <KPI title="Total Invoiced" value={fmtMoney(d.total_invoiced)} icon={Receipt} tint="bg-blue-50 text-blue-600" onClick={() => nav("/invoices")} />
         <KPI title="Payments Received" value={fmtMoney(d.payments_received)} icon={Wallet} tint="bg-emerald-50 text-emerald-600" onClick={() => nav("/invoices")} />
+        <KPI title="Total Invoiced" value={fmtMoney(d.total_invoiced)} icon={Receipt} tint="bg-blue-50 text-blue-600" onClick={() => nav("/invoices")} />
         <KPI title="Outstanding Balances" value={fmtMoney(d.outstanding)} icon={AlertTriangle} tint="bg-red-50 text-red-600" onClick={() => nav("/invoices")} />
         <KPI title="Finished Stock" value={d.finished_stock} icon={Boxes} tint="bg-amber-50 text-amber-600" onClick={() => nav("/stock")} />
       </div>

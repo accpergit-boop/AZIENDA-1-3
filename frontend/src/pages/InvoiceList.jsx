@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { fmtMoney, fmtDate, STATUS_META } from "@/lib/format";
 import { Card, Btn, Badge, PageHeader, Empty } from "@/components/common";
-import { FileText, Search, Plus, Pencil, Trash2 } from "lucide-react";
+import { FileText, Search, Plus, Pencil, Trash2, Download } from "lucide-react";
 import { toast } from "sonner";
 import { apiError } from "@/lib/api";
 
@@ -79,10 +79,16 @@ export default function InvoiceList() {
                   <td className="px-4 text-right font-mono text-red-600">{fmtMoney(i.outstanding)}</td>
                   <td className="px-4 text-center"><Badge cls={STATUS_META[i.status]?.cls}>{STATUS_META[i.status]?.label}</Badge></td>
                   <td className="px-4 text-right">{i.status !== "void" && (
-                    <button onClick={(e) => { e.stopPropagation(); nav(`/invoices/${i.id}?edit=1`); }} data-testid={`edit-invoice-row-${i.id}`}
-                      className="inline-flex items-center gap-1 rounded-lg border border-primary/40 px-2.5 py-1 text-xs font-semibold text-primary hover:bg-blue-50 transition-colors">
-                      <Pencil size={12} /> Edit
-                    </button>)}
+                    <>
+                      <button onClick={(e) => { e.stopPropagation(); nav(`/invoices/${i.id}?pdf=1`); }} data-testid={`pdf-invoice-row-${i.id}`} title="Download PDF" className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:border-primary hover:text-primary transition-colors">
+                        <Download size={12} />
+                      </button>
+                      <button onClick={(e) => { e.stopPropagation(); nav(`/invoices/${i.id}?edit=1`); }} data-testid={`edit-invoice-row-${i.id}`}
+                        className="ml-2 inline-flex items-center gap-1 rounded-lg border border-primary/40 px-2.5 py-1 text-xs font-semibold text-primary hover:bg-blue-50 transition-colors">
+                        <Pencil size={12} /> Edit
+                      </button>
+                    </>
+                  )}
                     <button onClick={(e) => { e.stopPropagation(); removeMany([i.id]); }} data-testid={`delete-invoice-row-${i.id}`} className="ml-2 inline-flex items-center rounded-lg border border-red-200 px-2 py-1 text-red-600 hover:bg-red-50"><Trash2 size={12} /></button></td>
                 </tr>))}</tbody>
             </table>

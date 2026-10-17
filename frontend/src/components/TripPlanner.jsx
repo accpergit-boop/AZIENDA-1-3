@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { fmtMoney, fmtDateTime, nowLocalInput } from "@/lib/format";
 import { Btn, Input, Select, Textarea, Modal, Badge } from "@/components/common";
-import { Route, Fuel, Search, AlertTriangle } from "lucide-react";
+import { Route, Fuel, AlertTriangle } from "lucide-react";
 
 export function TripPlanner({ open, onClose, onCreated }) {
   const [form, setForm] = useState({ invoices: "", fuel_in_tank_l: "", departure: nowLocalInput(), vehicle_id: "", trailer_id: "" });
@@ -11,7 +11,6 @@ export function TripPlanner({ open, onClose, onCreated }) {
   const [km, setKm] = useState({});
   const [plan, setPlan] = useState(null);
   const [vehicles, setVehicles] = useState([]);
-  const [diesel, setDiesel] = useState(null);
   const [busy, setBusy] = useState("");
   useEffect(() => { if (open) api.get("/vehicles").then(setVehicles); }, [open]);
 
@@ -27,11 +26,6 @@ export function TripPlanner({ open, onClose, onCreated }) {
     await api.put("/settings", { city_distances: { ...(s.city_distances || {}), [city.toUpperCase()]: Number(km[city]) } });
     toast.success(`Distance saved for ${city}`); run();
   };
-  const checkDiesel = async () => {
-    setBusy("diesel");
-    try { setDiesel(await api.post("/diesel/lookup")); } catch (e) { toast.error(apiError(e)); } finally { setBusy(""); }
-  };
-  const useDiesel = async () => { await api.put("/settings", { diesel_price: Number(diesel.price_per_l), diesel_price_date: diesel.effective_date || "" }); toast.success("Diesel price saved"); setDiesel(null); run(); };
   const create = async () => {
     const p = plan; const first = p.stops[0];
     try {
@@ -57,12 +51,7 @@ export function TripPlanner({ open, onClose, onCreated }) {
           <Select label="Truck" value={form.vehicle_id} onChange={(e) => setForm({ ...form, vehicle_id: e.target.value })} data-testid="planner-truck-select"><option value="">Suggest for me</option>{trucks.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}</Select>
           <Select label="Trailer" value={form.trailer_id} onChange={(e) => setForm({ ...form, trailer_id: e.target.value })} data-testid="planner-trailer-select"><option value="">Suggest if needed</option>{trailers.map((v) => <option key={v.id} value={v.id}>{v.name} {v.length}</option>)}</Select>
         </div>
-        <div className="flex gap-2"><Btn disabled={!!busy} onClick={run} data-testid="planner-run-btn"><Route size={16} /> {busy === "plan" ? "Planning..." : "Plan trip"}</Btn>
-          <Btn variant="outline" disabled={!!busy} onClick={checkDiesel} data-testid="planner-diesel-btn"><Search size={16} /> {busy === "diesel" ? "Searching web..." : "Check today's diesel price"}</Btn></div>
-        {diesel && <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm" data-testid="diesel-result">
-          <p><b>{diesel.price_per_l ? `R ${diesel.price_per_l}/L` : "Price not found"}</b> {diesel.effective_date && `· ${diesel.effective_date}`} — {diesel.summary}</p>
-          <ul className="text-xs mt-1 list-disc ml-5">{(diesel.sources || []).map((s) => <li key={s}><a href={s} target="_blank" rel="noreferrer" className="text-primary break-all">{s}</a></li>)}</ul>
-          {diesel.price_per_l && <Btn className="mt-2" onClick={useDiesel} data-testid="use-diesel-btn">Use this price</Btn>}</div>}
+        <div className="flex gap-2"><Btn disabled={!!busy} onClick={run} data-testid="planner-run-btn"><Route size={16} /> {busy === "plan" ? "Planning..." : "Plan trip"}</Btn></div>
         {plan && <div className="space-y-3" data-testid="planner-result">
           {[...plan.missing, ...plan.warnings].map((m) => <p key={m} className="text-xs text-amber-700 flex gap-1"><AlertTriangle size={13} className="shrink-0 mt-0.5" /> {m}</p>)}
           <table className="w-full text-sm border border-border rounded"><thead><tr className="bg-slate-50 text-xs text-slate-500 text-left"><th className="p-2">Invoice</th><th>Customer</th><th>City</th><th className="text-right">Km</th><th className="text-right p-2">Pieces</th></tr></thead>

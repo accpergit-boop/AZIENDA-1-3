@@ -1,66 +1,126 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
-import { fmtMoney } from "@/lib/format";
+import { fmtMoney, fmtDateTime } from "@/lib/format";
 import { Card, Btn, Input, Select, Badge, Modal, PageHeader } from "@/components/common";
-import { Building2, Receipt, Tag, Truck, Save, Pencil, Plus, ShieldCheck, X } from "lucide-react";
+import { Building2, Receipt, Tag, Truck, Save, Pencil, Plus, ShieldCheck, Fuel, MapPin, Smartphone, Trash2 } from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
 
 const TABS = [
   { k: "company", l: "Company", icon: Building2 },
   { k: "invoice", l: "Invoice & Tax", icon: Receipt },
   { k: "prices", l: "Price Lists", icon: Tag },
   { k: "drivers", l: "Drivers", icon: Truck },
+  { k: "diesel", l: "Diesel", icon: Fuel },
   { k: "access", l: "Access", icon: ShieldCheck },
 ];
 
-function AccessTab({ s, setS, save }) {
-  const [email, setEmail] = useState("");
-  const list = s.google_allowed_emails || [];
-  const add = () => {
-    const e = email.trim().toLowerCase();
-    if (!/^\S+@\S+\.\S+$/.test(e)) return toast.error("Enter a valid email");
-    if (list.includes(e)) return toast.error("Already allowed");
-    setS({ ...s, google_allowed_emails: [...list, e] }); setEmail("");
-  };
+function AccessTab({ users, loading, currentUserId, onRoleChange, onRemove }) {
+  const adminCount = users.filter((u) => u.role === "admin").length;
   return (
-    <Card className="p-6 max-w-2xl space-y-4" data-testid="access-tab">
-      <div>
-        <h3 className="font-bold text-slate-800 font-display">Google sign-in access</h3>
-        <p className="text-sm text-slate-500 mt-1">The owner account always has access. Only the Google emails listed here can also sign in — every other Google account is rejected. Email/password login keeps working.</p>
+    <Card className="p-5 space-y-4" data-testid="access-tab">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="font-bold text-slate-800 font-display">Accounts and devices</h3>
+          <p className="text-sm text-slate-500 mt-1">Google accounts and self-registered accounts can sign in without prior approval. Precise location appears only when the user shares it.</p>
+        </div>
+        <Badge cls="bg-blue-50 text-blue-700 border-blue-200">Admins {adminCount}/6</Badge>
       </div>
-      <div className="flex gap-2">
-        <div className="flex-1"><Input placeholder="name@gmail.com" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} data-testid="allowed-email-input" /></div>
-        <Btn variant="outline" onClick={add} data-testid="add-allowed-email-btn"><Plus size={16} /> Add</Btn>
-      </div>
-      <div className="space-y-2">
-        {list.length === 0 ? <p className="text-sm text-slate-400">No extra emails yet.</p> : list.map((e) => (
-          <div key={e} className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm" data-testid={`allowed-email-${e}`}>
-            <span className="font-mono text-slate-700">{e}</span>
-            <button onClick={() => setS({ ...s, google_allowed_emails: list.filter((x) => x !== e) })} className="text-slate-400 hover:text-red-600" data-testid={`remove-allowed-email-${e}`}><X size={15} /></button>
-          </div>))}
-      </div>
-      <Btn onClick={save} data-testid="save-access-btn"><Save size={16} /> Save Access</Btn>
+      {loading ? <p className="text-sm text-slate-400 py-4">Loading accounts...</p> : users.length === 0 ? <p className="text-sm text-slate-400 py-4">No accounts found.</p> : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-sm">
+            <thead><tr className="border-b border-border text-left text-xs text-slate-400">
+              <th className="py-2 font-semibold">Account</th><th className="font-semibold">Role</th><th className="font-semibold">Device</th><th className="font-semibold">Location</th><th className="font-semibold">Last active</th><th />
+            </tr></thead>
+            <tbody>{users.map((account) => (
+              <tr key={account.id} className="border-b border-border/60 align-top" data-testid={`access-user-${account.id}`}>
+                <td className="py-3 pr-3"><p className="font-semibold text-slate-700">{account.name || "-"}</p><p className="text-xs text-slate-500">{account.email}</p></td>
+                <td className="py-3 pr-3">
+                  {account.is_owner ? <Badge cls="bg-amber-50 text-amber-700 border-amber-200">Owner</Badge> :
+                    <Select aria-label={`Role for ${account.email}`} value={account.role} onChange={(e) => onRoleChange(account, e.target.value)} data-testid={`access-role-${account.id}`}>
+                      <option value="user">User</option><option value="admin" disabled={adminCount >= 6 && account.role !== "admin"}>Admin</option>
+                    </Select>}
+                </td>
+                <td className="py-3 pr-3">{account.devices.length ? account.devices.map((device) => (
+                  <div key={device.device_id} className="mb-2 last:mb-0">
+                    <p className="flex items-center gap-1 text-xs text-slate-700"><Smartphone size={13} /> <span className="max-w-48 truncate">{device.device_name}</span></p>
+                    <p className="text-[11px] text-slate-400">{device.ip_address || "IP unavailable"} · {device.timezone || "Time zone unavailable"}</p>
+                  </div>)) : <span className="text-xs text-slate-400">No device recorded</span>}</td>
+                <td className="py-3 pr-3">{account.devices.map((device) => device.location ? (
+                  <a key={device.device_id} href={`https://www.openstreetmap.org/?mlat=${device.location.latitude}&mlon=${device.location.longitude}#map=15/${device.location.latitude}/${device.location.longitude}`} target="_blank" rel="noreferrer" className="mb-2 flex items-center gap-1 text-xs font-semibold text-primary underline">
+                    <MapPin size={13} /> {device.location.latitude.toFixed(4)}, {device.location.longitude.toFixed(4)}
+                  </a>) : <p key={device.device_id} className="mb-2 text-xs text-slate-400">Not shared</p>)}</td>
+                <td className="py-3 text-xs text-slate-500">{account.devices.length ? account.devices.map((device) => <p key={device.device_id}>{fmtDateTime(device.last_seen)}</p>) : "-"}</td>
+                <td className="py-3 text-right">{!account.is_owner && account.id !== currentUserId && <button type="button" onClick={() => onRemove(account)} title={`Remove ${account.email}`} aria-label={`Remove ${account.email}`} className="rounded p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" data-testid={`remove-user-${account.id}`}><Trash2 size={16} /></button>}</td>
+              </tr>))}</tbody>
+          </table>
+        </div>
+      )}
     </Card>
   );
 }
 
 export default function Settings() {
+  const { user } = useAuth();
   const [tab, setTab] = useState("company");
   const [s, setS] = useState(null);
+  const [dieselPrice, setDieselPrice] = useState("");
+  const [dieselSaving, setDieselSaving] = useState(false);
   const [prices, setPrices] = useState([]);
   const [drivers, setDrivers] = useState([]);
+  const [accessUsers, setAccessUsers] = useState([]);
+  const [accessLoading, setAccessLoading] = useState(false);
+  const [removeUser, setRemoveUser] = useState(null);
+  const [removingUser, setRemovingUser] = useState(false);
   const [pModal, setPModal] = useState(null);
   const [dModal, setDModal] = useState(null);
   const [zone, setZone] = useState(1);
 
   const load = () => {
-    api.get("/settings").then(setS); api.get("/prices").then(setPrices); api.get("/drivers").then(setDrivers);
+    api.get("/settings").then((settings) => { setS(settings); setDieselPrice(settings.diesel_price == null ? "" : String(settings.diesel_price)); });
+    api.get("/prices").then(setPrices); api.get("/drivers").then(setDrivers);
   };
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (tab !== "access" || !user?.is_admin) return;
+    setAccessLoading(true);
+    api.get("/access/users").then(setAccessUsers).catch((e) => toast.error(apiError(e))).finally(() => setAccessLoading(false));
+  }, [tab, user?.is_admin]);
+
+  const changeRole = async (account, role) => {
+    try {
+      await api.put(`/access/users/${account.id}/role`, { role });
+      setAccessUsers((current) => current.map((u) => u.id === account.id ? { ...u, role } : u));
+      toast.success(`${account.email} is now ${role}`);
+    } catch (e) { toast.error(apiError(e)); }
+  };
+
+  const confirmRemoveUser = async () => {
+    if (!removeUser) return;
+    setRemovingUser(true);
+    try {
+      await api.del(`/access/users/${removeUser.id}`);
+      setAccessUsers((current) => current.filter((u) => u.id !== removeUser.id));
+      toast.success("Account removed");
+      setRemoveUser(null);
+    } catch (e) { toast.error(apiError(e)); } finally { setRemovingUser(false); }
+  };
 
   const saveSettings = async () => {
     try { const r = await api.put("/settings", s); setS(r); toast.success("Settings saved"); }
     catch (e) { toast.error(apiError(e)); }
+  };
+
+  const saveDieselPrice = async () => {
+    const price = Number(dieselPrice);
+    if (!Number.isFinite(price) || price <= 0) return toast.error("Enter a valid diesel price");
+    setDieselSaving(true);
+    try {
+      const r = await api.put("/settings/diesel", { price_per_l: price });
+      setS((current) => ({ ...current, ...r }));
+      setDieselPrice(String(r.diesel_price));
+      toast.success("Diesel price updated");
+    } catch (e) { toast.error(apiError(e)); } finally { setDieselSaving(false); }
   };
 
   const savePrice = async () => {
@@ -87,7 +147,7 @@ export default function Settings() {
     <div>
       <PageHeader title="Settings" subtitle="Configure your business" />
       <div className="flex gap-2 mb-6 overflow-x-auto no-print">
-        {TABS.map((t) => (
+        {TABS.filter((t) => t.k !== "diesel" || user?.is_admin).map((t) => (
           <button key={t.k} onClick={() => setTab(t.k)} data-testid={`settings-tab-${t.k}`}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold whitespace-nowrap ${tab === t.k ? "bg-primary text-white" : "bg-white border border-border text-slate-600"}`}>
             <t.icon size={16} /> {t.l}
@@ -172,7 +232,26 @@ export default function Settings() {
         </div>
       )}
 
-      {tab === "access" && <AccessTab s={s} setS={setS} save={saveSettings} />}
+      {tab === "diesel" && user?.is_admin && (
+        <Card className="p-6 max-w-2xl space-y-4" data-testid="diesel-settings-tab">
+          <div>
+            <h3 className="font-bold text-slate-800 font-display">Diesel price · Kokstad</h3>
+            <p className="text-sm text-slate-500 mt-1">Check the current local price on <a href="https://petrolprices.co.za/" target="_blank" rel="noreferrer" className="font-semibold text-primary underline">PetrolPrices.co.za</a>, then enter it here. Only an administrator can save a new price.</p>
+          </div>
+          <Input label="Diesel price per litre (R)" type="number" min="0" step="0.01" value={dieselPrice} onChange={(e) => setDieselPrice(e.target.value)} data-testid="diesel-price-input" />
+          <p className="text-xs text-slate-500">Last updated: {s.diesel_updated_at ? fmtDateTime(s.diesel_updated_at) : "Never"}</p>
+          <div><Btn onClick={saveDieselPrice} disabled={dieselSaving} data-testid="save-diesel-price-btn"><Save size={16} /> {dieselSaving ? "Saving..." : "Save Diesel Price"}</Btn></div>
+        </Card>
+      )}
+
+      {tab === "access" && user?.is_admin && <AccessTab users={accessUsers} loading={accessLoading} currentUserId={user.id} onRoleChange={changeRole} onRemove={setRemoveUser} />}
+
+      <Modal open={!!removeUser} onClose={() => !removingUser && setRemoveUser(null)} title="Remove Account">
+        {removeUser && <div className="space-y-4">
+          <p className="text-sm text-slate-600">Remove <b>{removeUser.email}</b>? Their sessions, device records and assistant conversations will also be deleted. This cannot be undone.</p>
+          <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setRemoveUser(null)} disabled={removingUser}>Cancel</Btn><Btn variant="danger" onClick={confirmRemoveUser} disabled={removingUser} data-testid="confirm-remove-user">{removingUser ? "Removing..." : "Remove account"}</Btn></div>
+        </div>}
+      </Modal>
 
       <Modal open={!!pModal} onClose={() => setPModal(null)} title={pModal?.id ? "Edit Price" : "Add Price"}>
         {pModal && <div className="space-y-4">

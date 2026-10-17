@@ -1,9 +1,11 @@
 # Auth Testing Playbook (Emergent Google Auth + JWT)
 
-This app supports BOTH email/password JWT login and Emergent Google sign-in.
+This app supports email/password JWT login and Emergent Google sign-in.
 - Users collection uses field `id` (UUID) — sessions reference it via `user_id`.
 - `get_current_user` accepts: cookie `session_token` (user_sessions), `Authorization: Bearer <JWT>`, or `Authorization: Bearer <session_token>`.
-- Google sign-in allowlist: ADMIN_EMAIL + settings.google_allowed_emails. Others -> 403.
+- Google and Apple sign-in create standard accounts automatically; only `ADMIN_EMAIL` becomes owner/admin by default.
+- Account registration is open. New email/password accounts are standard users unless the email matches `ADMIN_EMAIL`.
+- `/access/users` is admin-only. An admin can promote up to six accounts total or remove another account. The owner and currently signed-in admin cannot be removed; removal revokes sessions and deletes that account's device records and assistant conversations.
 
 ## Create test Google-style session
 mongosh --eval "
