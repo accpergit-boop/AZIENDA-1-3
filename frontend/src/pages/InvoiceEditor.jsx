@@ -1,18 +1,19 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
+import { InvoiceDocument } from "@/components/InvoiceDocument";
+import { elementToPdf, printElement } from "@/lib/pdf";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
-import { jsPDF } from "jspdf";
 import { api, apiError } from "@/lib/api";
 import { fmtMoney, fmtDate, fmtDateTime, today, newKey, STATUS_META } from "@/lib/format";
 import { Card, Btn, Input, Select, Textarea, Badge, Modal } from "@/components/common";
 import { Copy, Download, Save, Send, CreditCard, Plus, Trash2, ArrowLeft, Ban, Printer, AlertTriangle, Pencil, X, History } from "lucide-react";
 
 const CATS = {
-  1: ["Standard", "Ribbon", "Candy", "Strong Boy", "Uncovered"],
-  2: ["Standard", "Ribbon Black & Pink", "Candy", "Strong Boy", "Uncovered Blue 16 Density"],
+  1: ["Standard", "Ribbon Black", "Ribbon Pink", "Candy", "Strong Boy", "Uncovered"],
+  2: ["Standard", "Ribbon Black", "Ribbon Pink", "Candy", "Strong Boy", "Uncovered Blue 16 Density"],
 };
-const RIBBON = ["Ribbon", "Ribbon Black & Pink", "Candy"];
-const priceCat = (zone, cat) => (cat === "Candy" ? (zone === 1 ? "Ribbon" : "Ribbon Black & Pink") : cat);
+const RIBBON = ["Ribbon Black", "Ribbon Pink", "Candy"];
+const priceCat = (zone, cat) => (cat === "Candy" ? "Ribbon Black" : cat);
 const manualOnly = (cat, size) => RIBBON.includes(cat) && size === "1370x150";
 
 const emptyItem = () => ({ qty: 1, category: "Standard", size: "", description: "", unit_price: 0, price_override: false, tax: false, _needsConfig: false });
@@ -32,6 +33,7 @@ export default function InvoiceEditor() {
   const [payRecords, setPayRecords] = useState([]);
   const [payModal, setPayModal] = useState(null);
   const [nextNum, setNextNum] = useState("");
+  const docRef = useRef(null);
   const [sp, setSp] = useSearchParams();
   const [editing, setEditing] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
@@ -267,71 +269,10 @@ export default function InvoiceEditor() {
     }
   };
 
-  const downloadPDF = () => {
-    const doc = new jsPDF({ unit: "pt", format: "a4" });
-    const W = 595.28; let y = 48; const L = 40, R = W - 40;
-    doc.setFont("helvetica", "bold"); doc.setFontSize(22); doc.setTextColor(15, 23, 42);
-    doc.text(settings.company_name || "SUPER IQ-FOAM", L, y);
-    doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(100, 116, 139);
-    let cy = y + 16;
-    [settings.address, settings.telephone, settings.email].filter(Boolean).forEach((t) => { doc.text(String(t), L, cy); cy += 12; });
-    doc.setFont("helvetica", "bold"); doc.setFontSize(16); doc.setTextColor(37, 99, 235);
-    doc.text("INVOICE", R, y, { align: "right" });
-    doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(30, 41, 59);
-    doc.text(inv.number || "DRAFT", R, y + 16, { align: "right" });
-
-    y = Math.max(cy, y + 40) + 14;
-    doc.setDrawColor(226, 232, 240); doc.line(L, y, R, y); y += 18;
-    doc.setFontSize(9); doc.setTextColor(100, 116, 139);
-    doc.text("BILL TO", L, y); doc.text("DETAILS", R - 180, y); y += 14;
-    doc.setTextColor(30, 41, 59); doc.setFont("helvetica", "bold");
-    doc.text(inv.customer_name || "-", L, y);
-    doc.setFont("helvetica", "normal");
-    const cust = customers.find((c) => c.id === inv.customer_id) || {};
-    [cust.phone, cust.address, inv.destination && `Deliver to: ${inv.destination}`].filter(Boolean).forEach((t, k) => doc.text(String(t), L, y + 13 * (k + 1)));
-    doc.text(`Date: ${fmtDate(inv.date)}`, R - 180, y);
-    doc.text(`Due: ${fmtDate(inv.due_date)}`, R - 180, y + 13);
-    doc.text(`Zone ${inv.zone} | ${inv.payment_terms}`, R - 180, y + 26);
-    y += 40;
-
-    // table header
-    doc.setFillColor(15, 23, 42); doc.rect(L, y, R - L, 22, "F");
-    doc.setTextColor(255, 255, 255); doc.setFontSize(9); doc.setFont("helvetica", "bold");
-    doc.text("QTY", L + 8, y + 15); doc.text("DESCRIPTION", L + 50, y + 15);
-    doc.text("UNIT", R - 150, y + 15, { align: "right" }); doc.text("TOTAL", R - 10, y + 15, { align: "right" });
-    y += 22;
-    doc.setFont("helvetica", "normal"); doc.setTextColor(30, 41, 59);
-    inv.items.filter((it) => it.size || it.description).forEach((it, i) => {
-      if (i % 2) { doc.setFillColor(248, 250, 252); doc.rect(L, y, R - L, 20, "F"); }
-      const lt = (Number(it.qty) || 0) * (Number(it.unit_price) || 0);
-      doc.text(String(it.qty), L + 8, y + 14);
-      doc.text(`${it.category} ${it.size || it.description}`.trim(), L + 50, y + 14);
-      doc.text(fmtMoney(it.unit_price), R - 150, y + 14, { align: "right" });
-      doc.text(fmtMoney(lt), R - 10, y + 14, { align: "right" });
-      y += 20;
-    });
-    y += 10;
-    const row = (lbl, val, bold) => {
-      doc.setFont("helvetica", bold ? "bold" : "normal");
-      doc.setFontSize(bold ? 12 : 10);
-      doc.text(lbl, R - 180, y); doc.text(val, R - 10, y, { align: "right" }); y += bold ? 20 : 16;
-    };
-    row("Subtotal", fmtMoney(totals.subtotal));
-    if (Number(inv.discount)) row("Discount", "-" + fmtMoney(inv.discount));
-    if (Number(inv.extra_charges)) row("Extra Charges", fmtMoney(inv.extra_charges));
-    if (inv.tax_enabled) row(`Tax (${inv.tax_rate}%)`, fmtMoney(totals.tax));
-    doc.setDrawColor(226, 232, 240); doc.line(R - 180, y - 6, R, y - 6);
-    row("TOTAL", fmtMoney(totals.total), true);
-    row("Payments Received", fmtMoney(inv.amount_paid));
-    row("Balance Due", fmtMoney(totals.outstanding), true);
-    if (settings.banking_details) {
-      y += 14; doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.text("Banking Details", L, y);
-      doc.setFont("helvetica", "normal"); doc.setTextColor(100, 116, 139);
-      String(settings.banking_details).split("\n").forEach((t) => { y += 12; doc.text(t, L, y); });
-    }
-    doc.save(`${inv.number || "invoice"}.pdf`);
-    toast.success("PDF downloaded");
+  const downloadPDF = async () => {
+    try { await elementToPdf(docRef.current, `${inv.number || "invoice-draft"}.pdf`); toast.success("PDF downloaded"); } catch (e) { toast.error("PDF failed: " + e.message); }
   };
+  const printInvoice = () => { if (!printElement(docRef.current, inv.number || "Invoice")) toast.error("Allow pop-ups to print"); };
 
   const st = STATUS_META[inv.status] || STATUS_META.draft;
 
@@ -474,7 +415,7 @@ export default function InvoiceEditor() {
                 {!id && <Btn disabled={busy} onClick={() => save("issued")} data-testid="issue-invoice-btn"><Send size={15} /> Issue</Btn>}
                 <Btn variant="outline" onClick={copyInvoice} data-testid="copy-btn-2"><Copy size={15} /> Copy</Btn>
                 <Btn variant="outline" onClick={downloadPDF} data-testid="download-pdf-btn"><Download size={15} /> PDF</Btn>
-                <Btn variant="outline" onClick={() => window.print()} data-testid="print-invoice-btn"><Printer size={15} /> Print</Btn>
+                <Btn variant="outline" onClick={printInvoice} data-testid="print-invoice-btn"><Printer size={15} /> Print</Btn>
                 {id && inv.status !== "draft" && totals.outstanding > 0 && !editing && (
                   <Btn variant="success" onClick={() => setPayModal({ amount: totals.outstanding.toFixed(2), method: "Cash", date: today(), reference: "", notes: "", idempotency_key: newKey() })} data-testid="record-payment-btn"><CreditCard size={15} /> Pay</Btn>
                 )}
@@ -514,6 +455,13 @@ export default function InvoiceEditor() {
           )}
         </div>
       </div>
+
+      <Card className="p-4 mt-6 no-print" data-testid="invoice-preview">
+        <h3 className="font-bold text-slate-800 mb-3 font-display">Invoice Preview <span className="text-xs font-normal text-slate-400">— exactly what the PDF and print will look like</span></h3>
+        <div className="overflow-x-auto bg-slate-100 p-4 rounded-lg"><div className="shadow-md w-fit mx-auto">
+          <InvoiceDocument ref={docRef} inv={inv} totals={totals} settings={settings} customer={customers.find((c) => c.id === inv.customer_id) || {}} />
+        </div></div>
+      </Card>
 
       <Modal open={!!payModal} onClose={() => setPayModal(null)} title="Record Payment">
         {payModal && (

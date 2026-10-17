@@ -6,7 +6,7 @@ load_dotenv(ROOT_DIR / '.env')
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
 from fastapi.responses import StreamingResponse
-import json
+import json, re
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
@@ -311,12 +311,12 @@ async def edit_price(pid: str, body: PriceIn, user=Depends(get_current_user)):
     await log_audit("price", pid, "updated", user, before=before, after=rec)
     return rec
 
-RIBBON_FAMILY = {"Ribbon", "Ribbon Black & Pink", "Candy"}
+RIBBON_FAMILY = {"Ribbon", "Ribbon Black & Pink", "Ribbon Black", "Ribbon Pink", "Candy"}
 MANUAL_ONLY_SIZES = {"1370x150"}
 
 def price_category(zone, category):
     if category == "Candy":
-        return "Ribbon" if int(zone) == 1 else "Ribbon Black & Pink"
+        return "Ribbon Black"
     return category
 
 def is_manual_only(category, size):
@@ -465,16 +465,34 @@ async def get_invoice(iid: str, user=Depends(get_current_user)):
     inv["payment_records"] = await listall("payments", {"invoice_id": iid}, ("created_at", -1))
     return inv
 
-@api.delete("/invoices/{iid}")
-async def delete_draft_invoice(iid: str, user=Depends(get_current_user)):
+async def _delete_invoice(iid, user, reason=""):
     inv = await db.invoices.find_one({"id": iid}, {"_id": 0})
     if not inv:
-        raise HTTPException(404, "Invoice not found")
-    if inv.get("status") != "draft" or inv.get("number"):
-        raise HTTPException(400, "Issued invoices cannot be deleted. Use Void with a reason instead")
+        return False
+    pays = await listall("payments", {"invoice_id": iid})
+    await db.payments.delete_many({"invoice_id": iid})
     await db.invoices.delete_one({"id": iid})
-    await log_audit("invoice", iid, "draft_deleted", user, before=inv)
+    await log_audit("invoice", iid, "deleted", user, reason=reason,
+                    before={"number": inv.get("number"), "customer": inv.get("customer_name"), "total": inv.get("total"),
+                            "payments_deleted": [{"amount": p.get("amount"), "date": p.get("date")} for p in pays]})
+    return True
+
+@api.delete("/invoices/{iid}")
+async def delete_invoice(iid: str, user=Depends(get_current_user)):
+    if not await _delete_invoice(iid, user):
+        raise HTTPException(404, "Invoice not found")
     return {"ok": True}
+
+class BulkDeleteIn(BaseModel):
+    ids: List[str]
+    reason: Optional[str] = ""
+
+@api.post("/invoices/bulk-delete")
+async def bulk_delete_invoices(body: BulkDeleteIn, user=Depends(get_current_user)):
+    n = 0
+    for iid in body.ids:
+        n += await _delete_invoice(iid, user, body.reason or "")
+    return {"deleted": n}
 
 async def _prepare_invoice(body: InvoiceIn):
     cust = await db.customers.find_one({"id": body.customer_id})
@@ -962,6 +980,11 @@ class VehicleIn(BaseModel):
     length: Optional[str] = ""
     available: bool = True
     notes: Optional[str] = ""
+    model: Optional[str] = ""
+    consumption_min: Optional[float] = None
+    consumption_max: Optional[float] = None
+    payload_kg: Optional[float] = None
+    tank_litres: Optional[float] = None
 
 @api.get("/vehicles")
 async def get_vehicles(user=Depends(get_current_user)):
@@ -1096,7 +1119,9 @@ async def recommend_driver(size: str = "small", user=Depends(get_current_user)):
 @api.get("/settings")
 async def get_settings(user=Depends(get_current_user)):
     s = await db.settings.find_one({"id": "singleton"}, {"_id": 0})
-    return {**seed_data.DEFAULT_SETTINGS, **(s or {})}
+    extra = {"city_distances": seed_data.CITY_DISTANCES_KM, "diesel_price": None, "diesel_price_date": "",
+             "avg_speed_kmh": 60, "offload_minutes_per_stop": 45, "piece_weights_kg": {}}
+    return {**seed_data.DEFAULT_SETTINGS, **extra, **(s or {})}
 
 @api.put("/settings")
 async def update_settings(body: dict, user=Depends(get_current_user)):
@@ -1187,8 +1212,9 @@ async def dashboard(user=Depends(get_current_user)):
         "week_profit": week_profit,
         "month_profit": month_profit,
         "parts_to_buy_count": len(parts_to_buy),
-        "vehicles_available": len([v for v in vehicles if v.get("available")]),
-        "vehicles_total": len(vehicles),
+        "vehicles_available": len([v for v in vehicles if v.get("available") and v.get("vtype") != "Trailer"]),
+        "vehicles_total": len([v for v in vehicles if v.get("vtype") != "Trailer"]),
+        "trailers_total": len([v for v in vehicles if v.get("vtype") == "Trailer"]),
         "maintenance_due": len(maint_due),
         "timezone": "Africa/Johannesburg",
     }
@@ -1506,6 +1532,16 @@ async def import_customers(body: ImportIn, user=Depends(get_current_user)):
 
 # ---------------- AI Business Assistant ----------------
 ASSISTANT_MODEL = ("openai", "gpt-5.2")
+SEARCH_MODEL = ("gemini", "gemini-3-flash-preview")
+
+async def web_search(query):
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    c = LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"], session_id=new_id(),
+                system_message=f"Today is {today_str()} (Africa/Johannesburg). Search the web, answer factually and concisely, and list the source URLs you used.").with_model(*SEARCH_MODEL).with_tools([{"googleSearch": {}}])
+    return await c.send_message(UserMessage(text=query))
+
+WEB_TOOL = [{"type": "function", "function": {"name": "web_search", "description": "Search the live web for current/general information (fuel prices, news, weather, regulations, suppliers...). Returns an answer with source URLs.",
+             "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}]
 
 async def business_snapshot(user):
     dash = await dashboard(user)
@@ -1546,8 +1582,9 @@ async def business_snapshot(user):
     }
 
 ASSISTANT_RULES = """You are the business assistant for SUPER IQ-FOAM, a foam mattress manufacturer and wholesaler in Kokstad, KwaZulu-Natal, South Africa.
-Answer the owner's questions using ONLY the JSON business data below (live from the ERP). Money is South African Rand, format like R 1,234.56.
-Rules: never invent numbers, customers, prices or dates; if the data doesn't contain the answer, say so and suggest where in the ERP to record it.
+Answer business questions using the JSON business data below (live from the ERP). Money is South African Rand, format like R 1,234.56.
+For general or current-events questions (fuel prices, news, weather, regulations, suppliers, etc.) use web search and ALWAYS end with a "Sources:" list of the URLs you used.
+Rules: never invent business numbers, customers, prices or dates; if the ERP data doesn't contain the answer, say so and suggest where in the ERP to record it.
 'Estimated result' = payments received minus recorded expenses; it is NOT accounting profit (cost data is incomplete) — say this when discussing profit.
 Be concise and practical. Use short bullet lists or small markdown tables. You cannot change data; tell the owner which page to use for actions.
 BUSINESS DATA:
@@ -1577,7 +1614,7 @@ async def assistant_delete(sid: str, user=Depends(get_current_user)):
 
 @api.post("/assistant/chat")
 async def assistant_chat(body: AssistantIn, user=Depends(get_current_user)):
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone, ToolCallReady
     text = body.message.strip()
     if not text:
         raise HTTPException(400, "Message is empty")
@@ -1592,18 +1629,34 @@ async def assistant_chat(body: AssistantIn, user=Depends(get_current_user)):
     system = ASSISTANT_RULES + json.dumps(snapshot, default=str)
     initial = [{"role": "system", "content": system}] + [{"role": m["role"], "content": m["content"]} for m in history]
     await db.assistant_messages.insert_one({"id": new_id(), "session_id": sid, "role": "user", "content": text, "created_at": now_iso()})
-    chat = LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"], session_id=sid, system_message=system, initial_messages=initial).with_model(*ASSISTANT_MODEL)
+    chat = LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"], session_id=sid, system_message=system, initial_messages=initial).with_model(*ASSISTANT_MODEL).with_tools(WEB_TOOL, tool_choice="auto")
 
     async def gen():
         yield f"data: {json.dumps({'type': 'session', 'session_id': sid})}\n\n"
         parts = []
         try:
-            async for ev in chat.stream_message(UserMessage(text=text)):
-                if isinstance(ev, TextDelta):
-                    parts.append(ev.content)
-                    yield f"data: {json.dumps({'type': 'delta', 'content': ev.content})}\n\n"
-                elif isinstance(ev, StreamDone):
+            msg = UserMessage(text=text)
+            for _ in range(4):
+                pending = []
+                async for ev in chat.stream_message(msg):
+                    if isinstance(ev, TextDelta):
+                        parts.append(ev.content)
+                        yield f"data: {json.dumps({'type': 'delta', 'content': ev.content})}\n\n"
+                    elif isinstance(ev, ToolCallReady):
+                        pending.append(ev.tool_call)
+                    elif isinstance(ev, StreamDone):
+                        break
+                if not pending:
                     break
+                for tc in pending:
+                    q = (tc.arguments or {}).get("query", "")
+                    yield f"data: {json.dumps({'type': 'status', 'content': 'Searching the web: ' + q})}\n\n"
+                    try:
+                        res = await web_search(q)
+                    except Exception as e:
+                        res = f"Web search failed: {str(e)[:120]}"
+                    chat.add_tool_result(tc.id, json.dumps({"result": res}))
+                msg = None
         except Exception as e:
             logging.exception("assistant error")
             yield f"data: {json.dumps({'type': 'error', 'message': 'The AI assistant is unavailable right now. ' + str(e)[:160]})}\n\n"
@@ -1627,6 +1680,7 @@ class OrderIn(BaseModel):
     customer_name: Optional[str] = ""
     destination: str = ""
     products: str = ""
+    items: List[dict] = []  # [{qty, category, size}]
     priority: str = "Normal"  # Low, Normal, High, Urgent
     status: str = "To Send"  # To Send, Preparing, Assigned, Dispatched, Delivered, Cancelled
     expected_ship_date: Optional[str] = None
@@ -1666,6 +1720,160 @@ async def del_order(oid: str, user=Depends(get_current_user)):
     return {"ok": True}
 
 # ---------------- Attendance summary ----------------
+# ---------------- Simple daily production (white / blue blocks) ----------------
+class DailyProdIn(BaseModel):
+    date: str = Field(default_factory=today_str)
+    white_blocks: int = 0
+    blue_blocks: int = 0
+    notes: Optional[str] = ""
+
+@api.get("/production/daily")
+async def get_daily_prod(user=Depends(get_current_user)):
+    rows = await listall("production_daily", sort=("date", -1))
+    week, month = period_starts()
+    tot = lambda since: {c: sum(r.get(c, 0) for r in rows if r["date"] >= since) for c in ("white_blocks", "blue_blocks")}
+    return {"rows": rows, "today": tot(today_str()), "week": tot(week), "month": tot(month)}
+
+@api.post("/production/daily")
+async def save_daily_prod(body: DailyProdIn, user=Depends(get_current_user)):
+    if body.white_blocks < 0 or body.blue_blocks < 0:
+        raise HTTPException(400, "Block counts cannot be negative")
+    d = body.model_dump()
+    ex = await db.production_daily.find_one({"date": d["date"]}, {"_id": 0})
+    rec = await update_doc("production_daily", ex["id"], d) if ex else await insert("production_daily", d)
+    await log_audit("production_daily", rec["id"], "saved", user, before=ex, after=rec)
+    return rec
+
+@api.delete("/production/daily/{pid}")
+async def del_daily_prod(pid: str, user=Depends(get_current_user)):
+    await db.production_daily.delete_one({"id": pid})
+    await log_audit("production_daily", pid, "deleted", user)
+    return {"ok": True}
+
+class BulkAttendanceIn(BaseModel):
+    date: str
+    status: str = "Present"
+    employee_ids: List[str]
+
+@api.post("/attendance/bulk")
+async def bulk_attendance(body: BulkAttendanceIn, user=Depends(get_current_user)):
+    for eid in body.employee_ids:
+        await add_attendance(AttendanceIn(employee_id=eid, date=body.date, status=body.status), user)
+    return {"ok": True, "count": len(body.employee_ids)}
+
+# ---------------- Trip planner ----------------
+class TripPlanIn(BaseModel):
+    invoice_numbers: List[str]
+    vehicle_id: Optional[str] = ""
+    trailer_id: Optional[str] = ""
+    fuel_in_tank_l: float = 0
+    departure: Optional[str] = None
+    cities: dict = {}  # invoice_number -> city override
+
+def _guess_city(text, table):
+    t = (text or "").upper()
+    hits = [c for c in table if c and c in t]
+    return max(hits, key=len) if hits else ""
+
+@api.post("/deliveries/plan")
+async def plan_trip(body: TripPlanIn, user=Depends(get_current_user)):
+    st = await get_settings(user)
+    table = {k.upper(): v for k, v in (st.get("city_distances") or {}).items()}
+    weights = st.get("piece_weights_kg") or {}
+    stops, missing, warnings = [], [], []
+    for raw in body.invoice_numbers:
+        num = raw.strip().upper()
+        if not num:
+            continue
+        inv = await db.invoices.find_one({"number": {"$regex": f"^{num}$", "$options": "i"}}, {"_id": 0})
+        if not inv:
+            missing.append(f"Invoice {num} not found")
+            continue
+        cust = await db.customers.find_one({"id": inv["customer_id"]}, {"_id": 0}) or {}
+        city = (body.cities.get(inv["number"]) or inv.get("destination") or cust.get("city") or "").strip()
+        guessed = False
+        if not city:
+            city, guessed = _guess_city(cust.get("name", ""), table), True
+        dist = table.get(city.upper()) if city else None
+        pieces = sum(int(it.get("qty") or 0) for it in inv.get("items", []) if it.get("size"))
+        kg = 0
+        unknown_w = False
+        for it in inv.get("items", []):
+            if it.get("size"):
+                w = weights.get(it["size"])
+                if w is None:
+                    unknown_w = True
+                else:
+                    kg += float(w) * int(it.get("qty") or 0)
+        stops.append({"invoice": inv["number"], "customer": inv.get("customer_name"), "city": city, "city_guessed": guessed and bool(city),
+                      "distance_km": dist, "pieces": pieces, "weight_kg": None if unknown_w else round(kg),
+                      "items": [{"qty": it.get("qty"), "category": it.get("category"), "size": it.get("size"), "description": it.get("description")} for it in inv.get("items", [])]})
+        if not city:
+            missing.append(f"{inv['number']} ({inv.get('customer_name')}): city unknown — enter it")
+        elif dist is None:
+            missing.append(f"{city}: distance from Kokstad not configured — add it in Settings")
+    stops.sort(key=lambda s: s["distance_km"] if s["distance_km"] is not None else 9999)
+    total_pieces = sum(s["pieces"] for s in stops)
+    weight_known = all(s["weight_kg"] is not None for s in stops) and stops
+    total_kg = sum(s["weight_kg"] or 0 for s in stops) if weight_known else None
+    if not weight_known:
+        warnings.append("Weight per mattress size not configured (Settings > piece weights) — truck choice is based on pieces/distance only")
+    far = max([s["distance_km"] for s in stops if s["distance_km"] is not None], default=None)
+    route_km = round(far * 2 * 1.1) if far is not None else None  # out-and-back along route + 10% detours (estimate)
+    vehicles = await listall("vehicles")
+    trucks = [v for v in vehicles if v.get("vtype") != "Trailer" and v.get("available") and v.get("consumption_max")]
+    trailers = [v for v in vehicles if v.get("vtype") == "Trailer" and v.get("available")]
+    trucks.sort(key=lambda v: v.get("payload_kg") or 0)
+    sel = next((v for v in trucks if v["id"] == body.vehicle_id), None)
+    if not sel and trucks:
+        if total_kg is not None:
+            sel = next((v for v in trucks if (v.get("payload_kg") or 0) >= total_kg), None)
+            if not sel:
+                sel = trucks[-1]
+                warnings.append(f"Load {total_kg} kg exceeds largest truck payload — split the trip or add a trailer")
+        else:
+            sel = trucks[-1] if (total_pieces > 150 or (far or 0) > 150) else trucks[0]
+    trailer = next((v for v in trailers if v["id"] == body.trailer_id), None)
+    if not trailer and sel and total_kg is not None and total_kg > (sel.get("payload_kg") or 0) and trailers:
+        trailer = sorted(trailers, key=lambda v: float((v.get("length") or "0").split()[0] or 0))[-1]
+        warnings.append("Trailer suggested because load exceeds truck payload — confirm the truck can tow it")
+    fuel = None
+    if sel and route_km is not None:
+        load_factor = (total_kg / sel["payload_kg"]) if (total_kg and sel.get("payload_kg")) else 0.5
+        cons = sel["consumption_min"] + (sel["consumption_max"] - sel["consumption_min"]) * min(max(load_factor, 0), 1)
+        if trailer:
+            cons *= 1.15
+        need = round(route_km * cons / 100 * 1.1, 1)  # +10% reserve
+        to_buy = max(round(need - (body.fuel_in_tank_l or 0), 1), 0)
+        price = st.get("diesel_price")
+        fuel = {"consumption_l_100km": round(cons, 1), "needed_l": need, "in_tank_l": body.fuel_in_tank_l, "to_give_l": to_buy,
+                "price_per_l": price, "price_date": st.get("diesel_price_date"), "cost": round(to_buy * price, 2) if price else None}
+        if not price:
+            warnings.append("Diesel price not set — use 'Check today's price' or enter it in Settings")
+    timing = None
+    if route_km is not None:
+        drive_h = route_km / float(st.get("avg_speed_kmh") or 60)
+        stops_h = len(stops) * float(st.get("offload_minutes_per_stop") or 45) / 60
+        dep = parse_dt(body.departure) if body.departure else local_now().replace(hour=8, minute=0, second=0, microsecond=0)
+        ret = dep + timedelta(hours=drive_h + stops_h + 0.5)
+        timing = {"drive_hours": round(drive_h, 1), "offload_hours": round(stops_h, 1), "departure": dep.isoformat(), "return_eta": ret.isoformat()}
+        if ret.hour >= 17 or ret.date() > dep.date():
+            warnings.append("Estimated return is after 17:00 — consider leaving earlier or splitting the trip")
+    return {"stops": stops, "missing": missing, "warnings": warnings, "total_pieces": total_pieces, "total_kg": total_kg,
+            "route_km": route_km, "vehicle": sel, "trailer": trailer, "fuel": fuel, "timing": timing,
+            "note": "Distances, consumption and times are ESTIMATES based on configured values"}
+
+@api.post("/diesel/lookup")
+async def diesel_lookup(user=Depends(get_current_user)):
+    q = (f"Today is {today_str()}. Find the current official retail price of diesel 50ppm per litre in South Africa (inland / KwaZulu-Natal, Kokstad area) "
+         'in Rand. Reply ONLY JSON: {"price_per_l": number, "effective_date": "YYYY-MM-DD", "summary": "short text", "sources": ["url", ...]}')
+    try:
+        txt = await web_search(q)
+        m = re.search(r"\{.*\}", txt, re.S)
+        return json.loads(m.group(0)) if m else {"summary": txt, "sources": []}
+    except Exception as e:
+        raise HTTPException(502, f"Web search unavailable: {str(e)[:150]}")
+
 @api.get("/attendance/summary")
 async def attendance_summary(user=Depends(get_current_user)):
     week, month = period_starts()
@@ -1728,6 +1936,19 @@ async def seed():
     if await db.settings.count_documents({}) == 0:
         await db.settings.insert_one({**seed_data.DEFAULT_SETTINGS, "created_at": now_iso()})
     await db.vehicle_records.update_many({"status": "done"}, {"$set": {"status": "Done"}})
+    # split generic Ribbon into Ribbon Black / Ribbon Pink
+    if await db.prices.count_documents({"category": {"$in": ["Ribbon", "Ribbon Black & Pink"]}}):
+        await db.prices.delete_many({"category": {"$in": ["Ribbon", "Ribbon Black & Pink"]}})
+        for p in seed_data.PRICES:
+            if p["category"] in ("Ribbon Black", "Ribbon Pink") and not await db.prices.find_one({"zone": p["zone"], "category": p["category"], "size": p["size"]}):
+                await db.prices.insert_one({"id": new_id(), **p, "updated_at": now_iso(), "created_at": now_iso()})
+        await db.stock.update_many({"product": "Ribbon"}, {"$set": {"product": "Ribbon Pink"}})
+        await db.stock.update_many({"product": "Black"}, {"$set": {"product": "Ribbon Black"}})
+        await db.settings.update_one({"id": "singleton"}, {"$set": {"product_categories": seed_data.DEFAULT_SETTINGS["product_categories"]}})
+    for v in seed_data.FLEET:
+        if v.get("payload_kg"):
+            await db.vehicles.update_one({"name": v["name"], "consumption_max": {"$exists": False}},
+                                         {"$set": {k: v[k] for k in ("model", "consumption_min", "consumption_max", "payload_kg", "capacity")}})
     await db.vehicle_records.update_many({"status": "needed"}, {"$set": {"status": "Needed"}})
     year = local_today().year
     for key, coll in (("del", "deliveries"), ("ord", "orders")):

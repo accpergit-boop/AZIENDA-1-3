@@ -1,91 +1,84 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { today } from "@/lib/format";
-import { Card, Btn, Input, Select, Badge, Modal, PageHeader, Empty } from "@/components/common";
-import { CalendarCheck, Plus, UserPlus } from "lucide-react";
+import { Card, Btn, Input, Select, Modal, PageHeader, Empty } from "@/components/common";
+import { Users, Plus, CheckCheck, Pencil } from "lucide-react";
 
-const STATUSES = ["Present", "Half Day", "Absent", "Leave", "Sick", "Other"];
-const META = {
-  Present: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  Absent: "bg-red-50 text-red-700 border-red-200",
-  "Sick Leave": "bg-amber-50 text-amber-700 border-amber-200",
-  "Annual Leave": "bg-blue-50 text-blue-700 border-blue-200",
-  "Other Approved Leave": "bg-indigo-50 text-indigo-700 border-indigo-200",
-  "Half Day": "bg-slate-100 text-slate-600 border-slate-200",
-};
+const DEPTS = ["Production", "Cutting", "Sewing", "Mattress Processing", "Dispatch", "Administration", "Drivers"];
 
 export default function Attendance() {
   const [employees, setEmployees] = useState([]);
   const [records, setRecords] = useState([]);
+  const [summary, setSummary] = useState(null);
   const [date, setDate] = useState(today());
-  const [dept, setDept] = useState("all");
   const [empModal, setEmpModal] = useState(null);
+  const [busy, setBusy] = useState(false);
 
-  const load = () => { api.get("/employees").then(setEmployees); api.get("/attendance").then(setRecords); };
+  const load = () => { api.get("/employees").then(setEmployees); api.get("/attendance").then(setRecords); api.get("/attendance/summary").then(setSummary); };
   useEffect(() => { load(); }, []);
 
-  const depts = ["all", ...new Set(employees.map((e) => e.department))];
-  const dayRec = (eid) => records.find((r) => r.employee_id === eid && r.date === date);
+  const active = employees.filter((e) => e.active !== false);
+  const statusOf = (eid) => records.find((r) => r.employee_id === eid && r.date === date)?.status;
+  const groups = useMemo(() => {
+    const g = {};
+    active.forEach((e) => { (g[e.department || "Other"] ||= []).push(e); });
+    return Object.entries(g).sort(([a], [b]) => a.localeCompare(b));
+  }, [active]);
+  const present = active.filter((e) => ["Present", "Half Day"].includes(statusOf(e.id))).length;
+  const absent = active.filter((e) => statusOf(e.id) === "Absent").length;
 
   const mark = async (emp, status) => {
-    try { await api.post("/attendance", { employee_id: emp.id, date, status }); api.get("/attendance").then(setRecords); }
-    catch (e) { toast.error(apiError(e)); }
+    try { await api.post("/attendance", { employee_id: emp.id, date, status }); load(); } catch (e) { toast.error(apiError(e)); }
   };
-
+  const markAll = async () => {
+    if (busy) return; setBusy(true);
+    try { await api.post("/attendance/bulk", { date, status: "Present", employee_ids: active.map((e) => e.id) }); toast.success("All marked present"); load(); }
+    catch (e) { toast.error(apiError(e)); } finally { setBusy(false); }
+  };
   const saveEmp = async () => {
     if (!empModal.name.trim()) return toast.error("Name required");
-    try {
-      if (empModal.id) await api.put(`/employees/${empModal.id}`, empModal);
-      else await api.post("/employees", empModal);
-      toast.success("Employee saved"); setEmpModal(null); load();
-    } catch (e) { toast.error(apiError(e)); }
+    try { empModal.id ? await api.put(`/employees/${empModal.id}`, empModal) : await api.post("/employees", empModal); setEmpModal(null); load(); toast.success("Employee saved"); }
+    catch (e) { toast.error(apiError(e)); }
   };
-
-  const shown = employees.filter((e) => dept === "all" || e.department === dept);
+  const Stat = ({ l, v, cls, k }) => <Card className="p-4" data-testid={`att-${k}`}><p className="text-xs text-slate-400 uppercase font-semibold">{l}</p><p className={`text-2xl font-bold font-mono mt-1 ${cls}`}>{v}</p></Card>;
 
   return (
-    <div>
-      <PageHeader title="Attendance" subtitle="Record daily employee attendance">
-        <Btn variant="outline" onClick={() => window.print()}>Print Report</Btn>
-        <Btn onClick={() => setEmpModal({ name: "", department: "Production", active: true })} data-testid="add-employee-btn"><UserPlus size={16} /> Add Employee</Btn>
+    <div className="space-y-6">
+      <PageHeader title="Attendance" subtitle="Tap Present or Absent for each employee">
+        <Btn variant="outline" onClick={() => setEmpModal({ name: "", department: "Production", active: true })} data-testid="add-employee-btn"><Plus size={16} /> Employee</Btn>
+        <Btn disabled={busy || !active.length} onClick={markAll} data-testid="mark-all-present-btn"><CheckCheck size={16} /> Mark All Present</Btn>
       </PageHeader>
-
-      <Card className="p-4 mb-4 flex flex-col sm:flex-row gap-3">
-        <Input label="Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} className="sm:w-48" data-testid="attendance-date" />
-        <Select label="Department" value={dept} onChange={(e) => setDept(e.target.value)} className="sm:w-48">
-          {depts.map((d) => <option key={d} value={d}>{d === "all" ? "All Departments" : d}</option>)}
-        </Select>
-      </Card>
-
-      <Card className="overflow-hidden">
-        {shown.length === 0 ? <Empty icon={CalendarCheck} title="No employees yet" hint="Add employees to record attendance." /> : (
-          <div className="divide-y divide-border">
-            {shown.map((e) => {
-              const rec = dayRec(e.id);
-              return (
-                <div key={e.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4" data-testid={`employee-row-${e.id}`}>
-                  <div><p className="font-semibold text-slate-800">{e.name}</p><p className="text-xs text-slate-400">{e.department}</p></div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {rec && <Badge cls={META[rec.status]}>{rec.status}</Badge>}
-                    <select value={rec?.status || ""} onChange={(ev) => mark(e, ev.target.value)} data-testid={`attendance-select-${e.id}`}
-                      className="rounded-lg border border-input px-3 py-2 text-sm">
-                      <option value="" disabled>Mark...</option>
-                      {STATUSES.map((s) => <option key={s}>{s}</option>)}
-                    </select>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
-
+      <div className="flex flex-wrap items-end gap-4">
+        <div className="w-48"><Input label="Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} data-testid="attendance-date-input" /></div>
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <Stat l="Present (day)" v={present} cls="text-emerald-600" k="day-present" />
+        <Stat l="Absent (day)" v={absent} cls="text-red-600" k="day-absent" />
+        <Stat l="Not marked" v={active.length - present - absent} cls="text-slate-500" k="day-unmarked" />
+        <Stat l="Present days (week)" v={summary?.week_total ?? 0} cls="text-slate-800" k="week" />
+        <Stat l="Present days (month)" v={summary?.month_total ?? 0} cls="text-slate-800" k="month" />
+      </div>
+      {active.length === 0 ? <Card><Empty icon={Users} title="No employees yet" hint="Add employees with the + Employee button." /></Card> : groups.map(([dept, list]) => (
+        <Card key={dept} className="p-4">
+          <p className="text-xs font-bold uppercase text-slate-500 mb-3">{dept} <span className="text-slate-300">· {list.length}</span></p>
+          <div className="space-y-2">{list.map((e) => {
+            const s = statusOf(e.id);
+            const per = summary?.per_employee?.find((p) => p.employee_id === e.id);
+            return (
+              <div key={e.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-border px-3 py-2" data-testid={`att-row-${e.id}`}>
+                <div className="flex-1 min-w-[140px]"><p className="font-semibold text-slate-800">{e.name}</p><p className="text-[11px] text-slate-400">Week {per?.week ?? 0} · Month {per?.month ?? 0} days</p></div>
+                <button onClick={() => mark(e, "Present")} data-testid={`present-btn-${e.id}`} className={`h-12 w-32 rounded-xl text-sm font-bold border-2 transition-colors ${s === "Present" ? "bg-emerald-600 border-emerald-600 text-white" : "border-emerald-200 text-emerald-700 hover:bg-emerald-50"}`}>Present</button>
+                <button onClick={() => mark(e, "Absent")} data-testid={`absent-btn-${e.id}`} className={`h-12 w-32 rounded-xl text-sm font-bold border-2 transition-colors ${s === "Absent" ? "bg-red-600 border-red-600 text-white" : "border-red-200 text-red-700 hover:bg-red-50"}`}>Absent</button>
+                <button onClick={() => setEmpModal({ ...e })} className="text-slate-300 hover:text-primary" data-testid={`edit-employee-${e.id}`}><Pencil size={15} /></button>
+              </div>);
+          })}</div>
+        </Card>))}
       <Modal open={!!empModal} onClose={() => setEmpModal(null)} title={empModal?.id ? "Edit Employee" : "Add Employee"}>
         {empModal && <div className="space-y-4">
           <Input label="Name *" value={empModal.name} onChange={(e) => setEmpModal({ ...empModal, name: e.target.value })} data-testid="employee-name-input" />
-          <Input label="Department" value={empModal.department} onChange={(e) => setEmpModal({ ...empModal, department: e.target.value })} />
-          <label className="flex items-center gap-2 text-sm font-semibold text-slate-600"><input type="checkbox" checked={empModal.active} onChange={(e) => setEmpModal({ ...empModal, active: e.target.checked })} /> Active</label>
+          <Select label="Department" value={empModal.department} onChange={(e) => setEmpModal({ ...empModal, department: e.target.value })} data-testid="employee-dept-select">{DEPTS.map((d) => <option key={d}>{d}</option>)}</Select>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={empModal.active !== false} onChange={(e) => setEmpModal({ ...empModal, active: e.target.checked })} /> Active</label>
           <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setEmpModal(null)}>Cancel</Btn><Btn onClick={saveEmp} data-testid="save-employee-btn">Save</Btn></div>
         </div>}
       </Modal>

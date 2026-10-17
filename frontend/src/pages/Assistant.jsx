@@ -5,7 +5,7 @@ import { fmtDateTime } from "@/lib/format";
 import { Card, Btn, PageHeader } from "@/components/common";
 import { Sparkles, Send, Plus, Trash2, MessageSquare } from "lucide-react";
 
-const SUGGESTIONS = ["Who owes me money right now?", "Which stock is low and what should I produce?", "Summarise this week's expenses and estimated result", "Which orders are urgent to send?"];
+const SUGGESTIONS = ["Who owes me money right now?", "What is the diesel price in Kokstad today?", "Summarise this week's expenses and estimated result", "Which orders are urgent to send?"];
 const BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 function Bubble({ m, idx }) {
@@ -81,6 +81,7 @@ export default function Assistant() {
           const ev = JSON.parse(c.slice(6));
           if (ev.type === "session") setSid(ev.session_id);
           else if (ev.type === "delta") append(ev.content);
+          else if (ev.type === "status") toast.info(ev.content);
           else if (ev.type === "error") { append(`\n\n⚠ ${ev.message}`); toast.error("Assistant error"); }
         }
       }
@@ -92,7 +93,7 @@ export default function Assistant() {
 
   return (
     <div>
-      <PageHeader title="AI Business Assistant" subtitle="Ask questions about your live ERP data · GPT-5.2" />
+      <PageHeader title="AI Business Assistant" subtitle="Your ERP data + live web search (with sources) · GPT-5.2" />
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 h-[calc(100vh-13rem)] min-h-[480px]">
         <div className="hidden lg:block"><SessionList sessions={sessions} active={sid} onPick={pick} onNew={() => { setSid(null); setMessages([]); }} onDelete={remove} /></div>
         <Card className="lg:col-span-3 flex flex-col overflow-hidden bg-slate-50/60">

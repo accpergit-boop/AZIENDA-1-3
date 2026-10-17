@@ -4,7 +4,8 @@ import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { fmtMoney, fmtDate } from "@/lib/format";
 import { Card, Btn, Input, Select, Textarea, Badge, Modal, PageHeader, Empty } from "@/components/common";
-import { Truck, Plus, Send, Lightbulb, Car } from "lucide-react";
+import { Truck, Plus, Send, Lightbulb, Car, Route } from "lucide-react";
+import { TripPlanner } from "@/components/TripPlanner";
 
 const STATUSES = ["Planned", "Assigned", "Ready", "Dispatched", "Partially Delivered", "Delivered", "Failed", "Cancelled"];
 const META = {
@@ -23,6 +24,7 @@ export default function Deliveries() {
   const [stock, setStock] = useState([]);
   const [modal, setModal] = useState(null);
   const [recs, setRecs] = useState([]);
+  const [planner, setPlanner] = useState(false);
   const [vModal, setVModal] = useState(null);
   const [tab, setTab] = useState("deliveries");
   const [sp, setSp] = useSearchParams();
@@ -70,7 +72,7 @@ export default function Deliveries() {
       <PageHeader title="Deliveries" subtitle="Deliveries, drivers & vehicles">
         <Btn variant="outline" onClick={() => setTab(tab === "deliveries" ? "vehicles" : "deliveries")}><Car size={16} /> {tab === "deliveries" ? "Vehicles" : "Deliveries"}</Btn>
         {tab === "deliveries"
-          ? <Btn onClick={() => openModal(null)} data-testid="add-delivery-btn"><Plus size={16} /> New Delivery</Btn>
+          ? <><Btn variant="outline" onClick={() => setPlanner(true)} data-testid="smart-planner-btn"><Route size={16} /> Smart Planner</Btn><Btn onClick={() => openModal(null)} data-testid="add-delivery-btn"><Plus size={16} /> New Delivery</Btn></>
           : <Btn onClick={() => setVModal({ name: "", registration: "", vtype: "", capacity: "", available: true, notes: "" })} data-testid="add-vehicle-btn"><Plus size={16} /> Add Vehicle</Btn>}
       </PageHeader>
 
@@ -173,6 +175,7 @@ export default function Deliveries() {
           <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setVModal(null)}>Cancel</Btn><Btn onClick={saveVehicle} data-testid="save-vehicle-btn">Save</Btn></div>
         </div>}
       </Modal>
+      <TripPlanner open={planner} onClose={() => setPlanner(false)} onCreated={load} />
     </div>
   );
 }

@@ -22,13 +22,15 @@ _add(1, "Standard", {
     "1070x50": 116.50, "1070x75": 175.00, "1070x100": 203.00, "1070x120": 250.00, "1070x150": 292.00,
     "1370x50": 165.00, "1370x75": 200.00, "1370x100": 260.00, "1370x120": 310.00, "1370x150": 387.50,
 })
-_add(1, "Ribbon", {
+_RIB1 = {
     "760x100": 198.00,
     "910x100": 215.00, "910x120": 258.00, "910x150": 322.00,
     "1070x100": 255.00, "1070x120": 285.00,
     "1370x120": 335.00,
     "1370x150": None,  # ALWAYS manual price + admin confirmation
-})
+}
+for _c in ("Ribbon Black", "Ribbon Pink"):
+    _add(1, _c, _RIB1)
 _add(1, "Strong Boy", {
     "760x125": 285.00, "910x125": 375.00, "1070x125": 410.00, "1370x125": 550.00,
 })
@@ -43,13 +45,15 @@ _add(2, "Standard", {
     "1070x50": 123.00, "1070x75": 185.00, "1070x100": 215.00, "1070x120": 255.00, "1070x150": 300.00,
     "1370x50": 175.00, "1370x75": 210.00, "1370x100": 265.00, "1370x120": 325.00, "1370x150": 407.00,
 })
-_add(2, "Ribbon Black & Pink", {
+_RIB2 = {
     "760x100": 200.00, "760x120": 240.00, "760x150": 300.00,
     "910x100": 225.00, "910x120": 258.00, "910x150": 338.00,
     "1070x100": 265.00, "1070x120": 295.00,
     "1370x100": 310.00, "1370x120": 372.00,
     "1370x150": None,  # UNCONFIRMED - requires admin configuration
-})
+}
+for _c in ("Ribbon Black", "Ribbon Pink"):
+    _add(2, _c, _RIB2)
 _add(2, "Strong Boy", {
     "760x125": 320.00, "910x125": 385.00, "1070x125": 410.00, "1370x125": 525.00,
 })
@@ -78,18 +82,18 @@ STOCK = [
     {"product": "Simple", "size": "1370x100", "opening": 150, "threshold": 0},
     {"product": "Simple", "size": "1370x120", "opening": 90, "threshold": 0},
     {"product": "Simple", "size": "1370x150", "opening": 40, "threshold": 0},
-    {"product": "Ribbon", "size": "760x100", "opening": 5, "threshold": 0},
-    {"product": "Ribbon", "size": "760x120", "opening": 0, "threshold": 0},
-    {"product": "Ribbon", "size": "760x150", "opening": 0, "threshold": 0},
-    {"product": "Ribbon", "size": "910x100", "opening": 53, "threshold": 5},
-    {"product": "Ribbon", "size": "910x120", "opening": 25, "threshold": 0},
-    {"product": "Ribbon", "size": "910x150", "opening": 0, "threshold": 0},
-    {"product": "Ribbon", "size": "1070x100", "opening": 45, "threshold": 0},
-    {"product": "Ribbon", "size": "1070x120", "opening": 105, "threshold": 0},
-    {"product": "Ribbon", "size": "1070x150", "opening": 0, "threshold": 0},
-    {"product": "Ribbon", "size": "1370x100", "opening": 0, "threshold": 0},
-    {"product": "Ribbon", "size": "1370x120", "opening": 0, "threshold": 0},
-    {"product": "Ribbon", "size": "1370x150", "opening": 0, "threshold": 0},
+    {"product": "Ribbon Pink", "size": "760x100", "opening": 5, "threshold": 0},
+    {"product": "Ribbon Pink", "size": "760x120", "opening": 0, "threshold": 0},
+    {"product": "Ribbon Pink", "size": "760x150", "opening": 0, "threshold": 0},
+    {"product": "Ribbon Pink", "size": "910x100", "opening": 53, "threshold": 5},
+    {"product": "Ribbon Pink", "size": "910x120", "opening": 25, "threshold": 0},
+    {"product": "Ribbon Pink", "size": "910x150", "opening": 0, "threshold": 0},
+    {"product": "Ribbon Pink", "size": "1070x100", "opening": 45, "threshold": 0},
+    {"product": "Ribbon Pink", "size": "1070x120", "opening": 105, "threshold": 0},
+    {"product": "Ribbon Pink", "size": "1070x150", "opening": 0, "threshold": 0},
+    {"product": "Ribbon Pink", "size": "1370x100", "opening": 0, "threshold": 0},
+    {"product": "Ribbon Pink", "size": "1370x120", "opening": 0, "threshold": 0},
+    {"product": "Ribbon Pink", "size": "1370x150", "opening": 0, "threshold": 0},
     {"product": "Strong Boy", "size": "760x125", "opening": 0, "threshold": 0},
     {"product": "Strong Boy", "size": "910x125", "opening": 0, "threshold": 0},
     {"product": "Strong Boy", "size": "1070x125", "opening": 10, "threshold": 0},
@@ -105,15 +109,15 @@ STOCK = [
     {"product": "Candy", "size": "1070x120", "opening": 0, "threshold": 0},
     {"product": "Candy", "size": "1370x100", "opening": 0, "threshold": 0},
     {"product": "Candy", "size": "1370x120", "opening": 0, "threshold": 0},
-    {"product": "Black", "size": "760x100", "opening": 30, "threshold": 0},
-    {"product": "Black", "size": "760x120", "opening": 5, "threshold": 0},
-    {"product": "Black", "size": "760x150", "opening": 0, "threshold": 0},
-    {"product": "Black", "size": "910x100", "opening": 35, "threshold": 5},
-    {"product": "Black", "size": "910x120", "opening": 5, "threshold": 0},
-    {"product": "Black", "size": "910x150", "opening": 45, "threshold": 0},
-    {"product": "Black", "size": "1070x100", "opening": 135, "threshold": 0},
-    {"product": "Black", "size": "1070x120", "opening": 130, "threshold": 0},
-    {"product": "Black", "size": "1070x150", "opening": 0, "threshold": 0},
+    {"product": "Ribbon Black", "size": "760x100", "opening": 30, "threshold": 0},
+    {"product": "Ribbon Black", "size": "760x120", "opening": 5, "threshold": 0},
+    {"product": "Ribbon Black", "size": "760x150", "opening": 0, "threshold": 0},
+    {"product": "Ribbon Black", "size": "910x100", "opening": 35, "threshold": 5},
+    {"product": "Ribbon Black", "size": "910x120", "opening": 5, "threshold": 0},
+    {"product": "Ribbon Black", "size": "910x150", "opening": 45, "threshold": 0},
+    {"product": "Ribbon Black", "size": "1070x100", "opening": 135, "threshold": 0},
+    {"product": "Ribbon Black", "size": "1070x120", "opening": 130, "threshold": 0},
+    {"product": "Ribbon Black", "size": "1070x150", "opening": 0, "threshold": 0},
 ]
 
 DRIVERS = [
@@ -129,9 +133,9 @@ TRAILERS = [
 ]
 
 FLEET = [
-    {"name": "Mighty Hyundai Truck", "registration": "", "vtype": "Medium Truck", "capacity": "", "length": "", "available": True, "notes": ""},
-    {"name": "Hino 500", "registration": "", "vtype": "Large Truck", "capacity": "", "length": "", "available": True, "notes": "Largest truck"},
-    {"name": "Hino 300", "registration": "", "vtype": "Medium Truck", "capacity": "", "length": "", "available": True, "notes": ""},
+    {"name": "Mighty Hyundai Truck", "registration": "", "vtype": "Medium Truck", "model": "Hyundai Mighty EX8", "consumption_min": 15, "consumption_max": 21, "payload_kg": 5000, "capacity": "approx. 5 t", "length": "", "available": True, "notes": ""},
+    {"name": "Hino 500", "registration": "", "vtype": "Large Truck", "model": "Hino 500 (7 t)", "consumption_min": 20, "consumption_max": 27, "payload_kg": 7000, "capacity": "approx. 7 t (confirm specs)", "length": "", "available": True, "notes": "Largest truck"},
+    {"name": "Hino 300", "registration": "", "vtype": "Medium Truck", "model": "Hino 300 816", "consumption_min": 15, "consumption_max": 20, "payload_kg": 4500, "capacity": "approx. 4.5–5 t", "length": "", "available": True, "notes": ""},
     {"name": "Trailer (1)", "registration": "", "vtype": "Trailer", "capacity": "", "length": "9 m", "available": True, "notes": "Largest trailer"},
     {"name": "Trailer (2)", "registration": "", "vtype": "Trailer", "capacity": "", "length": "5 m", "available": True, "notes": ""},
     {"name": "Trailer (3)", "registration": "", "vtype": "Trailer", "capacity": "", "length": "4 m", "available": True, "notes": ""},
@@ -156,7 +160,15 @@ DEFAULT_SETTINGS = {
     "departments": ["Production", "Cutting", "Sewing", "Mattress Processing", "Dispatch", "Administration", "Drivers"],
     "expense_categories": EXPENSE_CATEGORIES,
     "vehicle_types": VEHICLE_TYPES,
-    "product_categories": ["Standard", "Ribbon", "Ribbon Black & Pink", "Candy", "Strong Boy", "Uncovered", "Uncovered Blue 16 Density"],
+    "product_categories": ["Standard", "Ribbon Black", "Ribbon Pink", "Candy", "Strong Boy", "Uncovered", "Uncovered Blue 16 Density"],
     "bundle_sizes": {"default": 5, "50": 10, "75": 10},
     "timezone": "Africa/Johannesburg",
+}
+
+CITY_DISTANCES_KM = {  # approximate one-way road km from Kokstad (ESTIMATES - edit in Settings)
+    "KOKSTAD": 0, "CEDARVILLE": 55, "UMZIMKULU": 45, "UMZ": 45, "MOUNT AYLIFF": 45, "MOUNT FRERE": 75, "MT FRERE": 75,
+    "MATATIELE": 80, "MATATIELLE": 80, "HARDING": 75, "BIZANA": 90, "TABANKULU": 105, "IZINGOLWENI": 115,
+    "FLAGSTAFF": 120, "MOUNT FLETCHER": 140, "QUMBU": 145, "LUSIKISIKI": 145, "IXOPO": 120, "TSOLO": 185,
+    "UMTHATHA": 185, "UMTATA": 185, "MTHATHA": 185, "PORT ST JOHNS": 200, "UGIE": 230, "IDUTYWA": 270,
+    "ELLIOTDALE": 280, "DURBAN": 265, "BUTTERWORTH": 310, "KENTANI": 330, "QUEENSTOWN": 390, "EAST LONDON": 420,
 }
