@@ -18,7 +18,7 @@ export function orderLines(order) {
   });
 }
 
-export const DeliveryNote = forwardRef(function DeliveryNote({ order, lang = "en", vehicleName = "" }, ref) {
+export const DeliveryNote = forwardRef(function DeliveryNote({ order, lang = "en", vehicleName = "", settings = {} }, ref) {
   const t = T[lang]; const ur = lang === "ur";
   const lines = orderLines(order);
   const total = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
@@ -28,9 +28,9 @@ export const DeliveryNote = forwardRef(function DeliveryNote({ order, lang = "en
     <div ref={ref} dir={ur ? "rtl" : "ltr"} lang={lang} className="bg-white text-slate-900 mx-auto p-10" style={{ width: 794, minHeight: 1050, fontFamily: ur ? "'Noto Nastaliq Urdu','Jameel Noori Nastaleeq',Tahoma,sans-serif" : undefined }} data-testid="delivery-note">
       <div className="flex justify-between items-start">
         <div>
-          <p className="text-[26px] font-extrabold" dir="ltr">{COMPANY.name}</p>
-          {COMPANY.address.map((l) => <p key={l} className="text-[12px] leading-5" dir="ltr">{l}</p>)}
-          <p className="text-[12px] leading-5" dir="ltr">{COMPANY.phones}</p>
+          <p className="text-[26px] font-extrabold" dir="ltr">{settings.company_name || COMPANY.name}</p>
+          <p className="whitespace-pre-line text-[12px] leading-5" dir="ltr">{settings.address || COMPANY.address.join(", ")}</p>
+          <p className="text-[12px] leading-5" dir="ltr">{settings.telephone || COMPANY.phones}</p>
         </div>
         <div className={ur ? "text-left" : "text-right"}>
           <p className="text-[26px] font-bold mb-2">{t.title}</p>

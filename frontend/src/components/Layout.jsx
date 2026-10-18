@@ -1,5 +1,6 @@
 import { NavLink, useNavigate, Outlet } from "react-router-dom";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import {
   LayoutDashboard, Users, FileText, Boxes, Factory, CalendarCheck,
   Truck, Settings as Cog, Menu, X, LogOut, Search, Bell, Layers,
@@ -7,6 +8,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { Sparkles } from "lucide-react";
+import { api, apiError } from "@/lib/api";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
@@ -23,7 +25,7 @@ const NAV = [
   { to: "/settings", label: "Settings", icon: Cog },
 ];
 
-function SidebarContent({ onNav, isAdmin }) {
+function SidebarContent({ onNav, companyName }) {
   return (
     <>
       <div className="flex items-center gap-3 px-6 h-20 border-b border-white/10">
@@ -31,7 +33,7 @@ function SidebarContent({ onNav, isAdmin }) {
           <Layers className="text-white" size={22} />
         </div>
         <div>
-          <div className="text-white font-bold text-base font-display leading-tight">SUPER IQ-FOAM</div>
+          <div className="text-white font-bold text-base font-display leading-tight">{companyName || "SUPER IQ-FOAM"}</div>
           <div className="text-emerald-100/55 text-[10px] font-semibold uppercase tracking-[0.16em]">Business Management</div>
         </div>
       </div>
@@ -48,15 +50,27 @@ function SidebarContent({ onNav, isAdmin }) {
 }
 
 export default function Layout() {
-  const { user, logout } = useAuth();
+  const { user, logout, switchCompany } = useAuth();
   const [open, setOpen] = useState(false);
+  const [profiles, setProfiles] = useState([]);
+  const [switching, setSwitching] = useState(false);
   const nav = useNavigate();
+
+  useEffect(() => { api.get("/companies/profiles").then(setProfiles).catch(() => {}); }, []);
+  const availableProfiles = profiles.filter((profile) => user?.company_ids?.includes(profile.id));
+  const activeProfile = availableProfiles.find((profile) => profile.id === user?.company_id);
+  const changeCompany = async (companyId) => {
+    if (!companyId || companyId === user?.company_id) return;
+    setSwitching(true);
+    try { await switchCompany(companyId); }
+    catch (e) { toast.error(apiError(e)); setSwitching(false); }
+  };
 
   return (
     <div className="min-h-screen bg-background">
       {/* Desktop sidebar */}
       <aside className="no-print hidden lg:flex fixed inset-y-0 left-0 w-64 flex-col bg-[hsl(222_47%_11%)] z-30">
-        <SidebarContent isAdmin={user?.is_admin || user?.role === "admin"} />
+        <SidebarContent companyName={activeProfile?.name} />
       </aside>
 
       {/* Mobile drawer */}
@@ -67,7 +81,7 @@ export default function Layout() {
             <button className="absolute top-5 right-4 text-slate-300" onClick={() => setOpen(false)}>
               <X size={22} />
             </button>
-            <SidebarContent onNav={() => setOpen(false)} isAdmin={user?.is_admin || user?.role === "admin"} />
+            <SidebarContent onNav={() => setOpen(false)} companyName={activeProfile?.name} />
           </aside>
         </div>
       )}
@@ -90,6 +104,12 @@ export default function Layout() {
             </div>
           </div>
           <div className="flex-1 sm:hidden" />
+          {availableProfiles.length > 1 && <label className="sr-only" htmlFor="active-company-select">Active company</label>}
+          {availableProfiles.length > 1 && <select id="active-company-select" aria-label="Switch company" value={user.company_id || ""} disabled={switching}
+            onChange={(e) => changeCompany(e.target.value)} data-testid="company-switcher"
+            className="max-w-40 sm:max-w-56 rounded-md border border-border bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60">
+            {availableProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+          </select>}
           <button className="relative text-slate-500 hover:text-slate-800" data-testid="notifications-btn">
             <Bell size={20} />
           </button>

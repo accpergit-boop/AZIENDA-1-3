@@ -6,8 +6,12 @@ import { Card, Btn, Badge, PageHeader, Empty } from "@/components/common";
 import { FileText, Search, Plus, Pencil, Trash2, Download } from "lucide-react";
 import { toast } from "sonner";
 import { apiError } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
+import { usesUnifiedPriceList } from "@/lib/company";
 
 export default function InvoiceList() {
+  const { user } = useAuth();
+  const unifiedPriceList = usesUnifiedPriceList(user?.company_id);
   const [list, setList] = useState([]);
   const [sp] = useSearchParams();
   const [q, setQ] = useState(sp.get("q") || "");
@@ -39,7 +43,7 @@ export default function InvoiceList() {
         <Btn onClick={() => nav("/invoices/new")} data-testid="new-invoice-btn"><Plus size={16} /> Create Invoice</Btn>
       </PageHeader>
 
-      <Card className="p-4 mb-4 grid grid-cols-1 sm:grid-cols-4 gap-3">
+      <Card className={`p-4 mb-4 grid grid-cols-1 ${unifiedPriceList ? "sm:grid-cols-3" : "sm:grid-cols-4"} gap-3`}>
         <div className="relative sm:col-span-2">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
           <input data-testid="invoice-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search number or customer..."
@@ -49,9 +53,9 @@ export default function InvoiceList() {
           <option value="all">All Statuses</option>
           {Object.keys(STATUS_META).map((s) => <option key={s} value={s}>{STATUS_META[s].label}</option>)}
         </select>
-        <select value={zone} onChange={(e) => setZone(e.target.value)} className="rounded-lg border border-input px-3 py-2.5 text-sm">
+        {!unifiedPriceList && <select value={zone} onChange={(e) => setZone(e.target.value)} className="rounded-lg border border-input px-3 py-2.5 text-sm">
           <option value="all">All Zones</option><option value="1">Zone 1</option><option value="2">Zone 2</option>
-        </select>
+        </select>}
       </Card>
 
       {sel.length > 0 && <div className="flex items-center justify-between rounded-xl border border-red-200 bg-red-50 px-4 py-2" data-testid="bulk-bar">
@@ -64,7 +68,7 @@ export default function InvoiceList() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
-                <th className="px-3 py-3 w-8"><input type="checkbox" checked={sel.length > 0 && sel.length === filtered.length} onChange={(e) => setSel(e.target.checked ? filtered.map((i) => i.id) : [])} data-testid="select-all-invoices" /></th><th className="px-4 py-3 font-semibold">Invoice</th><th className="px-4 font-semibold">Customer</th><th className="px-4 font-semibold">Date</th><th className="px-4 font-semibold">Due</th><th className="px-4 font-semibold">Zone</th><th className="px-4 font-semibold text-right">Total</th><th className="px-4 font-semibold text-right">Paid</th><th className="px-4 font-semibold text-right">Balance</th><th className="px-4 font-semibold text-center">Status</th><th className="px-4 font-semibold text-right">Actions</th>
+                <th className="px-3 py-3 w-8"><input type="checkbox" checked={sel.length > 0 && sel.length === filtered.length} onChange={(e) => setSel(e.target.checked ? filtered.map((i) => i.id) : [])} data-testid="select-all-invoices" /></th><th className="px-4 py-3 font-semibold">Invoice</th><th className="px-4 font-semibold">Customer</th><th className="px-4 font-semibold">Date</th><th className="px-4 font-semibold">Due</th>{!unifiedPriceList && <th className="px-4 font-semibold">Zone</th>}<th className="px-4 font-semibold text-right">Total</th><th className="px-4 font-semibold text-right">Paid</th><th className="px-4 font-semibold text-right">Balance</th><th className="px-4 font-semibold text-center">Status</th><th className="px-4 font-semibold text-right">Actions</th>
               </tr></thead>
               <tbody>{filtered.map((i) => (
                 <tr key={i.id} className="border-b border-border/60 hover:bg-slate-50 cursor-pointer" onClick={() => nav(`/invoices/${i.id}`)} data-testid={`invoice-row-${i.id}`}>
@@ -73,7 +77,7 @@ export default function InvoiceList() {
                   <td className="px-4 text-slate-600">{i.customer_name}</td>
                   <td className="px-4 text-slate-500">{fmtDate(i.date)}</td>
                   <td className="px-4 text-slate-500">{fmtDate(i.due_date)}</td>
-                  <td className="px-4"><Badge cls="bg-blue-50 text-blue-700 border-blue-200">Z{i.zone}</Badge></td>
+                  {!unifiedPriceList && <td className="px-4"><Badge cls="bg-blue-50 text-blue-700 border-blue-200">Z{i.zone}</Badge></td>}
                   <td className="px-4 text-right font-mono text-slate-700">{fmtMoney(i.total)}</td>
                   <td className="px-4 text-right font-mono text-emerald-600">{fmtMoney(i.amount_paid)}</td>
                   <td className="px-4 text-right font-mono text-red-600">{fmtMoney(i.outstanding)}</td>

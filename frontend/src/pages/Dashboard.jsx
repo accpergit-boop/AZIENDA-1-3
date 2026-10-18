@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { fmtMoney, fmtDate, fmtDateTime, STATUS_META } from "@/lib/format";
 import { Card, Badge, Btn, Input, Modal } from "@/components/common";
+import { useAuth } from "@/context/AuthContext";
 import {
   Receipt, Wallet, AlertTriangle, Boxes, Plus, UserPlus, CreditCard,
   PackagePlus, Factory, CalendarCheck, Truck, TrendingUp, Scissors, ArrowRight, Banknote, ClipboardList, Wrench, Fuel, Pencil,
@@ -57,6 +58,7 @@ export default function Dashboard() {
   const [dieselPrice, setDieselPrice] = useState("");
   const [dieselSaving, setDieselSaving] = useState(false);
   const nav = useNavigate();
+  const { user } = useAuth();
 
   useEffect(() => { api.get("/dashboard").then(setD).catch(() => {}); }, []);
 
@@ -80,7 +82,7 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-primary">Super IQ-Foam · Operations</p>
+        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-primary">{user?.name || "Company"} · Operations</p>
         <h1 className="text-3xl sm:text-4xl font-normal text-slate-900 font-display mt-1">Business overview</h1>
         <p className="text-sm text-slate-500 mt-1">Performance, cash flow and daily operations</p>
       </div>

@@ -4,11 +4,15 @@ import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { fmtMoney, fmtDate, STATUS_META } from "@/lib/format";
 import { Card, Btn, Input, Select, Badge, Modal, PageHeader, Empty } from "@/components/common";
+import { useAuth } from "@/context/AuthContext";
+import { usesUnifiedPriceList } from "@/lib/company";
 import { Users, Search, Plus, Pencil, Eye } from "lucide-react";
 
 const blank = { name: "", phone: "", email: "", address: "", city: "", notes: "", default_zone: 1, payment_terms: "Due on Delivery", active: true };
 
 export default function Customers() {
+  const { user } = useAuth();
+  const unifiedPriceList = usesUnifiedPriceList(user?.company_id);
   const [list, setList] = useState([]);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
@@ -63,13 +67,13 @@ export default function Customers() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
-                <th className="px-4 py-3 font-semibold">Name</th><th className="px-4 font-semibold">Phone</th><th className="px-4 font-semibold">Zone</th><th className="px-4 font-semibold">Terms</th><th className="px-4 font-semibold text-center">Status</th><th className="px-4 font-semibold text-right">Actions</th>
+                <th className="px-4 py-3 font-semibold">Name</th><th className="px-4 font-semibold">Phone</th>{!unifiedPriceList && <th className="px-4 font-semibold">Zone</th>}<th className="px-4 font-semibold">Terms</th><th className="px-4 font-semibold text-center">Status</th><th className="px-4 font-semibold text-right">Actions</th>
               </tr></thead>
               <tbody>{filtered.map((c) => (
                 <tr key={c.id} className="border-b border-border/60 hover:bg-slate-50" data-testid={`customer-row-${c.id}`}>
                   <td className="px-4 py-3 font-semibold text-slate-800">{c.name}</td>
                   <td className="px-4 text-slate-500">{c.phone || "-"}</td>
-                  <td className="px-4"><Badge cls="bg-blue-50 text-blue-700 border-blue-200">Zone {c.default_zone}</Badge></td>
+                  {!unifiedPriceList && <td className="px-4"><Badge cls="bg-blue-50 text-blue-700 border-blue-200">Zone {c.default_zone}</Badge></td>}
                   <td className="px-4 text-slate-500">{c.payment_terms}</td>
                   <td className="px-4 text-center"><Badge cls={c.active ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-500 border-slate-200"}>{c.active ? "Active" : "Inactive"}</Badge></td>
                   <td className="px-4 text-right whitespace-nowrap">
@@ -95,10 +99,13 @@ export default function Customers() {
               <Input label="City" value={modal.city || ""} onChange={(e) => setModal({ ...modal, city: e.target.value })} data-testid="customer-city-input" />
             </div>
             <Input label="Notes" value={modal.notes || ""} onChange={(e) => setModal({ ...modal, notes: e.target.value })} data-testid="customer-notes-input" />
-            <div className="grid grid-cols-2 gap-3">
+            {!unifiedPriceList && <div className="grid grid-cols-2 gap-3">
               <Select label="Default Price Zone" value={modal.default_zone} onChange={(e) => setModal({ ...modal, default_zone: Number(e.target.value) })}>
                 <option value={1}>Zone 1</option><option value={2}>Zone 2</option>
               </Select>
+            </div>}
+            <div className={`grid ${unifiedPriceList ? "grid-cols-1" : "grid-cols-2"} gap-3`}>
+              {!unifiedPriceList && null}
               <Select label="Payment Terms" value={modal.payment_terms} onChange={(e) => setModal({ ...modal, payment_terms: e.target.value })}>
                 {["Due on Delivery", "Cash on Delivery", "7 Days", "14 Days", "30 Days", "Custom Terms"].map((t) => <option key={t}>{t}</option>)}
               </Select>
@@ -117,8 +124,8 @@ export default function Customers() {
       <Modal open={!!profile} onClose={() => setProfile(null)} title={profile?.c.name} wide>
         {profile && (
           <div className="space-y-5">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-400">Zone</p><p className="font-bold text-slate-800">Zone {profile.c.default_zone}</p></div>
+            <div className={`grid grid-cols-2 ${unifiedPriceList ? "sm:grid-cols-3" : "sm:grid-cols-4"} gap-3`}>
+              {!unifiedPriceList && <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-400">Zone</p><p className="font-bold text-slate-800">Zone {profile.c.default_zone}</p></div>}
               <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-400">Terms</p><p className="font-bold text-slate-800 text-sm">{profile.c.payment_terms}</p></div>
               <div className="rounded-lg bg-blue-50 p-3"><p className="text-xs text-slate-400">Total Invoiced</p><p className="font-bold text-slate-800 font-mono">{fmtMoney(profile.total_invoiced)}</p></div>
               <div className="rounded-lg bg-red-50 p-3"><p className="text-xs text-slate-400">Outstanding</p><p className="font-bold text-red-600 font-mono" data-testid="customer-outstanding">{fmtMoney(profile.outstanding)}</p></div>

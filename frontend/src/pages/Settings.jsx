@@ -3,8 +3,9 @@ import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { fmtMoney, fmtDateTime } from "@/lib/format";
 import { Card, Btn, Input, Select, Badge, Modal, PageHeader } from "@/components/common";
-import { Building2, Receipt, Tag, Truck, Save, Pencil, Plus, ShieldCheck, Fuel, MapPin, Smartphone, Trash2 } from "lucide-react";
+import { Building2, Receipt, Tag, Truck, Save, Pencil, Plus, ShieldCheck, Fuel, MapPin, Smartphone, Trash2, UserPlus, CirclePause, CirclePlay } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { usesUnifiedPriceList } from "@/lib/company";
 
 const TABS = [
   { k: "company", l: "Company", icon: Building2 },
@@ -15,53 +16,100 @@ const TABS = [
   { k: "access", l: "Access", icon: ShieldCheck },
 ];
 
-function AccessTab({ users, loading, currentUserId, onRoleChange, onRemove }) {
-  const adminCount = users.filter((u) => u.role === "admin").length;
+function AccessTab({ users, companies, loading, currentUserId, onRoleChange, onStatusChange, onRemove, onCreate }) {
+  const [createOpen, setCreateOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState({ username: "", name: "", email: "", password: "", company_ids: [] });
+  const adminCounts = Object.fromEntries(companies.map((company) => [company.id,
+    users.filter((account) => !account.is_owner && account.active !== false && account.company_roles?.[company.id] === "admin").length]));
+  const companyName = (id) => companies.find((company) => company.id === id)?.name || id;
+
+  const submitCreate = async (event) => {
+    event.preventDefault();
+    setCreating(true);
+    try {
+      await onCreate(draft);
+      setDraft({ username: "", name: "", email: "", password: "", company_ids: [] });
+      setCreateOpen(false);
+    } catch { /* Parent displays the API error. */ }
+    finally { setCreating(false); }
+  };
+
   return (
     <Card className="p-5 space-y-4" data-testid="access-tab">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h3 className="font-bold text-slate-800 font-display">Accounts and devices</h3>
-          <p className="text-sm text-slate-500 mt-1">Google accounts and self-registered accounts can sign in without prior approval. Precise location appears only when the user shares it.</p>
+          <h3 className="font-bold text-slate-800 font-display">Users and company access</h3>
+          <p className="text-sm text-slate-500 mt-1">Assign each account to companies and manage its role independently in each one.</p>
         </div>
-        <Badge cls="bg-blue-50 text-blue-700 border-blue-200">Admins {adminCount}/6</Badge>
+        <Btn onClick={() => setCreateOpen(true)} data-testid="create-company-user"><UserPlus size={16} /> Add user</Btn>
       </div>
       {loading ? <p className="text-sm text-slate-400 py-4">Loading accounts...</p> : users.length === 0 ? <p className="text-sm text-slate-400 py-4">No accounts found.</p> : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-sm">
+          <table className="w-full min-w-[980px] text-sm">
             <thead><tr className="border-b border-border text-left text-xs text-slate-400">
-              <th className="py-2 font-semibold">Account</th><th className="font-semibold">Role</th><th className="font-semibold">Device</th><th className="font-semibold">Location</th><th className="font-semibold">Last active</th><th />
+              <th className="py-2 font-semibold">Account</th>{companies.map((company) => <th key={company.id} className="min-w-44 font-semibold">{company.name}</th>)}
+              <th className="font-semibold">Presence</th><th className="font-semibold">Current company · Last login</th><th />
             </tr></thead>
             <tbody>{users.map((account) => (
               <tr key={account.id} className="border-b border-border/60 align-top" data-testid={`access-user-${account.id}`}>
-                <td className="py-3 pr-3"><p className="font-semibold text-slate-700">{account.name || "-"}</p><p className="text-xs text-slate-500">{account.email}</p></td>
+                <td className="py-3 pr-3"><p className="font-semibold text-slate-700">{account.name || account.username || "-"}</p><p className="text-xs text-slate-500">{account.username || account.email}</p>{account.is_owner && <Badge cls="mt-1 bg-amber-50 text-amber-800 border-amber-200">Global owner</Badge>}</td>
+                {companies.map((company) => {
+                  const role = account.is_owner ? "owner" : account.company_roles?.[company.id] || "none";
+                  const count = adminCounts[company.id] || 0;
+                  return <td key={company.id} className="py-3 pr-3">
+                    {account.is_owner ? <Badge cls="bg-amber-50 text-amber-800 border-amber-200">Owner</Badge> :
+                      <>
+                        <select aria-label={`${company.name} role for ${account.username}`} value={role}
+                          onChange={(event) => onRoleChange(account, company.id, event.target.value)}
+                          data-testid={`access-role-${account.id}-${company.id}`}
+                          className="w-full rounded-md border border-input bg-white px-2 py-2 text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/15">
+                          <option value="none">No access</option><option value="user">User</option>
+                          <option value="admin" disabled={count >= 3 && role !== "admin"}>Admin ({count}/3)</option>
+                        </select>
+                        {count >= 3 && role !== "admin" && <p className="mt-1 text-[10px] text-amber-800">Maximum 3 admins</p>}
+                      </>}
+                  </td>;
+                })}
                 <td className="py-3 pr-3">
-                  {account.is_owner ? <Badge cls="bg-amber-50 text-amber-700 border-amber-200">Owner</Badge> :
-                    <Select aria-label={`Role for ${account.email}`} value={account.role} onChange={(e) => onRoleChange(account, e.target.value)} data-testid={`access-role-${account.id}`}>
-                      <option value="user">User</option><option value="admin" disabled={adminCount >= 6 && account.role !== "admin"}>Admin</option>
-                    </Select>}
+                  <Badge cls={account.active === false ? "bg-slate-100 text-slate-600 border-slate-200" : account.online ? "bg-emerald-50 text-emerald-800 border-emerald-200" : "bg-slate-100 text-slate-600 border-slate-200"}>
+                    {account.active === false ? "Disabled" : account.online ? "Online" : "Offline"}
+                  </Badge>
+                  {!account.is_owner && <button type="button" onClick={() => onStatusChange(account, account.active === false)} aria-label={account.active === false ? `Enable ${account.username}` : `Disable ${account.username}`}
+                    className="ml-2 inline-flex align-middle text-slate-500 hover:text-primary" data-testid={`toggle-user-${account.id}`}>
+                    {account.active === false ? <CirclePlay size={17} /> : <CirclePause size={17} />}
+                  </button>}
                 </td>
-                <td className="py-3 pr-3">{account.devices.length ? account.devices.map((device) => (
-                  <div key={device.device_id} className="mb-2 last:mb-0">
-                    <p className="flex items-center gap-1 text-xs text-slate-700"><Smartphone size={13} /> <span className="max-w-48 truncate">{device.device_name}</span></p>
-                    <p className="text-[11px] text-slate-400">{device.ip_address || "IP unavailable"} · {device.timezone || "Time zone unavailable"}</p>
-                  </div>)) : <span className="text-xs text-slate-400">No device recorded</span>}</td>
-                <td className="py-3 pr-3">{account.devices.map((device) => device.location ? (
-                  <a key={device.device_id} href={`https://www.openstreetmap.org/?mlat=${device.location.latitude}&mlon=${device.location.longitude}#map=15/${device.location.latitude}/${device.location.longitude}`} target="_blank" rel="noreferrer" className="mb-2 flex items-center gap-1 text-xs font-semibold text-primary underline">
-                    <MapPin size={13} /> {device.location.latitude.toFixed(4)}, {device.location.longitude.toFixed(4)}
-                  </a>) : <p key={device.device_id} className="mb-2 text-xs text-slate-400">Not shared</p>)}</td>
-                <td className="py-3 text-xs text-slate-500">{account.devices.length ? account.devices.map((device) => <p key={device.device_id}>{fmtDateTime(device.last_seen)}</p>) : "-"}</td>
-                <td className="py-3 text-right">{!account.is_owner && account.id !== currentUserId && <button type="button" onClick={() => onRemove(account)} title={`Remove ${account.email}`} aria-label={`Remove ${account.email}`} className="rounded p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" data-testid={`remove-user-${account.id}`}><Trash2 size={16} /></button>}</td>
+                <td className="py-3 text-xs text-slate-600">{account.current_company_id ? companyName(account.current_company_id) : "-"}<p className="mt-1 text-slate-400">{account.last_login ? fmtDateTime(account.last_login) : "No login yet"}</p></td>
+                <td className="py-3 text-right">{!account.is_owner && account.id !== currentUserId && <button type="button" onClick={() => onRemove(account)} title={`Remove ${account.username}`} aria-label={`Remove ${account.username}`} className="rounded p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" data-testid={`remove-user-${account.id}`}><Trash2 size={16} /></button>}</td>
               </tr>))}</tbody>
           </table>
         </div>
       )}
+
+      <Modal open={createOpen} onClose={() => !creating && setCreateOpen(false)} title="Create user">
+        <form onSubmit={submitCreate} className="space-y-4">
+          <Input label="Username" value={draft.username} onChange={(e) => setDraft({ ...draft, username: e.target.value })} required data-testid="new-user-username" />
+          <Input label="Display name" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} required data-testid="new-user-name" />
+          <Input label="Email (optional)" type="email" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} data-testid="new-user-email" />
+          <Input label="Initial password" type="password" minLength={8} value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} required data-testid="new-user-password" />
+          <fieldset className="space-y-2">
+            <legend className="text-xs font-semibold text-slate-600">Company access</legend>
+            {companies.map((company) => <label key={company.id} className="flex items-center gap-2 text-sm text-slate-700">
+              <input type="checkbox" checked={draft.company_ids.includes(company.id)} onChange={(e) => setDraft({ ...draft, company_ids: e.target.checked ? [...draft.company_ids, company.id] : draft.company_ids.filter((id) => id !== company.id) })} />
+              {company.name}
+            </label>)}
+          </fieldset>
+          <div className="flex justify-end gap-2"><Btn type="button" variant="outline" onClick={() => setCreateOpen(false)} disabled={creating}>Cancel</Btn><Btn type="submit" disabled={creating || draft.company_ids.length === 0} data-testid="save-company-user">{creating ? "Creating..." : "Create user"}</Btn></div>
+        </form>
+      </Modal>
     </Card>
   );
 }
 
 export default function Settings() {
   const { user } = useAuth();
+  const unifiedPriceList = usesUnifiedPriceList(user?.company_id);
   const [tab, setTab] = useState("company");
   const [s, setS] = useState(null);
   const [dieselPrice, setDieselPrice] = useState("");
@@ -69,6 +117,7 @@ export default function Settings() {
   const [prices, setPrices] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [accessUsers, setAccessUsers] = useState([]);
+  const [companies, setCompanies] = useState([]);
   const [accessLoading, setAccessLoading] = useState(false);
   const [removeUser, setRemoveUser] = useState(null);
   const [removingUser, setRemovingUser] = useState(false);
@@ -82,17 +131,43 @@ export default function Settings() {
   };
   useEffect(() => { load(); }, []);
   useEffect(() => {
-    if (tab !== "access" || !user?.is_admin) return;
+    if (tab !== "access" || !user?.is_owner) return;
     setAccessLoading(true);
-    api.get("/access/users").then(setAccessUsers).catch((e) => toast.error(apiError(e))).finally(() => setAccessLoading(false));
-  }, [tab, user?.is_admin]);
+    Promise.all([api.get("/access/users"), api.get("/companies/profiles")])
+      .then(([accounts, profiles]) => { setAccessUsers(accounts); setCompanies(profiles); })
+      .catch((e) => toast.error(apiError(e))).finally(() => setAccessLoading(false));
+  }, [tab, user?.is_owner]);
 
-  const changeRole = async (account, role) => {
+  const changeRole = async (account, companyId, role) => {
     try {
-      await api.put(`/access/users/${account.id}/role`, { role });
-      setAccessUsers((current) => current.map((u) => u.id === account.id ? { ...u, role } : u));
-      toast.success(`${account.email} is now ${role}`);
+      if (role === "none") {
+        const company_ids = account.company_ids.filter((id) => id !== companyId);
+        const result = await api.put(`/access/users/${account.id}/companies`, { company_ids });
+        setAccessUsers((current) => current.map((u) => u.id === account.id ? { ...u, company_ids: result.company_ids, company_roles: result.company_roles } : u));
+      } else {
+        await api.put(`/access/users/${account.id}/role`, { role, company_id: companyId });
+        setAccessUsers((current) => current.map((u) => u.id === account.id ? {
+          ...u, company_ids: [...new Set([...u.company_ids, companyId])], company_roles: { ...u.company_roles, [companyId]: role },
+        } : u));
+      }
+      toast.success(`${account.username} access updated`);
     } catch (e) { toast.error(apiError(e)); }
+  };
+
+  const changeStatus = async (account, active) => {
+    try {
+      await api.put(`/access/users/${account.id}/status`, { active });
+      setAccessUsers((current) => current.map((u) => u.id === account.id ? { ...u, active, online: active ? u.online : false } : u));
+      toast.success(`${account.username} ${active ? "enabled" : "disabled"}`);
+    } catch (e) { toast.error(apiError(e)); }
+  };
+
+  const createAccessUser = async (body) => {
+    try {
+      const created = await api.post("/access/users", body);
+      setAccessUsers((current) => [...current, { ...created, online: false, last_login: "", current_company_id: "", devices: [] }]);
+      toast.success("User created");
+    } catch (e) { toast.error(apiError(e)); throw e; }
   };
 
   const confirmRemoveUser = async () => {
@@ -125,7 +200,7 @@ export default function Settings() {
 
   const savePrice = async () => {
     try {
-      const body = { ...pModal, price: pModal.price === "" ? null : Number(pModal.price) };
+      const body = { ...pModal, zone: unifiedPriceList ? 1 : pModal.zone, price: pModal.price === "" ? null : Number(pModal.price) };
       if (pModal.id) await api.put(`/prices/${pModal.id}`, body);
       else await api.post("/prices", body);
       toast.success("Price saved"); setPModal(null); api.get("/prices").then(setPrices);
@@ -141,13 +216,13 @@ export default function Settings() {
   };
 
   if (!s) return <div className="text-slate-400">Loading...</div>;
-  const zonePrices = prices.filter((p) => p.zone === zone);
+  const zonePrices = prices.filter((p) => p.zone === (unifiedPriceList ? 1 : zone));
 
   return (
     <div>
       <PageHeader title="Settings" subtitle="Configure your business" />
       <div className="flex gap-2 mb-6 overflow-x-auto no-print">
-        {TABS.filter((t) => t.k !== "diesel" || user?.is_admin).map((t) => (
+        {TABS.filter((t) => (t.k !== "diesel" || user?.is_admin) && (t.k !== "access" || user?.is_owner)).map((t) => (
           <button key={t.k} onClick={() => setTab(t.k)} data-testid={`settings-tab-${t.k}`}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold whitespace-nowrap ${tab === t.k ? "bg-primary text-white" : "bg-white border border-border text-slate-600"}`}>
             <t.icon size={16} /> {t.l}
@@ -192,10 +267,10 @@ export default function Settings() {
       {tab === "prices" && (
         <div>
           <div className="flex items-center justify-between mb-4">
-            <div className="flex gap-2">
+            {!unifiedPriceList && <div className="flex gap-2">
               {[1, 2].map((z) => <button key={z} onClick={() => setZone(z)} className={`px-4 py-2 rounded-lg text-sm font-semibold ${zone === z ? "bg-primary text-white" : "bg-white border border-border text-slate-600"}`}>Zone {z}</button>)}
-            </div>
-            <Btn onClick={() => setPModal({ zone, category: "Standard", size: "", price: "", active: true })} data-testid="add-price-btn"><Plus size={16} /> Add Price</Btn>
+            </div>}
+            <Btn onClick={() => setPModal({ zone: unifiedPriceList ? 1 : zone, category: unifiedPriceList ? "Simple" : "Standard", size: "", price: "", active: true })} data-testid="add-price-btn"><Plus size={16} /> Add Price</Btn>
           </div>
           <Card className="overflow-hidden">
             <div className="overflow-x-auto">
@@ -244,7 +319,7 @@ export default function Settings() {
         </Card>
       )}
 
-      {tab === "access" && user?.is_admin && <AccessTab users={accessUsers} loading={accessLoading} currentUserId={user.id} onRoleChange={changeRole} onRemove={setRemoveUser} />}
+      {tab === "access" && user?.is_owner && <AccessTab users={accessUsers} companies={companies} loading={accessLoading} currentUserId={user.id} onRoleChange={changeRole} onStatusChange={changeStatus} onRemove={setRemoveUser} onCreate={createAccessUser} />}
 
       <Modal open={!!removeUser} onClose={() => !removingUser && setRemoveUser(null)} title="Remove Account">
         {removeUser && <div className="space-y-4">
@@ -255,8 +330,8 @@ export default function Settings() {
 
       <Modal open={!!pModal} onClose={() => setPModal(null)} title={pModal?.id ? "Edit Price" : "Add Price"}>
         {pModal && <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <Select label="Zone" value={pModal.zone} onChange={(e) => setPModal({ ...pModal, zone: Number(e.target.value) })}><option value={1}>Zone 1</option><option value={2}>Zone 2</option></Select>
+          <div className={`grid ${unifiedPriceList ? "grid-cols-1" : "grid-cols-2"} gap-3`}>
+            {!unifiedPriceList && <Select label="Zone" value={pModal.zone} onChange={(e) => setPModal({ ...pModal, zone: Number(e.target.value) })}><option value={1}>Zone 1</option><option value={2}>Zone 2</option></Select>}
             <Input label="Category" value={pModal.category} onChange={(e) => setPModal({ ...pModal, category: e.target.value })} />
           </div>
           <Input label="Size" value={pModal.size} onChange={(e) => setPModal({ ...pModal, size: e.target.value })} placeholder="910x100" />

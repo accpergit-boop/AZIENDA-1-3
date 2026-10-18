@@ -43,8 +43,8 @@ export function AuthProvider({ children }) {
     return data.user;
   };
 
-  const login = async (email, password, shareLocation = false) => {
-    const data = await api.post("/auth/login", { email, password });
+  const login = async (username, password, companyId, shareLocation = false) => {
+    const data = await api.post("/auth/login", { username, password, company_id: companyId });
     return finishLogin(data, shareLocation);
   };
 
@@ -54,10 +54,19 @@ export function AuthProvider({ children }) {
   };
 
   const completeGoogle = async (sessionId) => {
-    const data = await api.post("/auth/google/session", { session_id: sessionId });
+    const companyId = localStorage.getItem("selectedCompanyId");
+    const data = await api.post("/auth/google/session", { session_id: sessionId, company_id: companyId });
+    localStorage.removeItem("selectedCompanyId");
     const shareLocation = localStorage.getItem("shareDeviceLocation") === "true";
     localStorage.removeItem("shareDeviceLocation");
     return finishLogin(data, shareLocation);
+  };
+
+  const switchCompany = async (companyId) => {
+    const data = await api.post("/auth/switch-company", { company_id: companyId });
+    localStorage.setItem("token", data.token);
+    setUser(data.user);
+    window.location.assign("/");
   };
 
   const logout = async () => {
@@ -67,5 +76,5 @@ export function AuthProvider({ children }) {
     window.location.href = "/login";
   };
 
-  return <AuthCtx.Provider value={{ user, setUser, booting, login, register, completeGoogle, logout, apiError }}>{children}</AuthCtx.Provider>;
+  return <AuthCtx.Provider value={{ user, setUser, booting, login, register, completeGoogle, switchCompany, logout, apiError }}>{children}</AuthCtx.Provider>;
 }

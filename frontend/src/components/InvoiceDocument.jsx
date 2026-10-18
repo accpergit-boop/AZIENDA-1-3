@@ -25,9 +25,9 @@ export const InvoiceDocument = forwardRef(function InvoiceDocument({ inv, totals
       </div>
       <div className="flex justify-between items-start mt-6">
         <div className="leading-5 text-slate-600">
-          <p className="font-bold text-slate-900">{COMPANY.name}</p>
-          {COMPANY.address.map((l) => <p key={l}>{l}</p>)}
-          <p>Tel: {COMPANY.phones}</p>
+          <p className="font-bold text-slate-900">{settings.company_name || COMPANY.name}</p>
+          <p className="whitespace-pre-line">{settings.address || COMPANY.address.join(", ")}</p>
+          <p>Tel: {settings.telephone || COMPANY.phones}</p>
           {settings.email && <p>Email: {settings.email}</p>}
           {settings.tax_number && <p>VAT No: {settings.tax_number}</p>}
         </div>
@@ -41,7 +41,7 @@ export const InvoiceDocument = forwardRef(function InvoiceDocument({ inv, totals
           <p className="leading-6 text-slate-600">{[inv.customer_name, shipTo].filter(Boolean).join(" — ")}</p>
         </div>
         <div className="justify-self-end w-[250px]">
-          {[["Invoice Date:", fmtDate(inv.date)], ["Due Date:", fmtDate(inv.due_date)], ["Price Zone:", `Zone ${inv.zone}`], ["Payment Terms:", inv.payment_terms], ["Reference:", inv.reference]].filter(([, v]) => v).map(([k, v]) => (
+            {[["Invoice Date:", fmtDate(inv.date)], ["Due Date:", fmtDate(inv.due_date)], ["Price Zone:", `Zone ${inv.zone}`], ["Payment Terms:", inv.payment_terms], ["Reference:", inv.reference]].filter(([k, v]) => v && (k !== "Price Zone:" || !settings.unified_price_list)).map(([k, v]) => (
             <div key={k} className="flex justify-between leading-6"><span className="font-semibold">{k}</span><span className="text-slate-600">{v}</span></div>))}
         </div>
       </div>

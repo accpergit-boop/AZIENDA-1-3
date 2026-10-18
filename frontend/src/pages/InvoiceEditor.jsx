@@ -5,6 +5,8 @@ import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { fmtMoney, fmtDate, fmtDateTime, today, newKey, STATUS_META } from "@/lib/format";
+import { usesUnifiedPriceList } from "@/lib/company";
+import { useAuth } from "@/context/AuthContext";
 import { Card, Btn, Input, Select, Textarea, Badge, Modal } from "@/components/common";
 import { Copy, Download, Save, Send, CreditCard, Plus, Trash2, ArrowLeft, Ban, Printer, AlertTriangle, Pencil, X, History, Eye, EyeOff } from "lucide-react";
 
@@ -12,13 +14,16 @@ const CATS = {
   1: ["Standard", "Ribbon Black", "Ribbon Pink", "Candy", "Strong Boy", "Uncovered"],
   2: ["Standard", "Ribbon Black", "Ribbon Pink", "Candy", "Strong Boy", "Uncovered Blue 16 Density"],
 };
+const UNIFIED_CATS = ["Simple", "Ribbon Black", "Ribbon Pink"];
 const RIBBON = ["Ribbon Black", "Ribbon Pink", "Candy"];
 const priceCat = (zone, cat) => (cat === "Candy" ? "Ribbon Black" : cat);
 const manualOnly = (cat, size) => RIBBON.includes(cat) && size === "1370x150";
 
-const emptyItem = () => ({ qty: 1, category: "Standard", size: "", description: "", unit_price: 0, price_override: false, tax: false, _needsConfig: false });
+const emptyItem = (category = "Standard") => ({ qty: 1, category, size: "", description: "", unit_price: 0, price_override: false, tax: false, _needsConfig: false });
 
 export default function InvoiceEditor() {
+  const { user } = useAuth();
+  const unifiedPriceList = usesUnifiedPriceList(user?.company_id);
   const { id } = useParams();
   const nav = useNavigate();
   const [customers, setCustomers] = useState([]);
@@ -26,7 +31,7 @@ export default function InvoiceEditor() {
   const [settings, setSettings] = useState({});
   const [inv, setInv] = useState({
     customer_id: "", customer_name: "", date: today(), due_date: today(), zone: 1,
-    payment_terms: "Due on Delivery", reference: "", notes: "", items: [emptyItem()],
+    payment_terms: "Due on Delivery", reference: "", notes: "", items: [emptyItem(unifiedPriceList ? "Simple" : "Standard")],
     discount: 0, extra_charges: 0, tax_enabled: false, tax_rate: 15, status: "draft",
     amount_paid: 0, number: null,
   });
@@ -47,7 +52,8 @@ export default function InvoiceEditor() {
     });
     setEditing(false);
     if (id) api.get(`/invoices/${id}`).then((d) => {
-      setInv(d); setPayRecords(d.payment_records || []);
+      const items = unifiedPriceList ? (d.items || []).map((item) => ({ ...item, category: item.category === "Standard" ? "Simple" : item.category })) : d.items;
+      setInv({ ...d, zone: unifiedPriceList ? 1 : d.zone, items }); setPayRecords(d.payment_records || []);
       if (sp.get("edit") && d.status !== "void") { setSnapshot(d); setEditing(true); setSp({}, { replace: true }); }
     });
     else api.get("/invoices/next-number").then((d) => setNextNum(d.number));
@@ -60,7 +66,7 @@ export default function InvoiceEditor() {
   const sizesFor = (zone, cat) => prices.filter((p) => p.zone === zone && p.category === priceCat(zone, cat) && p.active).map((p) => p.size);
 
   const lookupPrice = (zone, cat, size) => {
-    if (manualOnly(cat, size)) return { price: null, needsConfig: true };
+    if (!unifiedPriceList && manualOnly(cat, size)) return { price: null, needsConfig: true };
     const p = prices.find((x) => x.zone === zone && x.category === priceCat(zone, cat) && x.size === size && x.active);
     if (!p) return { price: null, needsConfig: false, missing: true };
     if (p.price == null || !p.confirmed) return { price: null, needsConfig: true };
@@ -88,7 +94,7 @@ export default function InvoiceEditor() {
 
   const repriceItems = (items, zone) => items.map((it) => {
     if (it.price_override) return it;
-    const cats = CATS[zone];
+    const cats = unifiedPriceList ? UNIFIED_CATS : CATS[zone];
     const cat = cats.includes(it.category) ? it.category : cats[0];
     const r = lookupPrice(zone, cat, it.size);
     return { ...it, category: cat, unit_price: r.price ?? 0, _needsConfig: !!it.size && (r.needsConfig || r.missing) };
@@ -110,9 +116,9 @@ export default function InvoiceEditor() {
   const selectCustomer = (cid) => {
     const c = customers.find((x) => x.id === cid);
     if (!c) { setInv((prev) => ({ ...prev, customer_id: "", customer_name: "" })); return; }
-    const zone = c.default_zone;
+    const zone = unifiedPriceList ? 1 : c.default_zone;
     let items = inv.items;
-    if (zone !== inv.zone) {
+    if (!unifiedPriceList && zone !== inv.zone) {
       const next = repriceItems(inv.items, zone);
       if (confirmReprice(inv.items, next)) items = next;
     }
@@ -224,7 +230,7 @@ export default function InvoiceEditor() {
     L.push(`Customer: ${inv.customer_name || "-"}`);
     L.push(`Invoice Date: ${fmtDate(inv.date)}`);
     L.push(`Due Date: ${fmtDate(inv.due_date)}`);
-    L.push(`Price Zone: Zone ${inv.zone}`);
+    if (!unifiedPriceList) L.push(`Price Zone: Zone ${inv.zone}`);
     L.push(`Payment Terms: ${inv.payment_terms}`);
     if (inv.destination) L.push(`Delivery To: ${inv.destination}`);
     if (inv.reference) L.push(`Reference: ${inv.reference}`);
@@ -335,9 +341,9 @@ export default function InvoiceEditor() {
                   <option value="">Select customer...</option>
                   {customers.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </Select>
-                <div className="grid grid-cols-2 gap-3"><Select label="Price Zone" value={inv.zone} onChange={(e) => changeZone(Number(e.target.value))} data-testid="invoice-zone-select">
+                <div className={`grid ${unifiedPriceList ? "grid-cols-1" : "grid-cols-2"} gap-3`}>{!unifiedPriceList && <Select label="Price Zone" value={inv.zone} onChange={(e) => changeZone(Number(e.target.value))} data-testid="invoice-zone-select">
                   <option value={1}>Zone 1</option><option value={2}>Zone 2</option>
-                </Select><Select label="Payment Terms" value={inv.payment_terms} onChange={(e) => setInv({ ...inv, payment_terms: e.target.value })}>
+                </Select>}<Select label="Payment Terms" value={inv.payment_terms} onChange={(e) => setInv({ ...inv, payment_terms: e.target.value })}>
                   {(settings.payment_terms || ["Due on Delivery", "7 Days", "30 Days"]).map((t) => <option key={t}>{t}</option>)}
                 </Select></div><Input label="Delivery Destination" value={inv.destination || ""} onChange={(e) => setInv({ ...inv, destination: e.target.value })} data-testid="invoice-destination-input" /></div></Card>
               <Card className="p-5"><div className="flex items-center justify-between mb-4"><h3 className="font-bold text-slate-800 font-display">2. Invoice Details</h3><span className="font-mono text-sm font-bold text-primary">{inv.number || nextNum || "DRAFT"}</span></div>
@@ -365,7 +371,7 @@ export default function InvoiceEditor() {
                         ) : (
                         <select value={it.category} onChange={(e) => onCatSize(idx, { category: e.target.value, size: "" })} data-testid={`item-cat-${idx}`}
                           className="w-full rounded border border-input px-2 py-1.5 text-sm min-w-[130px]">
-                          {CATS[inv.zone].map((c) => <option key={c}>{c}</option>)}
+                          {(unifiedPriceList ? UNIFIED_CATS : CATS[inv.zone]).map((c) => <option key={c}>{c}</option>)}
                         </select>)}
                       </td>
                       {!(!it.category && it.description) && <td className="pr-2">

@@ -23,7 +23,7 @@ const P_RANK = { Urgent: 0, High: 1, Normal: 2, Low: 3 };
 const OPEN = ["To Send", "Preparing", "Assigned"];
 const blank = () => ({ customer_id: "", customer_name: "", destination: "", products: "", items: [{ qty: "", category: "", size: "" }], priority: "Normal", status: "To Send", expected_ship_date: "", vehicle_id: "", notes: "" });
 
-function NoteModal({ order, vehicleName, onClose }) {
+function NoteModal({ order, vehicleName, settings, onClose }) {
   const ref = useRef(null);
   const [lang, setLang] = useState("en");
   const [busy, setBusy] = useState(false);
@@ -36,7 +36,7 @@ function NoteModal({ order, vehicleName, onClose }) {
           <Btn variant="outline" onClick={() => printElement(ref.current, order.reference) || toast.error("Allow pop-ups to print")} data-testid="note-print-btn"><Printer size={15} /> Print</Btn>
           <Btn disabled={busy} onClick={pdf} data-testid="note-pdf-btn"><Download size={15} /> {busy ? "Generating..." : "Download PDF"}</Btn>
         </div>
-        <div className="overflow-x-auto bg-slate-100 p-4 rounded-lg"><div className="shadow-md w-fit mx-auto"><DeliveryNote ref={ref} order={order} lang={lang} vehicleName={vehicleName} /></div></div>
+        <div className="overflow-x-auto bg-slate-100 p-4 rounded-lg"><div className="shadow-md w-fit mx-auto"><DeliveryNote ref={ref} order={order} lang={lang} vehicleName={vehicleName} settings={settings} /></div></div>
       </div>}
     </Modal>
   );
@@ -50,10 +50,11 @@ export default function Orders() {
   const [modal, setModal] = useState(null);
   const [note, setNote] = useState(null);
   const [stock, setStock] = useState([]);
+  const [settings, setSettings] = useState({});
   const products = [...new Set(stock.map((s) => s.product))];
 
   const load = () => { api.get("/orders").then(setList); };
-  useEffect(() => { load(); api.get("/customers").then(setCustomers); api.get("/vehicles").then(setVehicles); api.get("/stock").then(setStock); }, []);
+  useEffect(() => { load(); api.get("/customers").then(setCustomers); api.get("/vehicles").then(setVehicles); api.get("/stock").then(setStock); api.get("/settings").then(setSettings); }, []);
 
   const vName = (id) => vehicles.find((v) => v.id === id)?.name;
   const shown = useMemo(() => {
@@ -175,7 +176,7 @@ export default function Orders() {
           <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setModal(null)}>Cancel</Btn><Btn onClick={save} data-testid="save-order-btn">Save Order</Btn></div>
         </div>}
       </Modal>
-      <NoteModal order={note} vehicleName={note ? vName(note.vehicle_id) : ""} onClose={() => setNote(null)} />
+      <NoteModal order={note} vehicleName={note ? vName(note.vehicle_id) : ""} settings={settings} onClose={() => setNote(null)} />
     </div>
   );
 }

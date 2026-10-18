@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / '.env.multicompany')
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
 from fastapi.responses import StreamingResponse
@@ -19,10 +20,13 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 import seed_data
+from tenancy import DEFAULT_COMPANY_ID, GLOBAL_COLLECTIONS, ScopedDatabase, active_company_id, tenant_database
+from tenancy import DEFAULT_COMPANY_ID, GLOBAL_COLLECTIONS, ScopedDatabase, active_company_id, tenant_database, uses_unified_price_list
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+base_db = client[os.environ['DB_NAME']]
+db = ScopedDatabase(client, base_db)
 
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGO = "HS256"
@@ -44,6 +48,36 @@ def local_today():
 
 def today_str():
     return local_today().isoformat()
+
+COMPANY_PROFILES = [
+    {"id": "superiqfoam", "name": "SUPERIQFOAM", "username": "SUPERIQFOAM"},
+    {"id": "iqfoam-manufactoring", "name": "IQFOAM MANUFACTORING", "username": "IQFOAM MANUFACTORING"},
+    {"id": "iqfoam-whole-sallers", "name": "IQFOAM WHOLE SALLERS", "username": "IQFOAM WHOLE SALLERS"},
+]
+
+COMPANY_INVOICE_DETAILS = {
+    "iqfoam-manufactoring": {
+        "company_name": "iQ Foam Manufacturer",
+        "address": "14 Pentrich Rd, Camps Drift, Pietermaritzburg, 3201",
+        "telephone": "+27 78 673 2087",
+    },
+    "iqfoam-whole-sallers": {
+        "company_name": "iQ Foam Wholesale",
+        "address": "13 Manchester Rd, Northdale, Pietermaritzburg, 3201",
+        "telephone": "+27 60 400 8600",
+    },
+}
+
+def company_role(user, company_id):
+    if user.get("role") == "owner":
+        return "owner"
+    return (user.get("company_roles") or {}).get(company_id)
+
+def allowed_company_ids(user):
+    if user.get("role") == "owner":
+        return [profile["id"] for profile in COMPANY_PROFILES]
+    return [company_id for company_id, role in (user.get("company_roles") or {}).items()
+            if role in ("user", "admin")]
 
 def diesel_price_is_current(effective_date):
     try:
@@ -113,8 +147,9 @@ def verify_pw(p, h):
     try: return bcrypt.checkpw(p.encode(), h.encode())
     except Exception: return False
 
-def make_token(uid, email):
-    payload = {"sub": uid, "email": email, "exp": datetime.now(timezone.utc) + timedelta(days=7)}
+def make_token(uid, email, company_id=DEFAULT_COMPANY_ID, session_id=None):
+    payload = {"sub": uid, "email": email, "company_id": company_id,
+               "sid": session_id or new_id(), "exp": datetime.now(timezone.utc) + timedelta(days=7)}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
 
 USER_PROJ = {"_id": 0, "password_hash": 0}
@@ -137,14 +172,37 @@ async def user_from_session(token):
         exp = exp.replace(tzinfo=timezone.utc)
     if exp < datetime.now(timezone.utc):
         return None
-    return await db.users.find_one({"id": s["user_id"]}, USER_PROJ)
+    user = await db.users.find_one({"id": s["user_id"]}, USER_PROJ)
+    if user:
+        user["_active_company_id"] = s.get("company_id") or DEFAULT_COMPANY_ID
+        user["_session_id"] = s.get("id")
+    return user
+
+async def authorize_company(user, company_id, session_id=None):
+    if not user or user.get("active") is False or user.get("disabled") is True:
+        raise HTTPException(401, "Account is disabled")
+    company = await base_db.companies.find_one({"id": company_id, "active": True}, {"_id": 0})
+    if not company:
+        raise HTTPException(403, "Company is unavailable")
+    role = company_role(user, company_id)
+    if role not in ("owner", "admin", "user"):
+        raise HTTPException(403, "You are not assigned to this company")
+    active_company_id.set(company_id)
+    user["_active_company_id"] = company_id
+    user["_active_role"] = role
+    user["_session_id"] = session_id
+    if session_id:
+        await base_db.user_sessions.update_one({"id": session_id, "user_id": user["id"]},
+            {"$set": {"company_id": company_id, "last_seen": now_iso()}})
+    return user
 
 async def get_current_user(request: Request):
     cookie = request.cookies.get("session_token")
     if cookie:
         user = await user_from_session(cookie)
         if user:
-            return user
+            return await authorize_company(user, user.get("_active_company_id") or DEFAULT_COMPANY_ID,
+                                           user.get("_session_id"))
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(401, "Not authenticated")
@@ -161,11 +219,13 @@ async def get_current_user(request: Request):
     user = await db.users.find_one({"id": payload["sub"]}, USER_PROJ)
     if not user:
         raise HTTPException(401, "User not found")
-    return user
+    return await authorize_company(user, payload.get("company_id") or DEFAULT_COMPANY_ID, payload.get("sid"))
 
 class LoginIn(BaseModel):
-    email: str
+    email: Optional[str] = None
+    username: Optional[str] = None
     password: str
+    company_id: str = DEFAULT_COMPANY_ID
 
 class RegisterIn(BaseModel):
     name: str
@@ -182,13 +242,39 @@ class DeviceIn(BaseModel):
 
 class UserRoleIn(BaseModel):
     role: str
+    company_id: str
+
+class UserCompaniesIn(BaseModel):
+    company_ids: List[str]
+
+class CreateAccessUserIn(BaseModel):
+    username: str
+    name: str
+    password: str
+    company_ids: List[str]
+    email: Optional[str] = ""
+
+class UserStatusIn(BaseModel):
+    active: bool
+
+class SwitchCompanyIn(BaseModel):
+    company_id: str
 
 def public_user(u):
-    return {"id": u["id"], "email": u["email"], "name": u.get("name", "Admin"), "role": u.get("role", "admin"),
-            "is_admin": u.get("role") == "admin", "picture": u.get("picture", "")}
+    company_id = u.get("_active_company_id") or DEFAULT_COMPANY_ID
+    role = u.get("_active_role") or company_role(u, company_id) or u.get("role", "user")
+    return {"id": u["id"], "email": u.get("email", ""), "username": u.get("username", ""),
+            "name": u.get("name") or u.get("username") or "User", "role": role,
+            "is_owner": u.get("role") == "owner", "is_admin": role in ("owner", "admin"),
+            "company_id": company_id, "company_ids": allowed_company_ids(u), "picture": u.get("picture", "")}
+
+def require_owner(user):
+    if user.get("role") != "owner":
+        raise HTTPException(403, "Owner access required")
 
 @api.post("/auth/register")
-async def register(body: RegisterIn):
+async def register(body: RegisterIn, user=Depends(get_current_user)):
+    require_owner(user)
     email = canonical_email(body.email)
     name = body.name.strip()
     if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
@@ -200,23 +286,63 @@ async def register(body: RegisterIn):
     if await db.users.find_one({"email": email}):
         raise HTTPException(409, "An account with this email already exists")
     user = {"id": new_id(), "email": email, "name": name, "password_hash": hash_pw(body.password),
-            "role": "admin" if email == os.environ["ADMIN_EMAIL"].lower() else "user",
+            "role": "user", "username": email,
+            "company_roles": {user["_active_company_id"]: "user"},
+            "company_ids": [user["_active_company_id"]], "active": True,
             "created_at": now_iso(), "auth_provider": "password"}
     await db.users.insert_one(dict(user))
     await log_audit("auth", user["id"], "account_registered", user)
-    return {"token": make_token(user["id"], email), "user": public_user(user)}
+    session_id = new_id()
+    await base_db.user_sessions.insert_one({"id": session_id, "user_id": user["id"], "company_id": user["_active_company_id"],
+        "expires_at": datetime.now(timezone.utc) + timedelta(days=7), "created_at": now_iso(), "last_seen": now_iso()})
+    return {"token": make_token(user["id"], email, user["_active_company_id"], session_id),
+            "user": public_user({**user, "id": user["id"], "email": email, "name": name,
+                                 "role": "user", "company_roles": {user["_active_company_id"]: "user"},
+                                 "_active_role": "user"})}
 
 @api.post("/auth/login")
 async def login(body: LoginIn):
-    email = canonical_email(body.email)
-    user = await db.users.find_one({"email": email})
+    identifier = canonical_email(body.email or body.username)
+    if not identifier:
+        raise HTTPException(400, "Username or email is required")
+    username_pattern = {"$regex": f"^{re.escape(identifier)}$", "$options": "i"}
+    user = await base_db.users.find_one({"$or": [{"email": identifier}, {"username": username_pattern}]}, {"_id": 0})
     if not user or not verify_pw(body.password, user.get("password_hash", "")):
         raise HTTPException(401, "Invalid email or password")
-    return {"token": make_token(user["id"], email), "user": public_user(user)}
+    if user.get("active") is False or user.get("disabled") is True:
+        raise HTTPException(403, "Account is disabled")
+    company_id = body.company_id or DEFAULT_COMPANY_ID
+    role = company_role(user, company_id)
+    if role not in ("owner", "admin", "user"):
+        raise HTTPException(403, "You do not have access to this company")
+    session_id = new_id()
+    now = now_iso()
+    await base_db.user_sessions.insert_one({"id": session_id, "user_id": user["id"], "company_id": company_id,
+        "expires_at": datetime.now(timezone.utc) + timedelta(days=7), "created_at": now, "last_seen": now})
+    user["_active_company_id"] = company_id
+    user["_active_role"] = role
+    return {"token": make_token(user["id"], user.get("email") or identifier, company_id, session_id),
+            "user": public_user(user)}
 
 @api.get("/auth/me")
 async def me(user=Depends(get_current_user)):
-    return {**user, "is_admin": user.get("role") == "admin"}
+    return public_user(user)
+
+@api.get("/companies/profiles")
+async def company_profiles():
+    return [{"id": company["id"], "name": company["name"], "username": company["username"]}
+            for company in COMPANY_PROFILES]
+
+@api.post("/auth/switch-company")
+async def switch_company(body: SwitchCompanyIn, user=Depends(get_current_user)):
+    selected = await authorize_company(user, body.company_id, user.get("_session_id"))
+    session_id = user.get("_session_id") or new_id()
+    await base_db.user_sessions.update_one({"id": session_id}, {"$set": {
+        "id": session_id, "user_id": user["id"], "company_id": body.company_id,
+        "expires_at": datetime.now(timezone.utc) + timedelta(days=7), "last_seen": now_iso(),
+    }}, upsert=True)
+    return {"token": make_token(user["id"], user.get("email", ""), body.company_id, session_id),
+            "user": public_user(selected)}
 
 @api.post("/auth/device")
 async def register_device(body: DeviceIn, request: Request, user=Depends(get_current_user)):
@@ -235,42 +361,193 @@ async def register_device(body: DeviceIn, request: Request, user=Depends(get_cur
     return {"ok": True}
 
 def require_admin(user):
-    if user.get("role") != "admin":
-        raise HTTPException(403, "Administrator access required")
+    if user.get("_active_role") not in ("owner", "admin"):
+        raise HTTPException(403, "Administrator access required for this company")
 
 @api.get("/access/users")
 async def access_users(user=Depends(get_current_user)):
-    require_admin(user)
+    require_owner(user)
     users = await listall("users", sort=("created_at", 1))
     devices = await listall("user_devices", sort=("last_seen", -1))
+    sessions = await base_db.user_sessions.find({}, {"_id": 0, "user_id": 1, "company_id": 1, "created_at": 1, "last_seen": 1, "expires_at": 1}).to_list(10000)
     device_map = {}
     for device in devices:
         device_map.setdefault(device["user_id"], []).append(device)
-    return [{"id": u["id"], "name": u.get("name", ""), "email": u.get("email", ""),
-             "role": u.get("role", "user"), "is_owner": u.get("email", "").lower() == os.environ["ADMIN_EMAIL"].lower(),
-             "created_at": u.get("created_at", ""),
-             "devices": device_map.get(u["id"], [])} for u in users]
+    session_map = {}
+    for session in sessions:
+        session_map.setdefault(session.get("user_id"), []).append(session)
+    now = datetime.now(timezone.utc)
+    result = []
+    for account in users:
+        account_sessions = session_map.get(account["id"], [])
+        active_sessions = []
+        last_login = ""
+        for session in account_sessions:
+            expires = session.get("expires_at")
+            if isinstance(expires, str):
+                expires = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+            if expires and expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            seen = session.get("last_seen") or session.get("created_at") or ""
+            if isinstance(seen, datetime):
+                seen_dt = seen.replace(tzinfo=timezone.utc) if seen.tzinfo is None else seen
+                seen = seen_dt.isoformat()
+            if seen and seen > last_login:
+                last_login = seen
+            if expires and expires > now and seen:
+                seen_dt = datetime.fromisoformat(seen.replace("Z", "+00:00"))
+                if seen_dt.tzinfo is None:
+                    seen_dt = seen_dt.replace(tzinfo=timezone.utc)
+                if (now - seen_dt).total_seconds() <= 300:
+                    active_sessions.append(session)
+        memberships = account.get("company_roles") or {}
+        if account.get("role") == "owner":
+            memberships = {company_id: "owner" for company_id in allowed_company_ids(account)}
+        current_session = max(active_sessions, key=lambda item: item.get("last_seen", item.get("created_at", "")), default={})
+        result.append({"id": account["id"], "name": account.get("name", ""), "email": account.get("email", ""),
+            "username": account.get("username", ""), "role": account.get("role", "user"),
+            "is_owner": account.get("role") == "owner", "active": account.get("active", True),
+            "company_roles": memberships, "company_ids": list(memberships), "online": bool(active_sessions),
+            "current_company_id": current_session.get("company_id", ""), "last_login": last_login,
+            "created_at": account.get("created_at", ""), "devices": device_map.get(account["id"], [])})
+    return result
+
+@api.post("/access/users")
+async def create_access_user(body: CreateAccessUserIn, user=Depends(get_current_user)):
+    require_owner(user)
+    username = body.username.strip()
+    name = body.name.strip()
+    if not username or not name:
+        raise HTTPException(400, "Username and name are required")
+    if len(body.password) < 8:
+        raise HTTPException(400, "Password must contain at least 8 characters")
+    if not body.company_ids or any(cid not in {profile["id"] for profile in COMPANY_PROFILES} for cid in body.company_ids):
+        raise HTTPException(400, "Assign the user to at least one valid company")
+    if await base_db.users.find_one({"username": username}, {"_id": 0}):
+        raise HTTPException(409, "Username already exists")
+    email = (body.email or "").strip().lower()
+    if email and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise HTTPException(400, "Enter a valid email address")
+    account = {"id": new_id(), "username": username, "email": email, "name": name,
+        "password_hash": hash_pw(body.password), "role": "user",
+        "company_roles": {cid: "user" for cid in dict.fromkeys(body.company_ids)},
+        "company_ids": list(dict.fromkeys(body.company_ids)), "active": True,
+        "auth_provider": "password", "created_at": now_iso()}
+    await base_db.users.insert_one(dict(account))
+    await log_audit("user", account["id"], "account_created", user,
+        after={"username": username, "company_roles": account["company_roles"]})
+    return {"id": account["id"], "username": username, "email": email, "name": name,
+        "role": "user", "company_roles": account["company_roles"], "company_ids": account["company_ids"], "active": True}
+
+async def reserve_company_admin(company_id):
+    result = await base_db.company_admin_counts.update_one(
+        {"_id": company_id, "count": {"$lt": 3}}, {"$inc": {"count": 1}})
+    if result.matched_count != 1:
+        raise HTTPException(400, f"{company_id} already has 3 active admins")
+
+async def release_company_admin(company_id):
+    await base_db.company_admin_counts.update_one(
+        {"_id": company_id, "count": {"$gt": 0}}, {"$inc": {"count": -1}})
 
 @api.put("/access/users/{uid}/role")
 async def update_user_role(uid: str, body: UserRoleIn, user=Depends(get_current_user)):
-    require_admin(user)
+    require_owner(user)
     if body.role not in ("admin", "user"):
         raise HTTPException(400, "Role must be admin or user")
     target = await db.users.find_one({"id": uid}, {"_id": 0})
     if not target:
         raise HTTPException(404, "User not found")
-    if target.get("email", "").lower() == os.environ["ADMIN_EMAIL"].lower() and body.role != "admin":
-        raise HTTPException(400, "The owner account must remain an administrator")
-    if body.role == "admin" and target.get("role") != "admin":
-        if await db.users.count_documents({"role": "admin"}) >= 6:
-            raise HTTPException(400, "Maximum of 6 administrators reached")
-    await db.users.update_one({"id": uid}, {"$set": {"role": body.role}})
-    await log_audit("user", uid, "role_updated", user, before={"role": target.get("role")}, after={"role": body.role})
-    return {"id": uid, "role": body.role}
+    if target.get("role") == "owner":
+        raise HTTPException(400, "The global owner role cannot be changed")
+    if body.company_id not in allowed_company_ids(user):
+        raise HTTPException(400, "Unknown company")
+    roles = dict(target.get("company_roles") or {})
+    previous = roles.get(body.company_id)
+    target_active = target.get("active", True) is not False
+    adding_admin = body.role == "admin" and previous != "admin" and target_active
+    removing_admin = body.role == "user" and previous == "admin" and target_active
+    if adding_admin:
+        await reserve_company_admin(body.company_id)
+    roles[body.company_id] = body.role
+    company_ids = list(dict.fromkeys([*target.get("company_ids", []), body.company_id]))
+    result = await db.users.update_one({"id": uid, "role": {"$ne": "owner"}}, {"$set": {
+        "company_roles": roles, "company_ids": company_ids,
+    }})
+    if result.matched_count != 1:
+        if adding_admin:
+            await release_company_admin(body.company_id)
+        raise HTTPException(409, "Account role changed; reload and try again")
+    if removing_admin:
+        await release_company_admin(body.company_id)
+    await log_audit("user", uid, "company_role_updated", user,
+                    before={"company_id": body.company_id, "role": previous},
+                    after={"company_id": body.company_id, "role": body.role})
+    return {"id": uid, "company_id": body.company_id, "role": body.role}
+
+@api.put("/access/users/{uid}/companies")
+async def update_user_companies(uid: str, body: UserCompaniesIn, user=Depends(get_current_user)):
+    require_owner(user)
+    target = await base_db.users.find_one({"id": uid}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("role") == "owner":
+        raise HTTPException(400, "The global owner always has access to all companies")
+    known = {profile["id"] for profile in COMPANY_PROFILES}
+    company_ids = list(dict.fromkeys(body.company_ids))
+    if not company_ids or any(company_id not in known for company_id in company_ids):
+        raise HTTPException(400, "Assign at least one valid company")
+    old_roles = dict(target.get("company_roles") or {})
+    new_roles = {company_id: old_roles.get(company_id, "user") for company_id in company_ids}
+    removed_admins = [company_id for company_id, role in old_roles.items()
+                      if role == "admin" and company_id not in new_roles]
+    await base_db.users.update_one({"id": uid, "role": {"$ne": "owner"}}, {"$set": {
+        "company_roles": new_roles, "company_ids": company_ids,
+    }})
+    if target.get("active", True) is not False:
+        for company_id in removed_admins:
+            await release_company_admin(company_id)
+    await log_audit("user", uid, "company_access_updated", user,
+                    before={"company_roles": old_roles}, after={"company_roles": new_roles})
+    return {"id": uid, "company_ids": company_ids, "company_roles": new_roles}
+
+@api.put("/access/users/{uid}/status")
+async def set_access_user_status(uid: str, body: UserStatusIn, user=Depends(get_current_user)):
+    require_owner(user)
+    target = await base_db.users.find_one({"id": uid}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("role") == "owner":
+        raise HTTPException(400, "The owner account cannot be disabled")
+    was_active = target.get("active", True) is not False
+    if was_active == body.active:
+        return {"id": uid, "active": body.active}
+    admin_companies = [cid for cid, role in (target.get("company_roles") or {}).items() if role == "admin"]
+    reserved = []
+    if body.active:
+        try:
+            for company_id in admin_companies:
+                await reserve_company_admin(company_id)
+                reserved.append(company_id)
+        except HTTPException:
+            for company_id in reserved:
+                await release_company_admin(company_id)
+            raise
+    changed = await base_db.users.update_one({"id": uid, "active": {"$ne": body.active}}, {"$set": {"active": body.active}})
+    if changed.matched_count != 1:
+        for company_id in reserved:
+            await release_company_admin(company_id)
+        raise HTTPException(409, "Account status changed; reload and try again")
+    if not body.active:
+        for company_id in admin_companies:
+            await release_company_admin(company_id)
+        await base_db.user_sessions.delete_many({"user_id": uid})
+    await log_audit("user", uid, "account_status_updated", user,
+        before={"active": target.get("active", True)}, after={"active": body.active})
+    return {"id": uid, "active": body.active}
 
 @api.delete("/access/users/{uid}")
 async def remove_access_user(uid: str, user=Depends(get_current_user)):
-    require_admin(user)
+    require_owner(user)
     if uid == user["id"]:
         raise HTTPException(400, "You cannot remove your own account")
     target = await db.users.find_one({"id": uid}, {"_id": 0})
@@ -280,14 +557,19 @@ async def remove_access_user(uid: str, user=Depends(get_current_user)):
         raise HTTPException(400, "The owner account cannot be removed")
     await log_audit("user", uid, "account_removed", user,
                     before={"email": target.get("email"), "name": target.get("name"), "role": target.get("role")})
-    await db.user_sessions.delete_many({"user_id": uid})
-    await db.user_devices.delete_many({"user_id": uid})
-    await db.assistant_sessions.delete_many({"user_id": uid})
-    await db.users.delete_one({"id": uid})
+    await base_db.user_sessions.delete_many({"user_id": uid})
+    await base_db.user_devices.delete_many({"user_id": uid})
+    await base_db.assistant_sessions.delete_many({"user_id": uid})
+    await base_db.users.delete_one({"id": uid})
+    if target.get("active", True) is not False:
+        for company_id, role in (target.get("company_roles") or {}).items():
+            if role == "admin":
+                await release_company_admin(company_id)
     return {"ok": True}
 
 class GoogleSessionIn(BaseModel):
     session_id: str
+    company_id: str = DEFAULT_COMPANY_ID
 
 @api.post("/auth/google/session")
 async def google_session(body: GoogleSessionIn, response: Response):
@@ -299,25 +581,37 @@ async def google_session(body: GoogleSessionIn, response: Response):
     data = r.json()
     email = canonical_email(data.get("email"))
     user = await db.users.find_one({"email": email}, {"_id": 0})
-    if user:
-        await db.users.update_one({"id": user["id"]}, {"$set": {"picture": data.get("picture", ""), "google_name": data.get("name", "")}})
-    else:
-        user = {"id": new_id(), "email": email, "name": data.get("name") or email, "picture": data.get("picture", ""),
-                "role": "admin" if email == os.environ["ADMIN_EMAIL"].lower() else "user",
-                "auth_provider": "google", "created_at": now_iso()}
-        await db.users.insert_one(dict(user))
+    if not user or user.get("active") is False:
+        raise HTTPException(403, "Ask the owner to create and assign your account before using Google sign-in")
+    company_id = body.company_id
+    role = company_role(user, company_id)
+    if role not in ("owner", "admin", "user"):
+        raise HTTPException(403, "Your account is not assigned to this company")
+    active_company_id.set(company_id)
+    await db.users.update_one({"id": user["id"]}, {"$set": {"picture": data.get("picture", ""), "google_name": data.get("name", "")}})
     token = data["session_token"]
-    await db.user_sessions.insert_one({"session_token": token, "user_id": user["id"],
-                                       "expires_at": datetime.now(timezone.utc) + timedelta(days=7), "created_at": now_iso()})
+    session_id = new_id()
+    await db.user_sessions.insert_one({"id": session_id, "session_token": token, "user_id": user["id"], "company_id": company_id,
+                                       "expires_at": datetime.now(timezone.utc) + timedelta(days=7), "created_at": now_iso(), "last_seen": now_iso()})
     response.set_cookie("session_token", token, httponly=True, secure=True, samesite="none", path="/", max_age=7 * 24 * 3600)
     await log_audit("auth", user["id"], "google_login", user)
-    return {"token": make_token(user["id"], email), "user": public_user(user)}
+    user["_active_company_id"] = company_id
+    user["_active_role"] = role
+    return {"token": make_token(user["id"], email, company_id, session_id), "user": public_user(user)}
 
 @api.post("/auth/logout")
 async def logout(request: Request, response: Response):
     tok = request.cookies.get("session_token")
     if tok:
         await db.user_sessions.delete_one({"session_token": tok})
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            payload = jwt.decode(auth[7:], JWT_SECRET, algorithms=[JWT_ALGO])
+            if payload.get("sid"):
+                await base_db.user_sessions.delete_one({"id": payload["sid"]})
+        except jwt.InvalidTokenError:
+            pass
     response.delete_cookie("session_token", path="/", secure=True, samesite="none")
     return {"ok": True}
 
@@ -366,11 +660,17 @@ async def get_customers(user=Depends(get_current_user)):
 
 @api.post("/customers")
 async def add_customer(body: CustomerIn, user=Depends(get_current_user)):
-    return await insert("customers", body.model_dump())
+    data = body.model_dump()
+    if uses_unified_price_list(active_company_id.get()):
+        data["default_zone"] = 1
+    return await insert("customers", data)
 
 @api.put("/customers/{cid}")
 async def edit_customer(cid: str, body: CustomerIn, user=Depends(get_current_user)):
-    return await update_doc("customers", cid, body.model_dump())
+    data = body.model_dump()
+    if uses_unified_price_list(active_company_id.get()):
+        data["default_zone"] = 1
+    return await update_doc("customers", cid, data)
 
 @api.get("/customers/{cid}/summary")
 async def customer_summary(cid: str, user=Depends(get_current_user)):
@@ -406,6 +706,8 @@ async def get_prices(user=Depends(get_current_user)):
 @api.post("/prices")
 async def add_price(body: PriceIn, user=Depends(get_current_user)):
     d = body.model_dump()
+    if uses_unified_price_list(active_company_id.get()):
+        d["zone"] = 1
     if await db.prices.find_one({"zone": d["zone"], "category": d["category"], "size": d["size"]}):
         raise HTTPException(400, "A price for this zone, category and size already exists")
     d["confirmed"] = d.get("price") is not None and d.get("confirmed", True)
@@ -418,6 +720,8 @@ async def add_price(body: PriceIn, user=Depends(get_current_user)):
 async def edit_price(pid: str, body: PriceIn, user=Depends(get_current_user)):
     before = await db.prices.find_one({"id": pid}, {"_id": 0})
     d = body.model_dump()
+    if uses_unified_price_list(active_company_id.get()):
+        d["zone"] = 1
     d["confirmed"] = d.get("price") is not None and d.get("confirmed", True)
     rec = await update_doc("prices", pid, d)
     await log_audit("price", pid, "updated", user, before=before, after=rec)
@@ -427,14 +731,22 @@ RIBBON_FAMILY = {"Ribbon", "Ribbon Black & Pink", "Ribbon Black", "Ribbon Pink",
 MANUAL_ONLY_SIZES = {"1370x150"}
 
 def price_category(zone, category):
+    if uses_unified_price_list(active_company_id.get()):
+        if category in ("Standard", "Simple"):
+            return "Simple"
+        if category == "Candy":
+            return "Ribbon Black"
+        return category
     if category == "Candy":
         return "Ribbon Black"
     return category
 
 def is_manual_only(category, size):
-    return category in RIBBON_FAMILY and size in MANUAL_ONLY_SIZES
+    return not uses_unified_price_list(active_company_id.get()) and category in RIBBON_FAMILY and size in MANUAL_ONLY_SIZES
 
 async def resolve_price(zone, category, size):
+    if uses_unified_price_list(active_company_id.get()):
+        zone = 1
     if is_manual_only(category, size):
         return {"found": True, "price": None, "needs_config": True, "reason": "Ribbon 1370x150 always requires manual price entry and administrator confirmation"}
     p = await db.prices.find_one({"zone": int(zone), "category": price_category(zone, category), "size": size, "active": True}, {"_id": 0})
@@ -611,6 +923,8 @@ async def _prepare_invoice(body: InvoiceIn):
     if not cust:
         raise HTTPException(400, "Customer not found")
     inv = body.model_dump()
+    if uses_unified_price_list(active_company_id.get()):
+        inv["zone"] = 1
     if inv.get("discount", 0) < 0 or inv.get("extra_charges", 0) < 0 or inv.get("tax_rate", 0) < 0:
         raise HTTPException(400, "Discount, additional charges and tax rate cannot be negative")
     if any((it.get("unit_price") or 0) < 0 for it in inv.get("items", [])):
@@ -1145,6 +1459,20 @@ async def add_delivery(body: DeliveryIn, user=Depends(get_current_user)):
     d["dispatched"] = False
     return await insert("deliveries", d)
 
+@api.delete("/deliveries/{did}")
+async def delete_delivery(did: str, user=Depends(get_current_user)):
+    deleted = await db.deliveries.find_one_and_delete(
+        {"id": did, "dispatched": {"$ne": True}, "dispatching": {"$ne": True}},
+        projection={"_id": 0},
+    )
+    if not deleted:
+        existing = await db.deliveries.find_one({"id": did}, {"_id": 0})
+        if not existing:
+            raise HTTPException(404, "Delivery not found")
+        raise HTTPException(409, "A dispatched delivery cannot be deleted because stock was deducted")
+    await log_audit("delivery", did, "deleted", user, before=deleted)
+    return {"ok": True}
+
 @api.put("/deliveries/{did}")
 async def edit_delivery(did: str, body: DeliveryIn, user=Depends(get_current_user)):
     existing = await db.deliveries.find_one({"id": did})
@@ -1232,12 +1560,14 @@ async def recommend_driver(size: str = "small", user=Depends(get_current_user)):
 async def get_settings(user=Depends(get_current_user)):
     s = await db.settings.find_one({"id": "singleton"}, {"_id": 0})
     extra = {"city_distances": seed_data.CITY_DISTANCES_KM, "diesel_price": None, "diesel_price_date": "", "diesel_updated_at": "",
-             "avg_speed_kmh": 60, "offload_minutes_per_stop": 45, "piece_weights_kg": {}}
+             "avg_speed_kmh": 60, "offload_minutes_per_stop": 45, "piece_weights_kg": {},
+             "unified_price_list": uses_unified_price_list(active_company_id.get())}
     return {**seed_data.DEFAULT_SETTINGS, **extra, **(s or {})}
 
 @api.put("/settings")
 async def update_settings(body: dict, user=Depends(get_current_user)):
     body.pop("_id", None)
+    body.pop("unified_price_list", None)
     for key in ("diesel_price", "diesel_price_date", "diesel_updated_at", "diesel_sources", "diesel_checked_date", "diesel_lookup_attempt_date"):
         body.pop(key, None)
     body["id"] = "singleton"
@@ -2107,14 +2437,155 @@ async def seed():
         except Exception as e:
             logging.warning(f"Index on {coll} not created: {e}")
 
+async def initialize_multi_company():
+    for profile in COMPANY_PROFILES:
+        await base_db.companies.update_one(
+            {"id": profile["id"]},
+            {"$setOnInsert": {**profile, "active": True, "created_at": now_iso()}},
+            upsert=True,
+        )
+
+    owner_email = canonical_email(os.environ["ADMIN_EMAIL"])
+    owner = await base_db.users.find_one({"email": owner_email}, {"_id": 0})
+    if not owner:
+        raise RuntimeError("Configured ADMIN_EMAIL account is missing; refusing multi-company migration")
+    await base_db.users.update_one({"id": owner["id"]}, {"$set": {
+        "role": "owner", "username": "SUPERIQFOAM", "company_roles": {},
+        "company_ids": [profile["id"] for profile in COMPANY_PROFILES], "active": True,
+    }})
+
+    users = await base_db.users.find({"id": {"$ne": owner["id"]}}, {"_id": 0}).to_list(5000)
+    for account in users:
+        roles = account.get("company_roles") or {
+            DEFAULT_COMPANY_ID: "admin" if account.get("role") == "admin" else "user"
+        }
+        await base_db.users.update_one({"id": account["id"]}, {"$set": {
+            "role": "user", "company_roles": roles,
+            "company_ids": list(dict.fromkeys([*account.get("company_ids", []), *roles.keys()])),
+            "active": account.get("active", True),
+        }})
+
+    for profile in COMPANY_PROFILES:
+        company_id = profile["id"]
+        count = await base_db.users.count_documents({
+            f"company_roles.{company_id}": "admin", "active": {"$ne": False},
+        })
+        await base_db.company_admin_counts.replace_one(
+            {"_id": company_id}, {"_id": company_id, "count": count}, upsert=True,
+        )
+
+    for collection_name in await base_db.list_collection_names():
+        if collection_name in GLOBAL_COLLECTIONS:
+            continue
+        await base_db[collection_name].update_many(
+            {"company_id": {"$exists": False}},
+            {"$set": {"company_id": DEFAULT_COMPANY_ID}},
+        )
+        await base_db[collection_name].create_index("company_id")
+
+    for company_id in ("iqfoam-manufactoring", "iqfoam-whole-sallers"):
+        await initialize_empty_company(company_id)
+
+    await base_db.users.create_index("username", unique=True, sparse=True)
+    await base_db.companies.create_index("id", unique=True)
+    await initialize_company_profile_users()
+
+async def initialize_company_profile_users():
+    profiles = [
+        ("iqfoam-manufactoring", "IQFOAM MANUFACTORING", "manufactoring@profiles.invalid", "INITIAL_MANUFACTURING_PASSWORD"),
+        ("iqfoam-whole-sallers", "IQFOAM WHOLE SALLERS", "wholesallers@profiles.invalid", "INITIAL_WHOLESALER_PASSWORD"),
+    ]
+    for company_id, username, email, env_name in profiles:
+        if await base_db.users.find_one({"username": username}):
+            continue
+        initial_password = os.environ.get(env_name)
+        if not initial_password:
+            logging.warning("Initial profile %s is waiting for a secure server-side password configuration", username)
+            continue
+        await base_db.users.insert_one({"id": new_id(), "username": username, "email": email,
+            "name": username, "password_hash": hash_pw(initial_password), "role": "user",
+            "company_roles": {company_id: "user"}, "company_ids": [company_id], "active": True,
+            "auth_provider": "password", "created_at": now_iso()})
+
+async def initialize_empty_company(company_id):
+    company_db = tenant_database(client, base_db, company_id)
+    invoice_details = COMPANY_INVOICE_DETAILS.get(company_id, {})
+    if await company_db.settings.count_documents({}) == 0:
+        await company_db.settings.insert_one({**seed_data.DEFAULT_SETTINGS, **invoice_details, "id": "singleton",
+                                              "company_id": company_id, "created_at": now_iso()})
+    elif invoice_details:
+        await company_db.settings.update_one(
+            {"id": "singleton", "company_name": seed_data.DEFAULT_SETTINGS["company_name"],
+             "address": "", "telephone": ""},
+            {"$set": invoice_details},
+        )
+    if uses_unified_price_list(company_id):
+        settings = await company_db.settings.find_one({"id": "singleton"}, {"_id": 0}) or {}
+        if settings.get("unified_price_list_version") != 2:
+            await company_db.prices.delete_many({})
+            for price in seed_data.IQFOAM_UNIFIED_PRICES:
+                await company_db.prices.insert_one({
+                    "id": new_id(), "zone": 1, **price, "active": True,
+                    "confirmed": price["price"] is not None, "company_id": company_id,
+                    "created_at": now_iso(), "updated_at": now_iso(),
+                })
+            await company_db.customers.update_many({}, {"$set": {"default_zone": 1}})
+            await company_db.settings.update_one(
+                {"id": "singleton"}, {"$set": {"unified_price_list_version": 2}}
+            )
+
+        existing_stock = await company_db.stock.find({}, {"_id": 0, "product": 1, "size": 1}).to_list(5000)
+        stock_keys = {
+            (str(item.get("product", "")).strip().casefold(), str(item.get("size", "")).strip().casefold())
+            for item in existing_stock
+        }
+        for item in seed_data.STOCK:
+            key = (item["product"].strip().casefold(), item["size"].strip().casefold())
+            if key in stock_keys:
+                continue
+            await company_db.stock.insert_one({
+                "id": new_id(), "product": item["product"], "size": item["size"],
+                "opening": 0, "threshold": item.get("threshold", 0),
+                "company_id": company_id, "created_at": now_iso(),
+            })
+            stock_keys.add(key)
+    else:
+        for price in seed_data.PRICES:
+            key = {k: price[k] for k in ("zone", "category", "size")}
+            if not await company_db.prices.find_one(key):
+                await company_db.prices.insert_one({"id": new_id(), **price, "company_id": company_id,
+                                                    "created_at": now_iso(), "updated_at": now_iso()})
+    for coll, keys, options in (("payments", "idempotency_key", {"unique": True, "sparse": True}),
+                                ("stock_movements", "dedupe_key", {"unique": True, "sparse": True}),
+                                ("expenses", "source_key", {"unique": True, "sparse": True}),
+                                ("attendance", [("employee_id", 1), ("date", 1)], {"unique": True}),
+                                ("prices", [("zone", 1), ("category", 1), ("size", 1)], {"unique": True}),
+                                ("audit_log", [("entity", 1), ("entity_id", 1)], {})):
+        await company_db[coll].create_index(keys, **options)
+
 @app.on_event("startup")
 async def on_startup():
     await seed()
+    await initialize_multi_company()
 
 app.include_router(api)
+configured_cors_origins = [origin.strip() for origin in os.environ.get("CORS_ORIGINS", "*").split(",") if origin.strip()]
+if "*" in configured_cors_origins:
+    configured_cors_origins = ["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000", "http://127.0.0.1:3001"]
+    cors_origin_regex = r"https://[a-zA-Z0-9-]+\.preview\.emergentagent\.com"
+else:
+    cors_origin_regex = None
 app.add_middleware(CORSMiddleware, allow_credentials=True,
-                   allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+                   allow_origins=configured_cors_origins, allow_origin_regex=cors_origin_regex,
                    allow_methods=["*"], allow_headers=["*"])
+
+@app.middleware("http")
+async def reset_company_scope(request: Request, call_next):
+    token = active_company_id.set(None)
+    try:
+        return await call_next(request)
+    finally:
+        active_company_id.reset(token)
 logging.basicConfig(level=logging.INFO)
 
 @app.on_event("shutdown")
