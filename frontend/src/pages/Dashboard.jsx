@@ -23,14 +23,14 @@ const QUICK = [
 
 function KPI({ title, value, icon: Icon, tint, onClick }) {
   return (
-    <Card className="p-5 cursor-pointer hover:shadow-md transition-shadow" onClick={onClick} data-testid={`kpi-${title.toLowerCase().replace(/\s/g, "-")}`}>
+    <Card className="group p-5 cursor-pointer border-l-2 border-l-transparent hover:border-l-primary hover:shadow-md transition-all" onClick={onClick} data-testid={`kpi-${title.toLowerCase().replace(/\s/g, "-")}`}>
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{title}</p>
-          <p className="text-2xl font-bold text-slate-900 mt-2 font-mono">{value}</p>
+          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.13em]">{title}</p>
+          <p className="text-2xl font-semibold text-slate-900 mt-2 font-mono tabular-nums">{value}</p>
         </div>
-        <div className={`h-11 w-11 rounded-xl flex items-center justify-center ${tint}`}>
-          <Icon size={22} />
+        <div className={`h-10 w-10 rounded-md flex items-center justify-center transition-transform group-hover:translate-y-[-2px] ${tint}`}>
+          <Icon size={19} strokeWidth={1.8} />
         </div>
       </div>
     </Card>
@@ -41,8 +41,8 @@ function Section({ title, icon: Icon, children, action }) {
   return (
     <Card className="p-5">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="font-bold text-slate-800 flex items-center gap-2 font-display">
-          {Icon && <Icon size={18} className="text-primary" />} {title}
+        <h3 className="font-semibold text-slate-800 flex items-center gap-2 font-display text-lg">
+          {Icon && <Icon size={17} strokeWidth={1.8} className="text-primary" />} {title}
         </h3>
         {action}
       </div>
@@ -80,19 +80,20 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 font-display">Dashboard</h1>
-        <p className="text-sm text-slate-500 mt-1">Overview of your business performance</p>
+        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-primary">Super IQ-Foam · Operations</p>
+        <h1 className="text-3xl sm:text-4xl font-normal text-slate-900 font-display mt-1">Business overview</h1>
+        <p className="text-sm text-slate-500 mt-1">Performance, cash flow and daily operations</p>
       </div>
 
-      <section className="rounded-xl border border-sky-200 bg-sky-50 px-5 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" data-testid="dashboard-diesel-price">
+      <section className="luxury-card rounded-lg border border-[hsl(42_31%_74%)] bg-[hsl(68_28%_91%)] px-5 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" data-testid="dashboard-diesel-price">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">Official diesel 50ppm wholesale maximum · Kokstad zone</p>
-          <p className="mt-1 text-2xl font-bold font-mono text-slate-900">{d.diesel_price_current ? `R ${Number(d.diesel_price).toFixed(2)}/L` : "Current price unavailable"}</p>
+          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-primary">Diesel 50ppm · Kokstad zone</p>
+          <p className="mt-1 text-3xl font-semibold font-mono tabular-nums text-slate-900">{d.diesel_price_current ? `R ${Number(d.diesel_price).toFixed(2)}/L` : "Current price unavailable"}</p>
           {!d.diesel_price_current && d.diesel_price != null && <p className="text-sm font-semibold text-amber-800 mt-1">Last saved: R {Number(d.diesel_price).toFixed(2)}/L · OUTDATED</p>}
           {d.diesel_updated_at && <p className="text-xs text-slate-600 mt-1">Updated {fmtDateTime(d.diesel_updated_at)}</p>}
         </div>
         <div className="flex items-center gap-4">
-          {d.diesel_sources?.[0] && <a href={d.diesel_sources[0]} target="_blank" rel="noreferrer" className="text-xs font-semibold text-sky-700 underline">View price source</a>}
+          {d.diesel_sources?.[0] && <a href={d.diesel_sources[0]} target="_blank" rel="noreferrer" className="text-xs font-semibold text-primary underline underline-offset-4">View price source</a>}
           <Btn variant="outline" onClick={() => { setDieselPrice(d.diesel_price == null ? "" : String(d.diesel_price)); setDieselModal(true); }} data-testid="change-diesel-price-btn"><Pencil size={15} /> Change price</Btn>
         </div>
       </section>
@@ -132,8 +133,8 @@ export default function Dashboard() {
         {[["Resting", d.resting.length, "/production"], ["Ready to Cut", d.ready_cutting.length, "/production"], ["Done Today", d.completed_today, "/production"],
           ["Orders to Send", d.orders_open_count, "/orders"], ["Urgent Orders", d.urgent_orders, "/orders"], ["Vehicles Free", `${d.vehicles_available}/${d.vehicles_total}`, "/fleet"],
           ["Parts to Buy", d.parts_to_buy_count, "/fleet"], ["Maintenance Due", d.maintenance_due, "/fleet"]].map(([l, v, to]) => (
-          <button key={l} onClick={() => nav(to)} className="rounded-xl border border-border bg-white p-3 text-left hover:border-primary transition-colors" data-testid={`op-kpi-${l.toLowerCase().replace(/\s/g, "-")}`}>
-            <p className="text-[10px] font-semibold uppercase text-slate-400">{l}</p><p className="text-xl font-bold font-mono text-slate-800 mt-1">{v}</p>
+          <button key={l} onClick={() => nav(to)} className="rounded-lg border border-border bg-white/85 p-3 text-left hover:border-primary/50 hover:bg-white transition-colors" data-testid={`op-kpi-${l.toLowerCase().replace(/\s/g, "-")}`}>
+            <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-slate-500">{l}</p><p className="text-xl font-semibold font-mono tabular-nums text-slate-800 mt-1">{v}</p>
           </button>))}
       </div>
 
@@ -143,9 +144,9 @@ export default function Dashboard() {
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
           {QUICK.map((q) => (
             <button key={q.label} onClick={() => nav(q.to)} data-testid={`quick-${q.label.toLowerCase().replace(/\s/g, "-")}`}
-              className="flex flex-col items-center gap-2 rounded-xl border border-border p-4 hover:border-primary hover:bg-accent/40 transition-colors">
-              <q.icon size={20} className="text-primary" />
-              <span className="text-xs font-semibold text-slate-600 text-center">{q.label}</span>
+              className="flex flex-col items-center gap-2 rounded-lg border border-border bg-white/70 p-4 hover:border-primary/50 hover:bg-accent/35 transition-colors">
+              <q.icon size={19} strokeWidth={1.8} className="text-primary" />
+              <span className="text-xs font-semibold text-slate-700 text-center">{q.label}</span>
             </button>
           ))}
         </div>

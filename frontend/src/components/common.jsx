@@ -2,7 +2,7 @@ import { X } from "lucide-react";
 
 export function Card({ className = "", children, ...p }) {
   return (
-    <div className={`bg-card rounded-xl border border-border shadow-sm ${className}`} {...p}>
+    <div className={`luxury-card bg-card rounded-lg border border-border shadow-sm ${className}`} {...p}>
       {children}
     </div>
   );
@@ -10,14 +10,14 @@ export function Card({ className = "", children, ...p }) {
 
 export function Btn({ variant = "primary", className = "", children, ...p }) {
   const base =
-    "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-semibold transition-colors px-4 py-2.5 disabled:opacity-50 disabled:pointer-events-none";
+    "inline-flex items-center justify-center gap-2 rounded-md text-sm font-semibold transition-all duration-200 px-4 py-2.5 disabled:opacity-50 disabled:pointer-events-none";
   const v = {
-    primary: "bg-primary text-primary-foreground hover:bg-blue-700",
-    ghost: "bg-transparent text-slate-600 hover:bg-slate-100",
-    outline: "border border-border bg-white text-slate-700 hover:bg-slate-50",
-    danger: "bg-red-600 text-white hover:bg-red-700",
-    success: "bg-emerald-600 text-white hover:bg-emerald-700",
-    subtle: "bg-accent text-accent-foreground hover:bg-blue-100",
+    primary: "bg-primary text-primary-foreground shadow-sm hover:brightness-110 hover:shadow-md",
+    ghost: "bg-transparent text-slate-600 hover:bg-secondary",
+    outline: "border border-border bg-white text-slate-700 hover:border-primary/30 hover:bg-secondary/70",
+    danger: "bg-red-700 text-white hover:bg-red-800",
+    success: "bg-primary text-primary-foreground hover:brightness-110",
+    subtle: "bg-accent text-accent-foreground hover:brightness-95",
   }[variant];
   return (
     <button className={`${base} ${v} ${className}`} {...p}>
@@ -31,7 +31,7 @@ export function Input({ label, className = "", ...p }) {
     <label className="block">
       {label && <span className="block text-xs font-semibold text-slate-500 mb-1.5">{label}</span>}
       <input
-        className={`w-full rounded-lg border border-input bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary ${className}`}
+        className={`w-full rounded-md border border-input bg-white/90 px-3 py-2.5 text-sm text-slate-800 outline-none transition-shadow focus:ring-2 focus:ring-primary/20 focus:border-primary ${className}`}
         {...p}
       />
     </label>
@@ -43,7 +43,7 @@ export function Select({ label, children, className = "", ...p }) {
     <label className="block">
       {label && <span className="block text-xs font-semibold text-slate-500 mb-1.5">{label}</span>}
       <select
-        className={`w-full rounded-lg border border-input bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary ${className}`}
+        className={`w-full rounded-md border border-input bg-white/90 px-3 py-2.5 text-sm text-slate-800 outline-none transition-shadow focus:ring-2 focus:ring-primary/20 focus:border-primary ${className}`}
         {...p}
       >
         {children}
@@ -57,7 +57,7 @@ export function Textarea({ label, className = "", ...p }) {
     <label className="block">
       {label && <span className="block text-xs font-semibold text-slate-500 mb-1.5">{label}</span>}
       <textarea
-        className={`w-full rounded-lg border border-input bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary ${className}`}
+        className={`w-full rounded-md border border-input bg-white/90 px-3 py-2.5 text-sm text-slate-800 outline-none transition-shadow focus:ring-2 focus:ring-primary/20 focus:border-primary ${className}`}
         {...p}
       />
     </label>

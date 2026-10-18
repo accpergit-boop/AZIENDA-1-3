@@ -27,18 +27,18 @@ function SidebarContent({ onNav, isAdmin }) {
   return (
     <>
       <div className="flex items-center gap-3 px-6 h-20 border-b border-white/10">
-        <div className="h-10 w-10 rounded-xl bg-primary flex items-center justify-center shrink-0">
+        <div className="h-10 w-10 rounded-lg border border-emerald-100/20 bg-[hsl(158_28%_15%)] flex items-center justify-center shrink-0">
           <Layers className="text-white" size={22} />
         </div>
         <div>
           <div className="text-white font-bold text-base font-display leading-tight">SUPER IQ-FOAM</div>
-          <div className="text-slate-400 text-[11px] font-medium">Business Management</div>
+          <div className="text-emerald-100/55 text-[10px] font-semibold uppercase tracking-[0.16em]">Business Management</div>
         </div>
       </div>
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
         {NAV.map((n) => (
           <NavLink key={n.to} to={n.to} end={n.end} onClick={onNav} data-testid={`nav-${n.label.toLowerCase()}`}
-            className={({ isActive }) => `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold transition-colors ${isActive ? "bg-primary text-white shadow" : "text-slate-300 hover:bg-white/5 hover:text-white"}`}>
+            className={({ isActive }) => `flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-all ${isActive ? "bg-white/10 text-white shadow-[inset_2px_0_0_hsl(72_42%_65%)]" : "text-emerald-50/65 hover:bg-white/5 hover:text-white"}`}>
             <n.icon size={18} />{n.label}
           </NavLink>
         ))}
@@ -99,7 +99,7 @@ export default function Layout() {
             </div>
             <div className="hidden sm:block leading-tight">
               <div className="text-sm font-semibold text-slate-800">{user?.name || "Admin"}</div>
-              <div className="text-[11px] text-slate-400">Administrator</div>
+              <div className="text-[11px] text-slate-500">{user?.is_owner ? "Owner" : user?.is_admin || user?.role === "admin" ? "Administrator" : "Team member"}</div>
             </div>
             <button onClick={logout} data-testid="logout-btn" className="text-slate-400 hover:text-red-600 ml-1">
               <LogOut size={18} />

@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Serif+Display&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import 'tailwindcss';
 @import 'tw-animate-css';
 
@@ -6,8 +6,8 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
-  --font-display: 'Outfit', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'DM Serif Display', Georgia, serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
   --radius-lg: var(--radius);
@@ -43,27 +43,27 @@
 
 @layer base {
   :root {
-    --background: 210 40% 98%;
-    --foreground: 222 47% 11%;
+    --background: 45 22% 96%;
+    --foreground: 158 25% 12%;
     --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
+    --card-foreground: 158 25% 12%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222 47% 11%;
-    --primary: 221 83% 53%;
+    --popover-foreground: 158 25% 12%;
+    --primary: 157 43% 27%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 222 47% 11%;
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
-    --accent: 214 95% 93%;
-    --accent-foreground: 221 83% 40%;
-    --destructive: 0 72% 51%;
+    --secondary: 45 20% 91%;
+    --secondary-foreground: 158 25% 12%;
+    --muted: 45 14% 92%;
+    --muted-foreground: 158 9% 41%;
+    --accent: 72 42% 86%;
+    --accent-foreground: 158 35% 19%;
+    --destructive: 3 62% 46%;
     --destructive-foreground: 0 0% 100%;
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 221 83% 53%;
-    --radius: 0.65rem;
-    --navy: 222 47% 11%;
+    --border: 42 15% 85%;
+    --input: 42 15% 85%;
+    --ring: 157 43% 27%;
+    --radius: 0.5rem;
+    --navy: 163 31% 10%;
   }
 }
 
@@ -78,8 +78,10 @@
   h1,h2,h3,h4 { font-family: var(--font-display); }
   button:not(:disabled), [role='button']:not(:disabled) { cursor: pointer; }
   .font-mono, .tabular { font-family: var(--font-mono); }
+  .luxury-card { box-shadow: 0 8px 26px hsl(158 30% 15% / 0.045), 0 1px 2px hsl(158 30% 15% / 0.04); }
+  ::selection { background: hsl(72 42% 82%); color: hsl(158 30% 12%); }
   ::-webkit-scrollbar { height: 8px; width: 8px; }
-  ::-webkit-scrollbar-thumb { background: hsl(214 20% 80%); border-radius: 8px; }
+  ::-webkit-scrollbar-thumb { background: hsl(154 14% 66%); border-radius: 8px; }
 }
 
 @media print {
