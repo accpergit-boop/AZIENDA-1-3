@@ -16,8 +16,9 @@ at build time via `vite.config.mjs`).
 - `yarn build` — production bundle into `build/`
 - `yarn preview` — serve the production bundle locally
 
-Hot reload is Vite HMR; restart the `frontend` supervisor program only after changing `.env`
-or `vite.config.mjs`, or after installing dependencies (`yarn add`, never npm).
+Hot reload is always enabled via Vite HMR and polling so file changes are reflected in the
+Emergent preview. Restart the `frontend` supervisor program only after changing `.env` or
+`vite.config.mjs`, or after installing dependencies (`yarn add`, never npm).
 
 Visual edits: the packaged `@emergentbase/visual-edits` plugin tags `.jsx`/`.tsx`; because this
 template keeps JSX in `.js`, `vite.config.mjs` stamps the same `x-*` metadata on `src/**/*.js`

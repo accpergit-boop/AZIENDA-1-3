@@ -1,6 +1,3 @@
-import html2canvas from "html2canvas-pro";
-import { jsPDF } from "jspdf";
-
 export async function elementToPdf(el, filename = "document.pdf") {
   if (!el) throw new Error("PDF target is not ready yet.");
 
@@ -31,6 +28,10 @@ export async function elementToPdf(el, filename = "document.pdf") {
   document.body.appendChild(wrapper);
 
   try {
+    const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+      import("html2canvas-pro"),
+      import("jspdf"),
+    ]);
     const canvas = await html2canvas(clone, {
       scale: 2,
       backgroundColor: "#ffffff",

@@ -1,38 +1,40 @@
 import "@/App.css";
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
-import AuthCallback from "@/pages/AuthCallback";
-import Assistant from "@/pages/Assistant";
 import { Toaster } from "sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import Layout from "@/components/Layout";
-import Login from "@/pages/Login";
-import Dashboard from "@/pages/Dashboard";
-import Customers from "@/pages/Customers";
-import InvoiceList from "@/pages/InvoiceList";
-import InvoiceEditor from "@/pages/InvoiceEditor";
-import Orders from "@/pages/Orders";
-import Stock from "@/pages/Stock";
-import Production from "@/pages/Production";
-import Attendance from "@/pages/Attendance";
-import Deliveries from "@/pages/Deliveries";
-import Fleet from "@/pages/Fleet";
-import Expenses from "@/pages/Expenses";
-import Settings from "@/pages/Settings";
+import { pageLoaders } from "@/lib/pageLoaders";
+
+const AuthCallback = lazy(() => import("@/pages/AuthCallback"));
+const Login = lazy(() => import("@/pages/Login"));
+const Dashboard = lazy(pageLoaders["/"]);
+const Assistant = lazy(pageLoaders["/assistant"]);
+const Customers = lazy(pageLoaders["/customers"]);
+const InvoiceList = lazy(pageLoaders["/invoices"]);
+const InvoiceEditor = lazy(pageLoaders["/invoices/new"]);
+const Orders = lazy(pageLoaders["/orders"]);
+const Stock = lazy(pageLoaders["/stock"]);
+const Production = lazy(pageLoaders["/production"]);
+const Attendance = lazy(pageLoaders["/attendance"]);
+const Deliveries = lazy(pageLoaders["/deliveries"]);
+const Fleet = lazy(pageLoaders["/fleet"]);
+const Expenses = lazy(pageLoaders["/expenses"]);
+const Settings = lazy(pageLoaders["/settings"]);
 
 function Protected({ children }) {
   const { user, booting } = useAuth();
-  if (booting || user === null)
-    return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading...</div>;
+  if (booting || user === null) return <RouteLoading />;
   if (!user) return <Navigate to="/login" replace />;
   return children;
 }
 
 function AppRouter() {
   const location = useLocation();
-  if (location.hash?.includes("session_id=")) return <AuthCallback />;
+  if (location.hash?.includes("session_id=")) return <Suspense fallback={<RouteLoading />}><AuthCallback /></Suspense>;
   return (
         <Routes>
-          <Route path="/login" element={<Login />} />
+          <Route path="/login" element={<Suspense fallback={<RouteLoading />}><Login /></Suspense>} />
           <Route element={<Protected><Layout /></Protected>}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/assistant" element={<Assistant />} />
@@ -51,6 +53,10 @@ function AppRouter() {
           </Route>
         </Routes>
   );
+}
+
+function RouteLoading() {
+  return <div className="route-loading" role="status" aria-live="polite">Loading workspace...</div>;
 }
 
 function App() {

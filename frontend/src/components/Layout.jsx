@@ -1,5 +1,5 @@
-import { NavLink, useNavigate, Outlet } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { NavLink, useNavigate, Outlet, useLocation } from "react-router-dom";
+import { Suspense, useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   LayoutDashboard, Users, FileText, Boxes, Factory, CalendarCheck,
@@ -9,6 +9,8 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { Sparkles } from "lucide-react";
 import { api, apiError } from "@/lib/api";
+import { preloadPage } from "@/lib/pageLoaders";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
@@ -26,6 +28,7 @@ const NAV = [
 ];
 
 function SidebarContent({ onNav, companyName }) {
+  const reduceMotion = useReducedMotion();
   return (
     <>
       <div className="flex items-center gap-3 px-6 h-20 border-b border-white/10">
@@ -39,9 +42,13 @@ function SidebarContent({ onNav, companyName }) {
       </div>
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
         {NAV.map((n) => (
-          <NavLink key={n.to} to={n.to} end={n.end} onClick={onNav} data-testid={`nav-${n.label.toLowerCase()}`}
-            className={({ isActive }) => `flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-all ${isActive ? "bg-white/10 text-white shadow-[inset_2px_0_0_hsl(72_42%_65%)]" : "text-emerald-50/65 hover:bg-white/5 hover:text-white"}`}>
-            <n.icon size={18} />{n.label}
+          <NavLink key={n.to} to={n.to} end={n.end} onClick={onNav} onMouseEnter={() => preloadPage(n.to)} onFocus={() => preloadPage(n.to)} onPointerDown={() => preloadPage(n.to)} data-testid={`nav-${n.label.toLowerCase()}`}
+            className={({ isActive }) => `relative isolate flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${isActive ? "text-white" : "text-emerald-50/65 hover:bg-white/5 hover:text-white"}`}>
+            {({ isActive }) => <>
+              {isActive && <motion.span layoutId={`active-nav-${onNav ? "mobile" : "desktop"}`} className="pointer-events-none absolute inset-0 z-0 rounded-md bg-white/10 shadow-[inset_2px_0_0_hsl(72_42%_65%)]" transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 480, damping: 38, mass: 0.5 }} />}
+              <n.icon className="relative z-10" size={18} />
+              <span className="relative z-10">{n.label}</span>
+            </>}
           </NavLink>
         ))}
       </nav>
@@ -49,8 +56,14 @@ function SidebarContent({ onNav, companyName }) {
   );
 }
 
+function AnimatedOutlet() {
+  const location = useLocation();
+  return <div key={location.pathname} className="app-page-enter"><Outlet /></div>;
+}
+
 export default function Layout() {
   const { user, logout, switchCompany } = useAuth();
+  const reduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
   const [profiles, setProfiles] = useState([]);
   const [switching, setSwitching] = useState(false);
@@ -74,24 +87,26 @@ export default function Layout() {
       </aside>
 
       {/* Mobile drawer */}
-      {open && (
-        <div className="lg:hidden fixed inset-0 z-50 flex">
-          <div className="fixed inset-0 bg-slate-900/60" onClick={() => setOpen(false)} />
-          <aside className="relative w-64 flex flex-col bg-[hsl(222_47%_11%)]">
-            <button className="absolute top-5 right-4 text-slate-300" onClick={() => setOpen(false)}>
+      <AnimatePresence initial={false}>
+        {open && (
+        <motion.div key="mobile-navigation" className="lg:hidden fixed inset-0 z-50 flex" initial={reduceMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={reduceMotion ? { duration: 0 } : { duration: 0.16 }}>
+          <motion.div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setOpen(false)} />
+          <motion.aside className="liquid-glass-dark relative w-64 flex flex-col bg-[hsl(222_47%_11%)]" initial={reduceMotion ? false : { x: -36, opacity: 0.85 }} animate={{ x: 0, opacity: 1 }} exit={{ x: -24, opacity: 0 }} transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 360, damping: 34, mass: 0.7 }}>
+            <button className="absolute top-5 right-4 text-slate-500" onClick={() => setOpen(false)} aria-label="Close navigation">
               <X size={22} />
             </button>
             <SidebarContent onNav={() => setOpen(false)} companyName={activeProfile?.name} />
-          </aside>
-        </div>
-      )}
+          </motion.aside>
+        </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="lg:pl-64 print:pl-0">
         {/* Topbar */}
-        <header className="no-print sticky top-0 z-20 h-16 bg-white/90 backdrop-blur border-b border-border flex items-center gap-4 px-4 sm:px-6">
-          <button className="lg:hidden text-slate-600" onClick={() => setOpen(true)} data-testid="menu-toggle">
+        <header className="no-print liquid-glass-surface sticky top-0 z-20 h-16 border-b border-white/70 flex items-center gap-4 px-4 sm:px-6">
+          <motion.button whileHover={reduceMotion ? undefined : { scale: 1.04, rotate: 0.5 }} whileTap={reduceMotion ? undefined : { scale: 0.96 }} transition={{ type: "spring", stiffness: 440, damping: 24 }} className="lg:hidden rounded-full p-2 text-slate-600 hover:bg-white/40" onClick={() => setOpen(true)} aria-label="Open navigation" data-testid="menu-toggle">
             <Menu size={22} />
-          </button>
+          </motion.button>
           <div className="flex-1 max-w-md hidden sm:block">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -110,25 +125,27 @@ export default function Layout() {
             className="max-w-40 sm:max-w-56 rounded-md border border-border bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60">
             {availableProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
           </select>}
-          <button className="relative text-slate-500 hover:text-slate-800" data-testid="notifications-btn">
+          <motion.button whileHover={reduceMotion ? undefined : { scale: 1.06, y: -1 }} whileTap={reduceMotion ? undefined : { scale: 0.96 }} transition={{ type: "spring", stiffness: 480, damping: 24 }} className="relative rounded-full p-2 text-slate-500 hover:text-slate-800 hover:bg-white/40" data-testid="notifications-btn">
             <Bell size={20} />
-          </button>
+          </motion.button>
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold text-sm">
+            <motion.div whileHover={reduceMotion ? undefined : { scale: 1.05, y: -1 }} whileTap={reduceMotion ? undefined : { scale: 0.98 }} transition={{ type: "spring", stiffness: 500, damping: 22 }} className="h-9 w-9 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold text-sm">
               {(user?.name || "A")[0]}
-            </div>
+            </motion.div>
             <div className="hidden sm:block leading-tight">
               <div className="text-sm font-semibold text-slate-800">{user?.name || "Admin"}</div>
               <div className="text-[11px] text-slate-500">{user?.is_owner ? "Owner" : user?.is_admin || user?.role === "admin" ? "Administrator" : "Team member"}</div>
             </div>
-            <button onClick={logout} data-testid="logout-btn" className="text-slate-400 hover:text-red-600 ml-1">
+            <motion.button whileHover={reduceMotion ? undefined : { x: -1, scale: 1.04 }} whileTap={reduceMotion ? undefined : { scale: 0.97 }} transition={{ type: "spring", stiffness: 500, damping: 22 }} onClick={logout} data-testid="logout-btn" className="rounded-full p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 ml-1">
               <LogOut size={18} />
-            </button>
+            </motion.button>
           </div>
         </header>
 
         <main className="p-4 sm:p-6 lg:p-8 max-w-[1500px] mx-auto">
-          <Outlet />
+          <Suspense fallback={<div className="text-slate-400">Loading...</div>}>
+            <AnimatedOutlet />
+          </Suspense>
         </main>
       </div>
       {(user?.is_admin || user?.role === "admin") && <a href="https://web.whatsapp.com/" target="_blank" rel="noreferrer"

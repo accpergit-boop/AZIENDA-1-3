@@ -18,20 +18,26 @@ const blank = () => ({ customer_id: "", destination: "", size: "small", products
 
 export default function Deliveries() {
   const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [customers, setCustomers] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [vehicles, setVehicles] = useState([]);
+  const [vehiclesLoading, setVehiclesLoading] = useState(true);
   const [stock, setStock] = useState([]);
   const [modal, setModal] = useState(null);
   const [recs, setRecs] = useState([]);
   const [planner, setPlanner] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [vModal, setVModal] = useState(null);
   const [tab, setTab] = useState("deliveries");
   const [sp, setSp] = useSearchParams();
 
   const load = () => {
-    api.get("/deliveries").then(setList); api.get("/customers").then(setCustomers);
-    api.get("/drivers").then(setDrivers); api.get("/vehicles").then(setVehicles); api.get("/stock").then(setStock);
+    api.get("/deliveries").then(setList).catch((e) => toast.error(apiError(e))).finally(() => setLoading(false));
+    api.get("/customers").then(setCustomers);
+    api.get("/drivers").then(setDrivers);
+    api.get("/vehicles").then(setVehicles).finally(() => setVehiclesLoading(false));
+    api.get("/stock").then(setStock);
   };
   useEffect(() => { load(); }, []);
   useEffect(() => { if (sp.get("add")) { setModal(blank()); setSp({}); } }, [sp]);
@@ -40,13 +46,16 @@ export default function Deliveries() {
   const getRecs = async (size) => { const r = await api.get("/deliveries/recommend", { size }); setRecs(r); };
 
   const save = async () => {
+    if (saving) return;
     if (!modal.destination.trim()) return toast.error("Destination required");
+    setSaving(true);
     try {
       const payload = { ...modal, cash_collected: Number(modal.cash_collected) || 0 };
       if (modal.id) await api.put(`/deliveries/${modal.id}`, payload);
       else await api.post("/deliveries", payload);
       toast.success("Delivery saved"); setModal(null); load();
     } catch (e) { toast.error(apiError(e)); }
+    finally { setSaving(false); }
   };
 
   const dispatch = async (d) => {
@@ -85,7 +94,7 @@ export default function Deliveries() {
 
       {tab === "deliveries" ? (
         <Card className="overflow-hidden">
-          {list.length === 0 ? <Empty icon={Truck} title="No deliveries yet" /> : (
+          {loading ? <p className="p-6 text-sm text-slate-400" role="status">Loading deliveries...</p> : list.length === 0 ? <Empty icon={Truck} title="No deliveries yet" /> : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm min-w-[820px]">
                 <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
@@ -112,7 +121,7 @@ export default function Deliveries() {
         </Card>
       ) : (
         <Card className="overflow-hidden">
-          {vehicles.length === 0 ? <Empty icon={Car} title="No vehicles registered" /> : (
+          {vehiclesLoading ? <p className="p-6 text-sm text-slate-400" role="status">Loading vehicles...</p> : vehicles.length === 0 ? <Empty icon={Car} title="No vehicles registered" /> : (
             <div className="divide-y divide-border">{vehicles.map((v) => (
               <div key={v.id} className="flex items-center justify-between p-4">
                 <div><p className="font-semibold text-slate-800">{v.name} <span className="font-mono text-xs text-slate-400">{v.registration}</span></p><p className="text-xs text-slate-400">{v.vtype} · {v.capacity}</p></div>
@@ -167,7 +176,7 @@ export default function Deliveries() {
           </div>
 
           <Textarea label="Notes" rows={2} value={modal.notes} onChange={(e) => setModal({ ...modal, notes: e.target.value })} />
-          <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setModal(null)}>Cancel</Btn><Btn onClick={save} data-testid="save-delivery-btn">Save Delivery</Btn></div>
+          <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setModal(null)}>Cancel</Btn><Btn onClick={save} disabled={saving} data-testid="save-delivery-btn">{saving ? "Saving..." : "Save Delivery"}</Btn></div>
         </div>}
       </Modal>
 

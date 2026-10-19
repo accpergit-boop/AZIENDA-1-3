@@ -14,6 +14,7 @@ export default function Customers() {
   const { user } = useAuth();
   const unifiedPriceList = usesUnifiedPriceList(user?.company_id);
   const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
   const [modal, setModal] = useState(null); // form data or null
@@ -21,7 +22,7 @@ export default function Customers() {
   const [sp, setSp] = useSearchParams();
   const nav = useNavigate();
 
-  const load = () => api.get("/customers").then(setList);
+  const load = () => api.get("/customers").then(setList).catch((e) => toast.error(apiError(e))).finally(() => setLoading(false));
   useEffect(() => { load(); }, []);
   useEffect(() => { if (sp.get("add")) { setModal({ ...blank }); setSp({}); } }, [sp]);
 
@@ -46,7 +47,7 @@ export default function Customers() {
 
   return (
     <div>
-      <PageHeader title="Customers" subtitle={`${list.length} customers`}>
+      <PageHeader title="Customers" subtitle={loading ? "Loading customers..." : `${list.length} customers`}>
         <Btn onClick={() => setModal({ ...blank })} data-testid="add-customer-btn"><Plus size={16} /> Add Customer</Btn>
       </PageHeader>
 
@@ -63,7 +64,7 @@ export default function Customers() {
       </Card>
 
       <Card className="overflow-hidden">
-        {filtered.length === 0 ? <Empty icon={Users} title="No customers found" /> : (
+        {loading ? <p className="p-6 text-sm text-slate-400" role="status">Loading customers...</p> : filtered.length === 0 ? <Empty icon={Users} title="No customers found" /> : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">

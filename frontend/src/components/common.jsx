@@ -1,3 +1,6 @@
+import { useId } from "react";
+import { createPortal } from "react-dom";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { X } from "lucide-react";
 
 export function Card({ className = "", children, ...p }) {
@@ -9,6 +12,7 @@ export function Card({ className = "", children, ...p }) {
 }
 
 export function Btn({ variant = "primary", className = "", children, ...p }) {
+  const reduceMotion = useReducedMotion();
   const base =
     "inline-flex items-center justify-center gap-2 rounded-md text-sm font-semibold transition-all duration-200 px-4 py-2.5 disabled:opacity-50 disabled:pointer-events-none";
   const v = {
@@ -20,9 +24,15 @@ export function Btn({ variant = "primary", className = "", children, ...p }) {
     subtle: "bg-accent text-accent-foreground hover:brightness-95",
   }[variant];
   return (
-    <button className={`${base} ${v} ${className}`} {...p}>
+    <motion.button
+      whileHover={reduceMotion ? undefined : { y: -1, scale: 1.015 }}
+      whileTap={reduceMotion ? undefined : { y: 0, scale: 0.975 }}
+      transition={{ type: "spring", stiffness: 520, damping: 32, mass: 0.4 }}
+      className={`${base} ${v} ${className}`}
+      {...p}
+    >
       {children}
-    </button>
+    </motion.button>
   );
 }
 
@@ -73,22 +83,44 @@ export function Badge({ children, cls = "bg-slate-100 text-slate-600 border-slat
 }
 
 export function Modal({ open, onClose, title, children, wide = false }) {
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-4 sm:p-8" onClick={onClose}>
-      <div
-        className={`bg-white rounded-2xl shadow-2xl w-full ${wide ? "max-w-3xl" : "max-w-lg"} my-4`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-border px-6 py-4">
-          <h3 className="text-lg font-bold text-slate-900 font-display">{title}</h3>
-          <button onClick={onClose} data-testid="modal-close" className="text-slate-400 hover:text-slate-700">
-            <X size={20} />
-          </button>
-        </div>
-        <div className="px-6 py-5">{children}</div>
-      </div>
-    </div>
+  const titleId = useId();
+  const reduceMotion = useReducedMotion();
+  const spring = { type: "spring", stiffness: 380, damping: 32, mass: 0.65 };
+  return createPortal(
+    <AnimatePresence initial={false}>
+      {open && (
+        <motion.div
+          key={titleId}
+          className="dialog-backdrop fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-4 sm:p-8"
+          onClick={onClose}
+          initial={reduceMotion ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: "easeOut" }}
+        >
+          <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            className={`liquid-glass-surface w-full overflow-hidden rounded-2xl border border-white/70 shadow-2xl ${wide ? "max-w-3xl" : "max-w-lg"} my-4`}
+            onClick={(e) => e.stopPropagation()}
+            initial={reduceMotion ? false : { opacity: 0, y: 12, scale: 0.975 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 6, scale: 0.985 }}
+            transition={reduceMotion ? { duration: 0 } : spring}
+          >
+            <div className="flex items-center justify-between border-b border-border/70 px-6 py-4">
+              <h3 id={titleId} className="text-lg font-bold text-slate-900 font-display">{title}</h3>
+              <button onClick={onClose} aria-label="Close dialog" data-testid="modal-close" className="rounded-full p-1 text-slate-400 transition-colors hover:bg-black/5 hover:text-slate-700">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="px-6 py-5">{children}</div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>,
+    document.body,
   );
 }
 

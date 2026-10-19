@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { api, apiError } from "@/lib/api";
+import { api, apiError, invalidateGetCache } from "@/lib/api";
 import { fmtDateTime } from "@/lib/format";
 import { Card, Btn, PageHeader } from "@/components/common";
 import { Sparkles, Send, Plus, Trash2, MessageSquare } from "lucide-react";
@@ -19,12 +19,12 @@ function Bubble({ m, idx }) {
   );
 }
 
-function SessionList({ sessions, active, onPick, onNew, onDelete }) {
+function SessionList({ sessions, loading, active, onPick, onNew, onDelete }) {
   return (
     <Card className="p-3 h-full flex flex-col">
       <Btn onClick={onNew} className="w-full mb-3" data-testid="new-chat-btn"><Plus size={16} /> New chat</Btn>
       <div className="space-y-1 overflow-y-auto flex-1">
-        {sessions.length === 0 && <p className="text-xs text-slate-400 px-2">No conversations yet.</p>}
+        {loading ? <p className="text-xs text-slate-400 px-2">Loading conversations...</p> : sessions.length === 0 && <p className="text-xs text-slate-400 px-2">No conversations yet.</p>}
         {sessions.map((s) => (
           <div key={s.id} className={`group flex items-center gap-2 rounded-lg px-2 py-2 cursor-pointer text-sm ${active === s.id ? "bg-blue-50 text-primary" : "hover:bg-slate-50 text-slate-600"}`} onClick={() => onPick(s.id)} data-testid={`chat-session-${s.id}`}>
             <MessageSquare size={14} className="shrink-0" />
@@ -38,13 +38,14 @@ function SessionList({ sessions, active, onPick, onNew, onDelete }) {
 
 export default function Assistant() {
   const [sessions, setSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
   const [sid, setSid] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const endRef = useRef(null);
 
-  const loadSessions = () => api.get("/assistant/sessions").then(setSessions).catch(() => {});
+  const loadSessions = () => api.get("/assistant/sessions").then(setSessions).catch(() => {}).finally(() => setSessionsLoading(false));
   useEffect(() => { loadSessions(); }, []);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
@@ -64,6 +65,7 @@ export default function Assistant() {
     setMessages((m) => [...m, { role: "user", content: msg }, { role: "assistant", content: "" }]);
     const append = (t) => setMessages((m) => { const c = [...m]; c[c.length - 1] = { ...c[c.length - 1], content: c[c.length - 1].content + t }; return c; });
     try {
+      invalidateGetCache();
       const res = await fetch(`${BASE}/assistant/chat`, {
         method: "POST", credentials: "include",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token") || ""}` },
@@ -95,7 +97,7 @@ export default function Assistant() {
     <div>
       <PageHeader title="AI Business Assistant" subtitle="Your ERP data + live web search (with sources) · GPT-5.2" />
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 h-[calc(100vh-13rem)] min-h-[480px]">
-        <div className="hidden lg:block"><SessionList sessions={sessions} active={sid} onPick={pick} onNew={() => { setSid(null); setMessages([]); }} onDelete={remove} /></div>
+        <div className="hidden lg:block"><SessionList sessions={sessions} loading={sessionsLoading} active={sid} onPick={pick} onNew={() => { setSid(null); setMessages([]); }} onDelete={remove} /></div>
         <Card className="lg:col-span-3 flex flex-col overflow-hidden bg-slate-50/60">
           <div className="flex-1 overflow-y-auto p-5 space-y-4" data-testid="chat-messages">
             {messages.length === 0 ? (

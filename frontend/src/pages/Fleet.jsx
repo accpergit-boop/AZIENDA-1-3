@@ -46,6 +46,7 @@ function VehicleCard({ v, recs, onOpen, onEdit }) {
 
 export default function Fleet() {
   const [vehicles, setVehicles] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [records, setRecords] = useState([]);
   const [parts, setParts] = useState([]);
   const [tab, setTab] = useState("vehicles");
@@ -54,7 +55,12 @@ export default function Fleet() {
   const [rForm, setRForm] = useState(blankR());
   const [pModal, setPModal] = useState(null);
 
-  const load = () => { api.get("/vehicles").then(setVehicles); api.get("/vehicles/records/all").then(setRecords); api.get("/spareparts").then(setParts); };
+  const load = () => {
+    Promise.all([api.get("/vehicles"), api.get("/vehicles/records/all"), api.get("/spareparts")])
+      .then(([vehicleData, recordData, partData]) => { setVehicles(vehicleData); setRecords(recordData); setParts(partData); })
+      .catch((e) => toast.error(apiError(e)))
+      .finally(() => setLoading(false));
+  };
   useEffect(() => { load(); }, []);
 
   const err = (e) => toast.error(apiError(e));
@@ -106,7 +112,7 @@ export default function Fleet() {
       </div>
 
       {tab === "vehicles" ? (
-        vehicles.length === 0 ? <Card><Empty icon={Truck} title="No vehicles registered" /></Card> : (
+        loading ? <Card><p className="p-6 text-sm text-slate-400" role="status">Loading vehicles...</p></Card> : vehicles.length === 0 ? <Card><Empty icon={Truck} title="No vehicles registered" /></Card> : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {vehicles.map((v) => <VehicleCard key={v.id} v={v} recs={vRecs(v.id)} onOpen={() => { setDetail(v); setRForm(blankR()); }} onEdit={() => setVModal({ ...v })} />)}
           </div>)
@@ -116,12 +122,12 @@ export default function Fleet() {
             {Object.entries(PSTAT).map(([k, m]) => (
               <Card key={k} className="p-5" data-testid={`parts-summary-${k}`}>
                 <p className="text-xs font-semibold uppercase text-slate-500">{m.label}</p>
-                <p className="text-2xl font-bold font-mono text-slate-900 mt-1">{parts.filter((p) => p.status === k).length}</p>
-                <p className="text-xs text-slate-400 mt-1 font-mono">{fmtMoney(partsTotal(k))}</p>
+                <p className="text-2xl font-bold font-mono text-slate-900 mt-1">{loading ? "..." : parts.filter((p) => p.status === k).length}</p>
+                <p className="text-xs text-slate-400 mt-1 font-mono">{loading ? "..." : fmtMoney(partsTotal(k))}</p>
               </Card>))}
           </div>
           <Card className="overflow-hidden">
-            {parts.length === 0 ? <Empty icon={Package} title="No spare parts yet" hint="Add parts you need to buy." /> : (
+            {loading ? <p className="p-6 text-sm text-slate-400" role="status">Loading spare parts...</p> : parts.length === 0 ? <Empty icon={Package} title="No spare parts yet" hint="Add parts you need to buy." /> : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm min-w-[760px]">
                   <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">

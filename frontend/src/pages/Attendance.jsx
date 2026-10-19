@@ -11,11 +11,17 @@ export default function Attendance() {
   const [employees, setEmployees] = useState([]);
   const [records, setRecords] = useState([]);
   const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [date, setDate] = useState(today());
   const [empModal, setEmpModal] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  const load = () => { api.get("/employees").then(setEmployees); api.get("/attendance").then(setRecords); api.get("/attendance/summary").then(setSummary); };
+  const load = () => {
+    Promise.all([api.get("/employees"), api.get("/attendance"), api.get("/attendance/summary")])
+      .then(([employeeData, attendanceData, summaryData]) => { setEmployees(employeeData); setRecords(attendanceData); setSummary(summaryData); })
+      .catch((e) => toast.error(apiError(e)))
+      .finally(() => setLoading(false));
+  };
   useEffect(() => { load(); }, []);
 
   const active = employees.filter((e) => e.active !== false);
@@ -47,19 +53,19 @@ export default function Attendance() {
     <div className="space-y-6">
       <PageHeader title="Attendance" subtitle="Tap Present or Absent for each employee">
         <Btn variant="outline" onClick={() => setEmpModal({ name: "", department: "Production", active: true })} data-testid="add-employee-btn"><Plus size={16} /> Employee</Btn>
-        <Btn disabled={busy || !active.length} onClick={markAll} data-testid="mark-all-present-btn"><CheckCheck size={16} /> Mark All Present</Btn>
+        <Btn disabled={loading || busy || !active.length} onClick={markAll} data-testid="mark-all-present-btn"><CheckCheck size={16} /> Mark All Present</Btn>
       </PageHeader>
       <div className="flex flex-wrap items-end gap-4">
         <div className="w-48"><Input label="Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} data-testid="attendance-date-input" /></div>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <Stat l="Present (day)" v={present} cls="text-emerald-600" k="day-present" />
-        <Stat l="Absent (day)" v={absent} cls="text-red-600" k="day-absent" />
-        <Stat l="Not marked" v={active.length - present - absent} cls="text-slate-500" k="day-unmarked" />
-        <Stat l="Present days (week)" v={summary?.week_total ?? 0} cls="text-slate-800" k="week" />
-        <Stat l="Present days (month)" v={summary?.month_total ?? 0} cls="text-slate-800" k="month" />
+        <Stat l="Present (day)" v={loading ? "..." : present} cls="text-emerald-600" k="day-present" />
+        <Stat l="Absent (day)" v={loading ? "..." : absent} cls="text-red-600" k="day-absent" />
+        <Stat l="Not marked" v={loading ? "..." : active.length - present - absent} cls="text-slate-500" k="day-unmarked" />
+        <Stat l="Present days (week)" v={loading ? "..." : summary?.week_total ?? 0} cls="text-slate-800" k="week" />
+        <Stat l="Present days (month)" v={loading ? "..." : summary?.month_total ?? 0} cls="text-slate-800" k="month" />
       </div>
-      {active.length === 0 ? <Card><Empty icon={Users} title="No employees yet" hint="Add employees with the + Employee button." /></Card> : groups.map(([dept, list]) => (
+      {loading ? <Card><p className="p-6 text-sm text-slate-400" role="status">Loading employees...</p></Card> : active.length === 0 ? <Card><Empty icon={Users} title="No employees yet" hint="Add employees with the + Employee button." /></Card> : groups.map(([dept, list]) => (
         <Card key={dept} className="p-4">
           <p className="text-xs font-bold uppercase text-slate-500 mb-3">{dept} <span className="text-slate-300">· {list.length}</span></p>
           <div className="space-y-2">{list.map((e) => {

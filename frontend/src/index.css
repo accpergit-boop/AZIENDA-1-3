@@ -42,6 +42,14 @@
 }
 
 @layer base {
+  button:not(:disabled), a, [role='button'], input, select, textarea {
+    transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+    transition-duration: 140ms;
+    transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+@layer base {
   :root {
     --background: 45 22% 96%;
     --foreground: 158 25% 12%;
@@ -65,6 +73,122 @@
     --radius: 0.5rem;
     --navy: 163 31% 10%;
   }
+}
+
+.app-page-enter {
+  animation: route-enter 240ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+.mobile-nav-backdrop {
+  animation: overlay-enter 170ms ease-out both;
+}
+
+.mobile-nav-panel {
+  animation: drawer-enter 210ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+.dashboard-stagger > * {
+  animation: dashboard-item-enter 340ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+.dashboard-stagger > :nth-child(2) { animation-delay: 35ms; }
+.dashboard-stagger > :nth-child(3) { animation-delay: 70ms; }
+.dashboard-stagger > :nth-child(4) { animation-delay: 105ms; }
+.dashboard-stagger > :nth-child(5) { animation-delay: 140ms; }
+.dashboard-stagger > :nth-child(6) { animation-delay: 175ms; }
+.dashboard-stagger > :nth-child(7) { animation-delay: 210ms; }
+.dashboard-stagger > :nth-child(n+8) { animation-delay: 245ms; }
+
+.dashboard-loading > * {
+  animation: dashboard-item-enter 260ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+.dashboard-loading > :nth-child(2) { animation-delay: 35ms; }
+.dashboard-loading > :nth-child(n+3) { animation-delay: 70ms; }
+
+.dashboard-skeleton-bar {
+  background: linear-gradient(100deg, #e8e9ed 20%, #f3f4f6 38%, #e8e9ed 56%);
+  background-size: 220% 100%;
+  animation: skeleton-shimmer 1.25s ease-in-out infinite;
+}
+
+.liquid-glass-surface {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(255, 255, 255, 0.8);
+  -webkit-backdrop-filter: blur(20px) saturate(165%);
+  backdrop-filter: blur(20px) saturate(165%);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.liquid-glass-dark {
+  background: rgba(15, 23, 42, 0.8);
+  border-right: 1px solid rgba(255, 255, 255, 0.16);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+  backdrop-filter: blur(22px) saturate(140%);
+  box-shadow: 1px 0 0 rgba(255, 255, 255, 0.08), 18px 0 42px rgba(15, 23, 42, 0.18);
+}
+
+.premium-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.premium-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.3), rgba(255,255,255,0) 38%, rgba(255,255,255,0.12));
+  pointer-events: none;
+}
+
+.premium-button {
+  transform-origin: center;
+  backface-visibility: hidden;
+  will-change: transform;
+}
+
+.premium-button:active {
+  transform: scale(0.985);
+}
+
+@keyframes route-enter {
+  from { opacity: 0; transform: translate3d(0, 7px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes overlay-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes dialog-enter {
+  from { opacity: 0; transform: translate3d(0, 9px, 0) scale(0.99); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes drawer-enter {
+  from { opacity: 0.75; transform: translate3d(-12px, 0, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes dashboard-item-enter {
+  from { opacity: 0; transform: translate3d(0, 9px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes skeleton-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -120% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+  .dashboard-skeleton-bar { animation: none; background: #e8e9ed; }
 }
 
 @layer base {

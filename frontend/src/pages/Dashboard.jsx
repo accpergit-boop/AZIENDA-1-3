@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { motion, useReducedMotion } from "framer-motion";
 import { api, apiError } from "@/lib/api";
 import { fmtMoney, fmtDate, fmtDateTime, STATUS_META } from "@/lib/format";
 import { Card, Badge, Btn, Input, Modal } from "@/components/common";
@@ -23,32 +24,80 @@ const QUICK = [
 ];
 
 function KPI({ title, value, icon: Icon, tint, onClick }) {
+  const reduceMotion = useReducedMotion();
   return (
-    <Card className="group p-5 cursor-pointer border-l-2 border-l-transparent hover:border-l-primary hover:shadow-md transition-all" onClick={onClick} data-testid={`kpi-${title.toLowerCase().replace(/\s/g, "-")}`}>
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.13em]">{title}</p>
-          <p className="text-2xl font-semibold text-slate-900 mt-2 font-mono tabular-nums">{value}</p>
+    <motion.div whileHover={reduceMotion ? undefined : { y: -2, scale: 1.01 }} whileTap={reduceMotion ? undefined : { scale: 0.995 }} transition={{ type: "spring", stiffness: 460, damping: 24, mass: 0.6 }}>
+      <Card className="premium-card group p-5 cursor-pointer border-l-2 border-l-transparent hover:border-l-primary hover:shadow-md transition-all" onClick={onClick} data-testid={`kpi-${title.toLowerCase().replace(/\s/g, "-")}`}>
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.13em]">{title}</p>
+            <p className="text-2xl font-semibold text-slate-900 mt-2 font-mono tabular-nums">{value}</p>
+          </div>
+          <div className={`h-10 w-10 rounded-md flex items-center justify-center transition-transform group-hover:translate-y-[-2px] ${tint}`}>
+            <Icon size={19} strokeWidth={1.8} />
+          </div>
         </div>
-        <div className={`h-10 w-10 rounded-md flex items-center justify-center transition-transform group-hover:translate-y-[-2px] ${tint}`}>
-          <Icon size={19} strokeWidth={1.8} />
-        </div>
-      </div>
-    </Card>
+      </Card>
+    </motion.div>
   );
 }
 
 function Section({ title, icon: Icon, children, action }) {
   return (
-    <Card className="p-5">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="font-semibold text-slate-800 flex items-center gap-2 font-display text-lg">
-          {Icon && <Icon size={17} strokeWidth={1.8} className="text-primary" />} {title}
-        </h3>
-        {action}
+    <motion.div whileHover={{ y: -1 }} transition={{ type: "spring", stiffness: 420, damping: 26, mass: 0.55 }}>
+      <Card className="premium-card p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-slate-800 flex items-center gap-2 font-display text-lg">
+            {Icon && <Icon size={17} strokeWidth={1.8} className="text-primary" />} {title}
+          </h3>
+          {action}
+        </div>
+        {children}
+      </Card>
+    </motion.div>
+  );
+}
+
+function SkeletonBlock({ className = "" }) {
+  return <span className={`dashboard-skeleton-bar block rounded-md ${className}`} aria-hidden="true" />;
+}
+
+function DashboardSkeleton() {
+  const cards = (count, className = "") => Array.from({ length: count }, (_, index) => (
+    <div key={index} className={`luxury-card rounded-lg border border-border bg-white p-5 ${className}`}>
+      <SkeletonBlock className="h-2.5 w-24" />
+      <SkeletonBlock className="mt-4 h-6 w-32" />
+    </div>
+  ));
+
+  return (
+    <div className="dashboard-loading space-y-6" role="status" aria-live="polite" aria-busy="true" aria-label="Loading dashboard">
+      <div className="space-y-3">
+        <SkeletonBlock className="h-2.5 w-36" />
+        <SkeletonBlock className="h-9 w-64 max-w-full" />
+        <SkeletonBlock className="h-3 w-72 max-w-full" />
       </div>
-      {children}
-    </Card>
+      <div className="luxury-card rounded-lg border border-border bg-white p-5">
+        <SkeletonBlock className="h-2.5 w-40" />
+        <SkeletonBlock className="mt-4 h-8 w-44" />
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards(4)}</div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards(4)}</div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">{cards(3)}</div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8">{cards(8, "!p-3")}</div>
+      <div className="luxury-card rounded-lg border border-border bg-white p-5">
+        <SkeletonBlock className="mb-5 h-4 w-32" />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+          {Array.from({ length: 7 }, (_, index) => (
+            <div key={index} className="flex flex-col items-center gap-2 rounded-lg border border-border bg-white/70 p-4">
+              <SkeletonBlock className="h-5 w-5 rounded-full" />
+              <SkeletonBlock className="h-3 w-20 max-w-full" />
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">{cards(6)}</div>
+    </div>
   );
 }
 
@@ -75,12 +124,12 @@ export default function Dashboard() {
     } catch (e) { toast.error(apiError(e)); } finally { setDieselSaving(false); }
   };
 
-  if (!d) return <div className="text-slate-400">Loading dashboard...</div>;
+  if (!d) return <DashboardSkeleton />;
 
   const empty = (t) => <p className="text-sm text-slate-400 py-3">{t}</p>;
 
   return (
-    <div className="space-y-6">
+    <div className="dashboard-stagger space-y-6">
       <div>
         <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-primary">{user?.name || "Company"} · Operations</p>
         <h1 className="text-3xl sm:text-4xl font-normal text-slate-900 font-display mt-1">Business overview</h1>
@@ -135,21 +184,21 @@ export default function Dashboard() {
         {[["Resting", d.resting.length, "/production"], ["Ready to Cut", d.ready_cutting.length, "/production"], ["Done Today", d.completed_today, "/production"],
           ["Orders to Send", d.orders_open_count, "/orders"], ["Urgent Orders", d.urgent_orders, "/orders"], ["Vehicles Free", `${d.vehicles_available}/${d.vehicles_total}`, "/fleet"],
           ["Parts to Buy", d.parts_to_buy_count, "/fleet"], ["Maintenance Due", d.maintenance_due, "/fleet"]].map(([l, v, to]) => (
-          <button key={l} onClick={() => nav(to)} className="rounded-lg border border-border bg-white/85 p-3 text-left hover:border-primary/50 hover:bg-white transition-colors" data-testid={`op-kpi-${l.toLowerCase().replace(/\s/g, "-")}`}>
+          <motion.button key={l} whileHover={{ y: -2, scale: 1.01 }} whileTap={{ scale: 0.99 }} transition={{ type: "spring", stiffness: 420, damping: 24, mass: 0.5 }} onClick={() => nav(to)} className="premium-button rounded-lg border border-border bg-white/85 p-3 text-left hover:border-primary/50 hover:bg-white transition-colors" data-testid={`op-kpi-${l.toLowerCase().replace(/\s/g, "-")}`}>
             <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-slate-500">{l}</p><p className="text-xl font-semibold font-mono tabular-nums text-slate-800 mt-1">{v}</p>
-          </button>))}
+          </motion.button>))}
       </div>
 
       {/* Quick actions */}
-      <Card className="p-5">
+      <Card className="premium-card p-5">
         <h3 className="font-bold text-slate-800 mb-4 font-display">Quick Actions</h3>
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
           {QUICK.map((q) => (
-            <button key={q.label} onClick={() => nav(q.to)} data-testid={`quick-${q.label.toLowerCase().replace(/\s/g, "-")}`}
-              className="flex flex-col items-center gap-2 rounded-lg border border-border bg-white/70 p-4 hover:border-primary/50 hover:bg-accent/35 transition-colors">
+            <motion.button key={q.label} whileHover={{ y: -2, scale: 1.01 }} whileTap={{ scale: 0.985 }} transition={{ type: "spring", stiffness: 430, damping: 24, mass: 0.5 }} onClick={() => nav(q.to)} data-testid={`quick-${q.label.toLowerCase().replace(/\s/g, "-")}`}
+              className="premium-button flex flex-col items-center gap-2 rounded-lg border border-border bg-white/70 p-4 hover:border-primary/50 hover:bg-accent/35 transition-colors">
               <q.icon size={19} strokeWidth={1.8} className="text-primary" />
               <span className="text-xs font-semibold text-slate-700 text-center">{q.label}</span>
-            </button>
+            </motion.button>
           ))}
         </div>
       </Card>

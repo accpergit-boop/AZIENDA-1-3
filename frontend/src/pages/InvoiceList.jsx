@@ -13,13 +13,14 @@ export default function InvoiceList() {
   const { user } = useAuth();
   const unifiedPriceList = usesUnifiedPriceList(user?.company_id);
   const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [sp] = useSearchParams();
   const [q, setQ] = useState(sp.get("q") || "");
   const [status, setStatus] = useState("all");
   const [zone, setZone] = useState("all");
   const nav = useNavigate();
   const [sel, setSel] = useState([]);
-  const load = () => api.get("/invoices").then((d) => { setList(d); setSel([]); });
+  const load = () => api.get("/invoices").then((d) => { setList(d); setSel([]); }).catch((e) => toast.error(apiError(e))).finally(() => setLoading(false));
   useEffect(() => { load(); }, []);
 
   const toggle = (id) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
@@ -39,7 +40,7 @@ export default function InvoiceList() {
 
   return (
     <div>
-      <PageHeader title="Invoices" subtitle={`${list.length} invoices`}>
+      <PageHeader title="Invoices" subtitle={loading ? "Loading invoices..." : `${list.length} invoices`}>
         <Btn onClick={() => nav("/invoices/new")} data-testid="new-invoice-btn"><Plus size={16} /> Create Invoice</Btn>
       </PageHeader>
 
@@ -64,7 +65,7 @@ export default function InvoiceList() {
       </div>}
 
       <Card className="overflow-hidden">
-        {filtered.length === 0 ? <Empty icon={FileText} title="No invoices found" hint="Create your first invoice to get started." /> : (
+        {loading ? <p className="p-6 text-sm text-slate-400" role="status">Loading invoices...</p> : filtered.length === 0 ? <Empty icon={FileText} title="No invoices found" hint="Create your first invoice to get started." /> : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">

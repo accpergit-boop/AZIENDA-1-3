@@ -7,11 +7,8 @@ import { visualEdits } from "@emergentbase/visual-edits/vite";
 
 const require = createRequire(import.meta.url);
 
-// Supervisor exports DISABLE_HOT_RELOAD=true when the platform sets ENABLE_RELOAD=false.
-const hotReloadDisabled = process.env.DISABLE_HOT_RELOAD === "true";
-
 // Visual Edits (x-* JSX tagging, overlay, /edit-file endpoint) is dev-server-only by
-// default (apply: serve); escape hatch mirrors DISABLE_HOT_RELOAD.
+// default (apply: serve).
 const visualEditsDisabled = process.env.DISABLE_VISUAL_EDITS === "true";
 
 // Branded error overlay (build + runtime errors); escape hatch mirrors the two above.
@@ -70,10 +67,8 @@ function jsxInJs({ tagForVisualEdits }) {
 }
 
 // Pod inotify quota is node-shared and routinely exhausted; native fs.watch EMFILEs at
-// boot. Polling is the load-bearing default (set before Vite evaluates the config).
-if (!hotReloadDisabled) {
-  process.env.CHOKIDAR_USEPOLLING = "true";
-}
+// boot. Polling keeps file updates and browser HMR reliable on Emergent.
+process.env.CHOKIDAR_USEPOLLING = "true";
 
 // https://vite.dev/config/
 export default defineConfig(async ({ mode, command }) => {
@@ -177,13 +172,18 @@ export default defineConfig(async ({ mode, command }) => {
       host: true,
       port: 3000,
       allowedHosts: true,
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+      },
       // Preview probe + /edit-file are cross-origin from the Emergent tab; Vite defaults to localhost-only CORS.
       cors: true,
       // No hmr.clientPort override: Vite infers the WS target from window.location, which
       // is correct on both localhost:3000 (smoke) and the https/:443 preview proxy.
       // Build-error rendering: emergent-overlay when it loaded, else Vite's own overlay.
-      hmr: hotReloadDisabled ? false : { overlay: !emergentOverlay },
-      watch: hotReloadDisabled ? null : { usePolling: true, interval: 300 },
+      hmr: { overlay: !emergentOverlay },
+      watch: { usePolling: true, interval: 300 },
     },
   };
 });

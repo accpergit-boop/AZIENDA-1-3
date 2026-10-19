@@ -44,6 +44,7 @@ function NoteModal({ order, vehicleName, settings, onClose }) {
 
 export default function Orders() {
   const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [customers, setCustomers] = useState([]);
   const [vehicles, setVehicles] = useState([]);
   const [filter, setFilter] = useState("open");
@@ -53,7 +54,7 @@ export default function Orders() {
   const [settings, setSettings] = useState({});
   const products = [...new Set(stock.map((s) => s.product))];
 
-  const load = () => { api.get("/orders").then(setList); };
+  const load = () => { api.get("/orders").then(setList).catch((e) => toast.error(apiError(e))).finally(() => setLoading(false)); };
   useEffect(() => { load(); api.get("/customers").then(setCustomers); api.get("/vehicles").then(setVehicles); api.get("/stock").then(setStock); api.get("/settings").then(setSettings); }, []);
 
   const vName = (id) => vehicles.find((v) => v.id === id)?.name;
@@ -101,13 +102,13 @@ export default function Orders() {
         {tabs.map((t) => (
           <button key={t} onClick={() => setFilter(t)} data-testid={`order-filter-${t.toLowerCase().replace(/\s/g, "-")}`}
             className={`px-3.5 py-1.5 rounded-full text-xs font-semibold border transition-colors ${filter === t ? "bg-primary text-white border-primary" : "bg-white text-slate-600 border-border hover:border-primary"}`}>
-            {t === "open" ? "Open" : t === "all" ? "All" : t} <span className="opacity-70 ml-1">{count(t)}</span>
+            {t === "open" ? "Open" : t === "all" ? "All" : t} <span className="opacity-70 ml-1">{loading ? "..." : count(t)}</span>
           </button>
         ))}
       </div>
 
       <Card className="overflow-hidden">
-        {shown.length === 0 ? <Empty icon={ClipboardList} title="No orders here" hint="Create an order to start tracking shipments." /> : (
+        {loading ? <p className="p-6 text-sm text-slate-400" role="status">Loading orders...</p> : shown.length === 0 ? <Empty icon={ClipboardList} title="No orders here" hint="Create an order to start tracking shipments." /> : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm min-w-[960px]">
               <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
