@@ -10,6 +10,10 @@ Same conventions as the classic `shadcn` (fastapi_react_mongo_shadcn) template: 
 `process.env.REACT_APP_BACKEND_URL` from `frontend/.env` (Vite inlines every `REACT_APP_*` key
 at build time via `vite.config.mjs`).
 
+For local setup, copy `frontend/.env.example` to `frontend/.env` and set the backend URL.
+Copy `backend/.env.example` to `backend/.env` and replace its placeholders with your local
+database connection and private credentials. Never commit the populated `.env` files.
+
 ## Scripts
 
 - `yarn start` / `yarn dev` — Vite dev server on port 3000 (supervisor runs `yarn start`)
