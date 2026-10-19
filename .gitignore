@@ -32,8 +32,16 @@ dist
 
 # Environment files (comprehensive coverage)
 
+.env
+.env.*
+!.env.example
+!.env.*.example
 *token.json*
 *credentials.json*
+
+# Local runtime configuration and QA captures
+.emergent/cron/
+/test_reports/qa-*/
 
 # Logs and debug files
 npm-debug.log*
