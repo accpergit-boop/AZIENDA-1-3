@@ -21,3 +21,12 @@ Private ERP for SUPER IQ-FOAM (foam/mattress manufacturer & wholesaler, Kokstad,
 ## Backlog
 - P1 Phase B: Orders with product lines & ordered/assigned/dispatched/delivered/remaining qty; deliveries linked to multiple orders, partial deliveries, actual delivered qty; vehicle/driver overlap warnings & suggested vehicle; invoice order-matching import + duplicate invoicing guard; cash collected reconciliation.
 - P2 Phase C: Cutting & Mattress Processing (stages, bundles 5/10), Reports page, global search (all entities), weekly work assignments, settings UI for bundle sizes/vehicle types/categories, demand-aware production recommendations, login brute-force lockout, void path for mistaken spare-part purchases, shadcn date pickers.
+
+## 2026-10-19 — Multi-company migration verification
+- Code = GitHub editfoto391-del/AZIENDA-1- @ feature/multicompany-erp 1b7452d (tree 760f05c1), plus 1-line lint fix (duplicate tenancy import in server.py) and FitPreview in InvoiceEditor.jsx.
+- Backup: /app/backups/pre_migration_20261019_193756 (read-only, sha256 file alongside, restore-verified).
+- 26 opening balances restored to superiqfoam via /api/customers/import: total R 905,471.00 (they had been deleted with the 17/10 bulk invoice delete).
+- Profile passwords set (see test_credentials.md). Isolation verified: non-owner profiles get 403 on other companies; separate DBs test_database__<company>.
+- Left as-is by user choice: TEST records in the 2 new profiles; customers test_qa_2010140f and zuneer in superiqfoam.
+- Invoice preview no longer clipped; PDF verified (1 page, complete). Delivery note: user tests it.
+- Pending: banking details (shows N/A), employee names, mattress weights.

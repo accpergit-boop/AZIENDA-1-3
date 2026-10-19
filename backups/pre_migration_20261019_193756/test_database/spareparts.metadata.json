@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"},{"v":{"$numberInt":"2"},"key":{"company_id":{"$numberInt":"1"}},"name":"company_id_1"}],"uuid":"49ae382ee20f4b7db7465f85a8b27721","collectionName":"spareparts","type":"collection"}

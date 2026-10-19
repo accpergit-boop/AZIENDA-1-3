@@ -485,9 +485,9 @@ export default function InvoiceEditor() {
               <button className="rounded-md bg-primary text-white py-2 text-sm font-semibold" data-testid="tab-preview">Invoice Preview</button>
               <button onClick={downloadPDF} className="rounded-md py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50" data-testid="tab-pdf">PDF</button>
             </div>
-            <Card className="p-3 overflow-hidden"><div style={{ zoom: 0.6 }}>
+            <Card className="p-3 overflow-hidden"><FitPreview>
               <InvoiceDocument inv={inv} totals={totals} settings={settings} customer={custObj} />
-            </div></Card>
+            </FitPreview></Card>
           </div>
           <div style={{ position: "fixed", left: -10000, top: 0 }} aria-hidden="true"><InvoiceDocument ref={docRef} inv={inv} totals={totals} settings={settings} customer={custObj} /></div>
         </div>
@@ -512,4 +512,17 @@ export default function InvoiceEditor() {
       </Modal>
     </div>
   );
+}
+
+function FitPreview({ children }) {
+  const box = useRef(null);
+  const [zoom, setZoom] = useState(0.6);
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => setZoom(Math.min(1, e.contentRect.width / 794)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return <div ref={box} data-testid="invoice-preview-fit"><div style={{ zoom }}>{children}</div></div>;
 }

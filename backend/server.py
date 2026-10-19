@@ -20,7 +20,6 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 import seed_data
-from tenancy import DEFAULT_COMPANY_ID, GLOBAL_COLLECTIONS, ScopedDatabase, active_company_id, tenant_database
 from tenancy import DEFAULT_COMPANY_ID, GLOBAL_COLLECTIONS, ScopedDatabase, active_company_id, tenant_database, uses_unified_price_list
 
 mongo_url = os.environ['MONGO_URL']
