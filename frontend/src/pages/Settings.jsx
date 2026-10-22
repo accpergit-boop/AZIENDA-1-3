@@ -10,7 +10,7 @@ import { usesUnifiedPriceList } from "@/lib/company";
 const TABS = [
   { k: "company", l: "Company", icon: Building2 },
   { k: "invoice", l: "Invoice & Tax", icon: Receipt },
-  { k: "prices", l: "Price Lists", icon: Tag },
+  { k: "prices", l: "Price List and Products", icon: Tag },
   { k: "drivers", l: "Drivers", icon: Truck },
   { k: "diesel", l: "Diesel", icon: Fuel },
   { k: "access", l: "Access", icon: ShieldCheck },
@@ -200,10 +200,21 @@ export default function Settings() {
 
   const savePrice = async () => {
     try {
-      const body = { ...pModal, zone: unifiedPriceList ? 1 : pModal.zone, price: pModal.price === "" ? null : Number(pModal.price) };
+      if (!pModal.category?.trim()) return toast.error("Product name is required");
+      if (!pModal.size?.trim()) return toast.error("Size or unit is required");
+      if (pModal.price === "" || !(Number(pModal.price) > 0)) return toast.error("Enter a valid product price");
+      const body = {
+        ...pModal,
+        category: pModal.category.trim(),
+        size: pModal.size.trim(),
+        zone: unifiedPriceList ? 1 : pModal.zone,
+        price: Number(pModal.price),
+      };
       if (pModal.id) await api.put(`/prices/${pModal.id}`, body);
       else await api.post("/prices", body);
-      toast.success("Price saved"); setPModal(null); api.get("/prices").then(setPrices);
+      toast.success(pModal.newProduct ? "Product saved and available on invoices" : "Price saved");
+      setPModal(null);
+      setPrices(await api.get("/prices"));
     } catch (e) { toast.error(apiError(e)); }
   };
 
@@ -217,6 +228,7 @@ export default function Settings() {
 
   if (!s) return <div className="text-slate-400">Loading...</div>;
   const zonePrices = prices.filter((p) => p.zone === (unifiedPriceList ? 1 : zone));
+  const priceProductName = (category) => ["Standard", "Simple"].includes(category) ? "Simple/Mix color" : category;
 
   return (
     <div>
@@ -267,24 +279,28 @@ export default function Settings() {
       {tab === "prices" && (
         <div>
           <div className="flex items-center justify-between mb-4">
-            {!unifiedPriceList && <div className="flex gap-2">
+            <div className="flex gap-2">
+              <Btn onClick={() => setPModal({ zone: unifiedPriceList ? 1 : zone, category: "", size: "Unit", price: "", active: true, newProduct: true })} data-testid="add-product-btn"><Plus size={16} /> Add Product</Btn>
+              {!unifiedPriceList && <>
               {[1, 2].map((z) => <button key={z} onClick={() => setZone(z)} className={`px-4 py-2 rounded-lg text-sm font-semibold ${zone === z ? "bg-primary text-white" : "bg-white border border-border text-slate-600"}`}>Zone {z}</button>)}
-            </div>}
-            <Btn onClick={() => setPModal({ zone: unifiedPriceList ? 1 : zone, category: unifiedPriceList ? "Simple" : "Standard", size: "", price: "", active: true })} data-testid="add-price-btn"><Plus size={16} /> Add Price</Btn>
+              </>}
+            </div>
+            <Btn onClick={() => setPModal({ zone: unifiedPriceList ? 1 : zone, category: "Simple/Mix color", size: "", price: "", active: true })} data-testid="add-price-btn"><Plus size={16} /> Add Price</Btn>
           </div>
+          <p className="mb-3 text-sm text-slate-500">Add a product with a name and price to make it immediately selectable in invoice product lists.</p>
           <Card className="overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
-                  <th className="px-4 py-3 font-semibold">Category</th><th className="px-4 font-semibold">Size</th><th className="px-4 font-semibold text-right">Unit Price</th><th className="px-4 font-semibold text-center">Status</th><th className="px-4 font-semibold text-right">Edit</th>
+                  <th className="px-4 py-3 font-semibold">Product / Category</th><th className="px-4 font-semibold">Size / Unit</th><th className="px-4 font-semibold text-right">Unit Price</th><th className="px-4 font-semibold text-center">Status</th><th className="px-4 font-semibold text-right">Edit</th>
                 </tr></thead>
                 <tbody>{zonePrices.map((p) => (
                   <tr key={p.id} className="border-b border-border/60 hover:bg-slate-50">
-                    <td className="px-4 py-2.5 font-semibold text-slate-700">{p.category}</td>
+                    <td className="px-4 py-2.5 font-semibold text-slate-700">{priceProductName(p.category)}</td>
                     <td className="px-4 font-mono text-slate-600">{p.size}</td>
                     <td className="px-4 text-right font-mono">{p.price == null ? <span className="text-red-600 text-xs font-semibold">NEEDS CONFIG</span> : fmtMoney(p.price)}</td>
                     <td className="px-4 text-center"><Badge cls={p.active ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-500 border-slate-200"}>{p.active ? "Active" : "Inactive"}</Badge></td>
-                    <td className="px-4 text-right"><button onClick={() => setPModal({ ...p, price: p.price == null ? "" : p.price })} className="text-slate-400 hover:text-primary p-1" data-testid={`edit-price-${p.id}`}><Pencil size={15} /></button></td>
+                    <td className="px-4 text-right"><button onClick={() => setPModal({ ...p, category: priceProductName(p.category), price: p.price == null ? "" : p.price })} className="text-slate-400 hover:text-primary p-1" data-testid={`edit-price-${p.id}`}><Pencil size={15} /></button></td>
                   </tr>))}</tbody>
               </table>
             </div>
@@ -328,13 +344,13 @@ export default function Settings() {
         </div>}
       </Modal>
 
-      <Modal open={!!pModal} onClose={() => setPModal(null)} title={pModal?.id ? "Edit Price" : "Add Price"}>
+      <Modal open={!!pModal} onClose={() => setPModal(null)} title={pModal?.id ? "Edit Product Price" : pModal?.newProduct ? "Add Product" : "Add Price"}>
         {pModal && <div className="space-y-4">
           <div className={`grid ${unifiedPriceList ? "grid-cols-1" : "grid-cols-2"} gap-3`}>
             {!unifiedPriceList && <Select label="Zone" value={pModal.zone} onChange={(e) => setPModal({ ...pModal, zone: Number(e.target.value) })}><option value={1}>Zone 1</option><option value={2}>Zone 2</option></Select>}
-            <Input label="Category" value={pModal.category} onChange={(e) => setPModal({ ...pModal, category: e.target.value })} />
-          </div>
-          <Input label="Size" value={pModal.size} onChange={(e) => setPModal({ ...pModal, size: e.target.value })} placeholder="910x100" />
+            <Input label={pModal.newProduct ? "Product name" : "Product / Category"} value={pModal.category} onChange={(e) => setPModal({ ...pModal, category: e.target.value })} placeholder={pModal.newProduct ? "Enter product name" : "Product or category"} data-testid="price-product-name" />
+            </div>
+            {pModal.newProduct ? <p className="text-xs text-slate-500">This product will be available on invoices after saving.</p> : <Input label="Size / Unit" value={pModal.size} onChange={(e) => setPModal({ ...pModal, size: e.target.value })} placeholder="910x100 or Unit" />}
           <Input label="Unit Price (R) — leave empty if unconfirmed" type="number" step="0.01" value={pModal.price} onChange={(e) => setPModal({ ...pModal, price: e.target.value })} data-testid="price-value-input" />
           <label className="flex items-center gap-2 text-sm font-semibold text-slate-600"><input type="checkbox" checked={pModal.active} onChange={(e) => setPModal({ ...pModal, active: e.target.checked })} /> Active</label>
           <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setPModal(null)}>Cancel</Btn><Btn onClick={savePrice} data-testid="save-price-btn">Save</Btn></div>

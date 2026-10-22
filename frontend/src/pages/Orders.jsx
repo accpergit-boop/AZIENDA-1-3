@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
-import { fmtDate } from "@/lib/format";
+import { fmtDate, documentFilename } from "@/lib/format";
 import { Card, Btn, Input, Select, Textarea, Badge, Modal, PageHeader, Empty } from "@/components/common";
 import { ClipboardList, Plus, Trash2, Pencil, ArrowRight, FileText, Printer, Download } from "lucide-react";
 import { useRef } from "react";
@@ -21,13 +21,13 @@ const P_META = {
 };
 const P_RANK = { Urgent: 0, High: 1, Normal: 2, Low: 3 };
 const OPEN = ["To Send", "Preparing", "Assigned"];
-const blank = () => ({ customer_id: "", customer_name: "", destination: "", products: "", items: [{ qty: "", category: "", size: "" }], priority: "Normal", status: "To Send", expected_ship_date: "", vehicle_id: "", notes: "" });
+const blank = () => ({ customer_id: "", customer_name: "", customer_address: "", customer_phone: "", customer_email: "", invoice_id: "", invoice_number: "", destination: "", products: "", items: [{ qty: "", category: "", size: "" }], priority: "Normal", status: "To Send", expected_ship_date: "", vehicle_id: "", notes: "" });
 
 function NoteModal({ order, vehicleName, settings, onClose }) {
   const ref = useRef(null);
   const [lang, setLang] = useState("en");
   const [busy, setBusy] = useState(false);
-  const pdf = async () => { setBusy(true); try { await elementToPdf(ref.current, `delivery-note-${order.reference}-${lang}.pdf`); } catch (e) { toast.error(e.message); } finally { setBusy(false); } };
+  const pdf = async () => { setBusy(true); try { await elementToPdf(ref.current, `${documentFilename("Delivery-note", order.customer_name || "Customer", order.reference, lang)}.pdf`); } catch (e) { toast.error(e.message); } finally { setBusy(false); } };
   return (
     <Modal open={!!order} onClose={onClose} title={`Delivery Note ${order?.reference || ""}`} wide>
       {order && <div className="space-y-4">
@@ -46,6 +46,7 @@ export default function Orders() {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [customers, setCustomers] = useState([]);
+  const [invoices, setInvoices] = useState([]);
   const [vehicles, setVehicles] = useState([]);
   const [filter, setFilter] = useState("open");
   const [modal, setModal] = useState(null);
@@ -55,7 +56,14 @@ export default function Orders() {
   const products = [...new Set(stock.map((s) => s.product))];
 
   const load = () => { api.get("/orders").then(setList).catch((e) => toast.error(apiError(e))).finally(() => setLoading(false)); };
-  useEffect(() => { load(); api.get("/customers").then(setCustomers); api.get("/vehicles").then(setVehicles); api.get("/stock").then(setStock); api.get("/settings").then(setSettings); }, []);
+  useEffect(() => {
+    load();
+    api.get("/customers").then(setCustomers).catch((e) => toast.error(apiError(e)));
+    api.get("/invoices").then(setInvoices).catch((e) => toast.error(apiError(e)));
+    api.get("/vehicles").then(setVehicles).catch((e) => toast.error(apiError(e)));
+    api.get("/stock").then(setStock).catch((e) => toast.error(apiError(e)));
+    api.get("/settings").then(setSettings).catch((e) => toast.error(apiError(e)));
+  }, []);
 
   const vName = (id) => vehicles.find((v) => v.id === id)?.name;
   const shown = useMemo(() => {
@@ -66,15 +74,49 @@ export default function Orders() {
 
   const pickCustomer = (id) => {
     const c = customers.find((x) => x.id === id);
-    setModal({ ...modal, customer_id: id, customer_name: c?.name || "", destination: modal.destination || c?.city || c?.address || "" });
+    setModal({
+      ...modal,
+      customer_id: id,
+      customer_name: c?.name || "",
+      customer_address: c?.address || "",
+      customer_phone: c?.phone || "",
+      customer_email: c?.email || "",
+      invoice_id: "",
+      invoice_number: "",
+      destination: c?.city || c?.address || "",
+      items: [{ qty: "", category: "", size: "" }],
+      products: "",
+    });
+  };
+
+  const pickInvoice = (id) => {
+    const invoice = invoices.find((item) => item.id === id);
+    if (!invoice) {
+      setModal({ ...modal, invoice_id: "", invoice_number: "", items: [{ qty: "", category: "", size: "" }], products: "" });
+      return;
+    }
+    const items = (invoice.items || []).filter((item) => Number(item.qty) > 0 && (item.category || item.size || item.description)).map((item) => ({
+      qty: item.qty,
+      category: item.category || "",
+      size: item.size || "",
+      description: item.description || "",
+    }));
+    setModal({
+      ...modal,
+      invoice_id: invoice.id,
+      invoice_number: invoice.number || invoice.reference || "",
+      destination: invoice.destination || modal.destination,
+      items,
+      products: items.map((item) => `${item.qty} x ${[item.category, item.size, item.description].filter(Boolean).join(" ")}`).join("\n"),
+    });
   };
 
   const save = async () => {
     if (!modal.customer_id && !modal.customer_name.trim()) return toast.error("Customer required");
     if (!modal.destination.trim()) return toast.error("City / destination required");
     try {
-      const items = (modal.items || []).filter((i) => Number(i.qty) > 0 && i.category).map((i) => ({ ...i, qty: Number(i.qty) }));
-      const payload = { ...modal, items, products: items.map((i) => `${i.qty} x ${i.category} ${i.size}`.trim()).join("\n") || modal.products };
+      const items = (modal.items || []).filter((i) => Number(i.qty) > 0 && (i.category || i.size || i.description)).map((i) => ({ ...i, qty: Number(i.qty) }));
+      const payload = { ...modal, items, products: items.map((i) => `${i.qty} x ${[i.category, i.size, i.description].filter(Boolean).join(" ")}`).join("\n") || modal.products };
       if (modal.id) await api.put(`/orders/${modal.id}`, payload);
       else await api.post("/orders", payload);
       toast.success("Order saved"); setModal(null); load();
@@ -116,7 +158,7 @@ export default function Orders() {
               </tr></thead>
               <tbody>{shown.map((o) => (
                 <tr key={o.id} className="border-b border-border/60 hover:bg-slate-50 align-top" data-testid={`order-row-${o.id}`}>
-                  <td className="px-4 py-3 font-mono font-semibold text-slate-800 whitespace-nowrap">{o.reference}</td>
+                  <td className="px-4 py-3 font-mono font-semibold text-slate-800 whitespace-nowrap">{o.reference}{o.invoice_number && <span className="block font-sans text-[10px] font-medium text-slate-400">Invoice {o.invoice_number}</span>}</td>
                   <td className="px-4 py-3 font-semibold text-slate-700">{o.customer_name || "-"}</td>
                   <td className="px-4 py-3 text-slate-500">{o.destination}</td>
                   <td className="px-4 py-3 text-slate-600 max-w-[240px] whitespace-pre-line">{orderLines(o).map((l) => `${l.qty} × ${[l.category, l.size].filter(Boolean).join(" ")}`).join("\n") || "-"}</td>
@@ -145,6 +187,12 @@ export default function Orders() {
             <Select label="Customer *" value={modal.customer_id} onChange={(e) => pickCustomer(e.target.value)} data-testid="order-customer-select">
               <option value="">Select customer...</option>{customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </Select>
+            {!modal.id && <Select label="Invoice" value={modal.invoice_id || ""} onChange={(e) => pickInvoice(e.target.value)} disabled={!modal.customer_id} data-testid="order-invoice-select">
+              <option value="">Select an invoice...</option>
+              {invoices.filter((invoice) => invoice.customer_id === modal.customer_id && !invoice.opening_balance && invoice.status !== "void").map((invoice) => (
+                <option key={invoice.id} value={invoice.id}>{invoice.number || invoice.reference || invoice.id} · {invoice.date || "Undated"}</option>
+              ))}
+            </Select>}
             <Input label="City / Destination *" value={modal.destination} onChange={(e) => setModal({ ...modal, destination: e.target.value })} data-testid="order-destination-input" />
             <Select label="Priority" value={modal.priority} onChange={(e) => setModal({ ...modal, priority: e.target.value })} data-testid="order-priority-select">
               {PRIORITIES.map((p) => <option key={p}>{p}</option>)}
@@ -165,9 +213,9 @@ export default function Orders() {
                 <div key={i} className="flex gap-2" data-testid={`order-item-${i}`}>
                   <input type="number" min="0" placeholder="Qty" value={it.qty} onChange={(e) => set({ qty: e.target.value })} className="w-20 rounded border border-input px-2 py-1.5 text-sm" data-testid={`order-item-qty-${i}`} />
                   <select value={it.category} onChange={(e) => set({ category: e.target.value, size: "" })} className="flex-1 rounded border border-input px-2 py-1.5 text-sm" data-testid={`order-item-cat-${i}`}>
-                    <option value="">Product...</option>{products.map((p) => <option key={p}>{p}</option>)}</select>
+                    <option value="">Product...</option>{it.category && !products.includes(it.category) && <option>{it.category}</option>}{products.map((p) => <option key={p}>{p}</option>)}</select>
                   <select value={it.size} onChange={(e) => set({ size: e.target.value })} className="w-32 rounded border border-input px-2 py-1.5 text-sm" data-testid={`order-item-size-${i}`}>
-                    <option value="">Size...</option>{stock.filter((s) => s.product === it.category).map((s) => <option key={s.id}>{s.size}</option>)}</select>
+                    <option value="">Size...</option>{it.size && !stock.some((s) => s.product === it.category && s.size === it.size) && <option>{it.size}</option>}{stock.filter((s) => s.product === it.category).map((s) => <option key={s.id}>{s.size}</option>)}</select>
                   <button onClick={() => setModal({ ...modal, items: modal.items.filter((_, k) => k !== i) })} className="text-slate-300 hover:text-red-600"><Trash2 size={15} /></button>
                 </div>);
             })}</div>

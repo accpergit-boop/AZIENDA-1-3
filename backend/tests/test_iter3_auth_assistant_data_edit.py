@@ -177,6 +177,9 @@ class TestInvoiceEdit:
         assert "items" in fields and "total" in fields and fields["total"]["old"] == 342 and fields["total"]["new"] == 513
         g = requests.get(f"{API}/invoices/{iid}", headers=H).json()
         assert g["total"] == 513 and g["number"] == num
+        r = requests.put(f"{API}/invoices/{iid}", json={**base, "opening_balance": False, "edit_reason": "convert balance"}, headers=H)
+        assert r.status_code == 200, r.text
+        assert not r.json().get("opening_balance")
         mdb.invoices.update_one({"id": iid}, {"$unset": {"opening_balance": ""}})
         # pay 400, then edit below paid
         p = requests.post(f"{API}/invoices/{iid}/payments", json={"amount": 400}, headers=H)

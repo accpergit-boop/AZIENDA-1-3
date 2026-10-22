@@ -1,14 +1,13 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
 import { motion, useReducedMotion } from "framer-motion";
-import { api, apiError } from "@/lib/api";
-import { fmtMoney, fmtDate, fmtDateTime, STATUS_META } from "@/lib/format";
-import { Card, Badge, Btn, Input, Modal } from "@/components/common";
+import { api } from "@/lib/api";
+import { fmtMoney, fmtDate, STATUS_META } from "@/lib/format";
+import { Card, Badge } from "@/components/common";
 import { useAuth } from "@/context/AuthContext";
 import {
   Receipt, Wallet, AlertTriangle, Boxes, Plus, UserPlus, CreditCard,
-  PackagePlus, Factory, CalendarCheck, Truck, TrendingUp, Scissors, ArrowRight, Banknote, ClipboardList, Wrench, Fuel, Pencil,
+  PackagePlus, Factory, CalendarCheck, Truck, TrendingUp, ArrowRight, Banknote, ClipboardList,
 } from "lucide-react";
 
 const QUICK = [
@@ -77,14 +76,8 @@ function DashboardSkeleton() {
         <SkeletonBlock className="h-9 w-64 max-w-full" />
         <SkeletonBlock className="h-3 w-72 max-w-full" />
       </div>
-      <div className="luxury-card rounded-lg border border-border bg-white p-5">
-        <SkeletonBlock className="h-2.5 w-40" />
-        <SkeletonBlock className="mt-4 h-8 w-44" />
-      </div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards(4)}</div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards(4)}</div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">{cards(3)}</div>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8">{cards(8, "!p-3")}</div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards(7)}</div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">{cards(5, "!p-3")}</div>
       <div className="luxury-card rounded-lg border border-border bg-white p-5">
         <SkeletonBlock className="mb-5 h-4 w-32" />
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
@@ -103,26 +96,10 @@ function DashboardSkeleton() {
 
 export default function Dashboard() {
   const [d, setD] = useState(null);
-  const [dieselModal, setDieselModal] = useState(false);
-  const [dieselPrice, setDieselPrice] = useState("");
-  const [dieselSaving, setDieselSaving] = useState(false);
   const nav = useNavigate();
   const { user } = useAuth();
 
   useEffect(() => { api.get("/dashboard").then(setD).catch(() => {}); }, []);
-
-  const saveDieselPrice = async () => {
-    const price = Number(dieselPrice);
-    if (!Number.isFinite(price) || price <= 0) return toast.error("Enter a valid diesel price");
-    setDieselSaving(true);
-    try {
-      const saved = await api.put("/settings/diesel", { price_per_l: price });
-      setD((current) => ({ ...current, diesel_price: saved.diesel_price, diesel_price_date: saved.diesel_price_date,
-        diesel_updated_at: saved.diesel_updated_at, diesel_sources: saved.diesel_sources, diesel_price_current: true }));
-      setDieselModal(false);
-      toast.success("Diesel price updated");
-    } catch (e) { toast.error(apiError(e)); } finally { setDieselSaving(false); }
-  };
 
   if (!d) return <DashboardSkeleton />;
 
@@ -136,54 +113,24 @@ export default function Dashboard() {
         <p className="text-sm text-slate-500 mt-1">Performance, cash flow and daily operations</p>
       </div>
 
-      <section className="luxury-card rounded-lg border border-[hsl(42_31%_74%)] bg-[hsl(68_28%_91%)] px-5 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" data-testid="dashboard-diesel-price">
-        <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-primary">Diesel 50ppm · Kokstad zone</p>
-          <p className="mt-1 text-3xl font-semibold font-mono tabular-nums text-slate-900">{d.diesel_price_current ? `R ${Number(d.diesel_price).toFixed(2)}/L` : "Current price unavailable"}</p>
-          {!d.diesel_price_current && d.diesel_price != null && <p className="text-sm font-semibold text-amber-800 mt-1">Last saved: R {Number(d.diesel_price).toFixed(2)}/L · OUTDATED</p>}
-          {d.diesel_updated_at && <p className="text-xs text-slate-600 mt-1">Updated {fmtDateTime(d.diesel_updated_at)}</p>}
+      <section data-testid="dashboard-monthly-summary">
+        <h2 className="mb-3 text-xs font-bold uppercase tracking-[0.16em] text-primary">This Month &amp; Business Balances</h2>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KPI title="This Month Final Profit" value={fmtMoney(d.month_profit?.profit)} icon={Wallet} tint={d.month_profit?.profit < 0 ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-600"} onClick={() => nav("/expenses")} />
+          <KPI title="Payments Received" value={fmtMoney(d.payments_received)} icon={Wallet} tint="bg-emerald-50 text-emerald-600" onClick={() => nav("/invoices")} />
+          <KPI title="This Month Buyings" value={fmtMoney(d.month_profit?.buyings)} icon={Boxes} tint="bg-violet-50 text-violet-600" onClick={() => nav("/buyings")} />
+          <KPI title="This Month Expenses" value={fmtMoney(d.month_profit?.expenses)} icon={Banknote} tint="bg-orange-50 text-orange-600" onClick={() => nav("/expenses")} />
+          <KPI title="Total Invoiced" value={fmtMoney(d.total_invoiced)} icon={Receipt} tint="bg-blue-50 text-blue-600" onClick={() => nav("/invoices")} />
+          <KPI title="Total Stock" value={d.finished_stock} icon={Boxes} tint="bg-amber-50 text-amber-600" onClick={() => nav("/stock")} />
+          <KPI title="Outstanding Balances" value={fmtMoney(d.outstanding)} icon={AlertTriangle} tint="bg-red-50 text-red-600" onClick={() => nav("/client-payments")} />
         </div>
-        <div className="flex items-center gap-4">
-          {d.diesel_sources?.[0] && <a href={d.diesel_sources[0]} target="_blank" rel="noreferrer" className="text-xs font-semibold text-primary underline underline-offset-4">View price source</a>}
-          <Btn variant="outline" onClick={() => { setDieselPrice(d.diesel_price == null ? "" : String(d.diesel_price)); setDieselModal(true); }} data-testid="change-diesel-price-btn"><Pencil size={15} /> Change price</Btn>
-        </div>
+        <p className="mt-2 text-xs text-slate-400">Final profit = payments received − expenses − buyings. Based on recorded transactions for this month.</p>
       </section>
 
-      <Modal open={dieselModal} onClose={() => setDieselModal(false)} title="Change Diesel Price">
-        <div className="space-y-4">
-          <Input label="Diesel price per litre (R)" type="number" min="0" step="0.01" value={dieselPrice} onChange={(e) => setDieselPrice(e.target.value)} data-testid="dashboard-diesel-price-input" />
-          <p className="text-xs text-slate-500">Check the current Kokstad price at <a href="https://petrolprices.co.za/" target="_blank" rel="noreferrer" className="font-semibold text-primary underline">PetrolPrices.co.za</a>.</p>
-          <div className="flex justify-end gap-2">
-            <Btn variant="outline" onClick={() => setDieselModal(false)}>Cancel</Btn>
-            <Btn onClick={saveDieselPrice} disabled={dieselSaving} data-testid="save-dashboard-diesel-price-btn">{dieselSaving ? "Saving..." : "Save price"}</Btn>
-          </div>
-        </div>
-      </Modal>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <KPI title="Payments Received" value={fmtMoney(d.payments_received)} icon={Wallet} tint="bg-emerald-50 text-emerald-600" onClick={() => nav("/invoices")} />
-        <KPI title="Total Invoiced" value={fmtMoney(d.total_invoiced)} icon={Receipt} tint="bg-blue-50 text-blue-600" onClick={() => nav("/invoices")} />
-        <KPI title="Outstanding Balances" value={fmtMoney(d.outstanding)} icon={AlertTriangle} tint="bg-red-50 text-red-600" onClick={() => nav("/invoices")} />
-        <KPI title="Finished Stock" value={d.finished_stock} icon={Boxes} tint="bg-amber-50 text-amber-600" onClick={() => nav("/stock")} />
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <KPI title="Overdue Balances" value={fmtMoney(d.overdue)} icon={AlertTriangle} tint="bg-red-50 text-red-700" onClick={() => nav("/invoices")} />
-        <KPI title="Revenue This Month" value={fmtMoney(d.month_profit?.revenue)} icon={TrendingUp} tint="bg-emerald-50 text-emerald-600" onClick={() => nav("/expenses")} />
-        <KPI title="Expenses This Month" value={fmtMoney(d.month_profit?.expenses)} icon={Banknote} tint="bg-orange-50 text-orange-600" onClick={() => nav("/expenses")} />
-        <KPI title="Est. Result This Month" value={fmtMoney(d.month_profit?.profit)} icon={Wallet} tint={d.month_profit?.profit < 0 ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-600"} onClick={() => nav("/expenses")} />
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <KPI title="Revenue This Week" value={fmtMoney(d.week_profit?.revenue)} icon={TrendingUp} tint="bg-emerald-50 text-emerald-600" onClick={() => nav("/expenses")} />
-        <KPI title="Expenses This Week" value={fmtMoney(d.week_profit?.expenses)} icon={Banknote} tint="bg-orange-50 text-orange-600" onClick={() => nav("/expenses")} />
-        <KPI title="Est. Result This Week" value={fmtMoney(d.week_profit?.profit)} icon={Wallet} tint={d.week_profit?.profit < 0 ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-600"} onClick={() => nav("/expenses")} />
-      </div>
-      <p className="text-xs text-slate-400 -mt-3">Revenue = payments actually received. Estimated result = payments − recorded expenses (incomplete cost data, not accounting profit). Weeks start Monday · Africa/Johannesburg.</p>
-
-      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-3">
-        {[["Resting", d.resting.length, "/production"], ["Ready to Cut", d.ready_cutting.length, "/production"], ["Done Today", d.completed_today, "/production"],
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+        {[["Done Today", d.completed_today, "/production"],
           ["Orders to Send", d.orders_open_count, "/orders"], ["Urgent Orders", d.urgent_orders, "/orders"], ["Vehicles Free", `${d.vehicles_available}/${d.vehicles_total}`, "/fleet"],
-          ["Parts to Buy", d.parts_to_buy_count, "/fleet"], ["Maintenance Due", d.maintenance_due, "/fleet"]].map(([l, v, to]) => (
+          ["Maintenance Due", d.maintenance_due, "/fleet"]].map(([l, v, to]) => (
           <motion.button key={l} whileHover={{ y: -2, scale: 1.01 }} whileTap={{ scale: 0.99 }} transition={{ type: "spring", stiffness: 420, damping: 24, mass: 0.5 }} onClick={() => nav(to)} className="premium-button rounded-lg border border-border bg-white/85 p-3 text-left hover:border-primary/50 hover:bg-white transition-colors" data-testid={`op-kpi-${l.toLowerCase().replace(/\s/g, "-")}`}>
             <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-slate-500">{l}</p><p className="text-xl font-semibold font-mono tabular-nums text-slate-800 mt-1">{v}</p>
           </motion.button>))}
@@ -214,13 +161,6 @@ export default function Dashboard() {
           ) : empty("No orders waiting to be sent.")}
         </Section>
 
-        <Section title="Fleet" icon={Wrench} action={<button onClick={() => nav("/fleet")} className="text-xs font-semibold text-primary flex items-center gap-1">View <ArrowRight size={12} /></button>}>
-          <div className="flex items-center justify-between rounded-lg bg-amber-50 border border-amber-100 px-3 py-3">
-            <span className="text-sm font-semibold text-slate-700">Spare parts to buy</span>
-            <Badge cls="bg-amber-100 text-amber-700 border-amber-200" data-testid="dash-parts-to-buy">{d.parts_to_buy_count || 0}</Badge>
-          </div>
-        </Section>
-
         <Section title="Low Stock Alerts" icon={AlertTriangle}>
           {d.low_stock.length === 0 ? empty("All stock above threshold.") : (
             <div className="space-y-2">
@@ -247,15 +187,6 @@ export default function Dashboard() {
           )}
         </Section>
 
-        <Section title="Foam Blocks Ready for Cutting" icon={Scissors}>
-          {d.ready_cutting.length === 0 ? empty("No blocks ready for cutting.") : (
-            <div className="space-y-2">{d.ready_cutting.map((p) => (
-              <div key={p.id} className="flex justify-between rounded-lg bg-emerald-50 border border-emerald-100 px-3 py-2">
-                <span className="text-sm font-semibold text-slate-700">{p.block_ref}</span><span className="text-xs text-slate-500">{fmtDate(p.production_date)}</span>
-              </div>))}</div>
-          )}
-        </Section>
-
         <Section title="Today's Attendance" icon={CalendarCheck} action={<button onClick={() => nav("/attendance")} className="text-xs font-semibold text-primary flex items-center gap-1">View <ArrowRight size={12} /></button>}>
           {d.attendance_today.length === 0 ? empty("No attendance recorded today.") : (
             <div className="space-y-2">{d.attendance_today.map((a) => (
@@ -274,7 +205,7 @@ export default function Dashboard() {
           )}
         </Section>
 
-        <Section title="Current Finished Stock" icon={Boxes} action={<button onClick={() => nav("/stock")} className="text-xs font-semibold text-primary flex items-center gap-1">View <ArrowRight size={12} /></button>}>
+        <Section title="Current Stock" icon={Boxes} action={<button onClick={() => nav("/stock")} className="text-xs font-semibold text-primary flex items-center gap-1">View <ArrowRight size={12} /></button>}>
           <div className="space-y-2">{d.current_stock.map((s) => (
             <div key={s.id} className="flex justify-between rounded-lg border border-border px-3 py-2">
               <span className="text-sm font-semibold text-slate-700">{s.product} <span className="text-slate-400 font-normal">· {s.size}</span></span>

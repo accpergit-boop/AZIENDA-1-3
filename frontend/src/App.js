@@ -11,6 +11,8 @@ const Login = lazy(() => import("@/pages/Login"));
 const Dashboard = lazy(pageLoaders["/"]);
 const Assistant = lazy(pageLoaders["/assistant"]);
 const Customers = lazy(pageLoaders["/customers"]);
+const ClientPayments = lazy(pageLoaders["/client-payments"]);
+const Buyings = lazy(pageLoaders["/buyings"]);
 const InvoiceList = lazy(pageLoaders["/invoices"]);
 const InvoiceEditor = lazy(pageLoaders["/invoices/new"]);
 const Orders = lazy(pageLoaders["/orders"]);
@@ -39,6 +41,8 @@ function AppRouter() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/assistant" element={<Assistant />} />
             <Route path="/customers" element={<Customers />} />
+            <Route path="/client-payments" element={<ClientPayments />} />
+            <Route path="/buyings" element={<Buyings />} />
             <Route path="/invoices" element={<InvoiceList />} />
             <Route path="/invoices/new" element={<InvoiceEditor />} />
             <Route path="/invoices/:id" element={<InvoiceEditor />} />

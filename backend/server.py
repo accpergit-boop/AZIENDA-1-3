@@ -15,7 +15,7 @@ from typing import List, Optional, Any
 from datetime import datetime, timezone, date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
-import uuid, logging, jwt, bcrypt
+import uuid, logging, jwt, bcrypt, math
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
@@ -671,6 +671,24 @@ async def edit_customer(cid: str, body: CustomerIn, user=Depends(get_current_use
         data["default_zone"] = 1
     return await update_doc("customers", cid, data)
 
+@api.delete("/customers/{cid}")
+async def delete_customer(cid: str, user=Depends(get_current_user)):
+    customer = await db.customers.find_one({"id": cid}, {"_id": 0})
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    linked = {
+        "invoices": await db.invoices.count_documents({"customer_id": cid}),
+        "orders": await db.orders.count_documents({"customer_id": cid}),
+        "deliveries": await db.deliveries.count_documents({"customer_id": cid}),
+        "payments": await db.payments.count_documents({"customer_id": cid}),
+    }
+    references = [f"{count} {name}" for name, count in linked.items() if count]
+    if references:
+        raise HTTPException(409, f"Customer cannot be deleted while linked records exist: {', '.join(references)}")
+    await db.customers.delete_one({"id": cid})
+    await log_audit("customer", cid, "deleted", user, before=customer)
+    return {"ok": True}
+
 @api.get("/customers/{cid}/summary")
 async def customer_summary(cid: str, user=Depends(get_current_user)):
     invs = await listall("invoices", {"customer_id": cid}, ("created_at", -1))
@@ -705,6 +723,8 @@ async def get_prices(user=Depends(get_current_user)):
 @api.post("/prices")
 async def add_price(body: PriceIn, user=Depends(get_current_user)):
     d = body.model_dump()
+    if d["category"] == "Simple/Mix color":
+        d["category"] = "Simple" if uses_unified_price_list(active_company_id.get()) else "Standard"
     if uses_unified_price_list(active_company_id.get()):
         d["zone"] = 1
     if await db.prices.find_one({"zone": d["zone"], "category": d["category"], "size": d["size"]}):
@@ -719,6 +739,8 @@ async def add_price(body: PriceIn, user=Depends(get_current_user)):
 async def edit_price(pid: str, body: PriceIn, user=Depends(get_current_user)):
     before = await db.prices.find_one({"id": pid}, {"_id": 0})
     d = body.model_dump()
+    if d["category"] == "Simple/Mix color":
+        d["category"] = "Simple" if uses_unified_price_list(active_company_id.get()) else "Standard"
     if uses_unified_price_list(active_company_id.get()):
         d["zone"] = 1
     d["confirmed"] = d.get("price") is not None and d.get("confirmed", True)
@@ -731,13 +753,15 @@ MANUAL_ONLY_SIZES = {"1370x150"}
 
 def price_category(zone, category):
     if uses_unified_price_list(active_company_id.get()):
-        if category in ("Standard", "Simple"):
+        if category in ("Standard", "Simple", "Simple/Mix color"):
             return "Simple"
         if category == "Candy":
             return "Ribbon Black"
         return category
     if category == "Candy":
         return "Ribbon Black"
+    if category == "Simple/Mix color":
+        return "Standard"
     return category
 
 def is_manual_only(category, size):
@@ -839,6 +863,7 @@ class InvoiceIn(BaseModel):
     tax_rate: float = 0
     status: str = "draft"
     edit_reason: Optional[str] = ""
+    opening_balance: Optional[bool] = None
 
 INV_DIFF_FIELDS = ("customer_name", "date", "due_date", "zone", "payment_terms", "reference", "destination", "notes", "discount", "extra_charges", "tax_enabled", "total")
 
@@ -922,6 +947,8 @@ async def _prepare_invoice(body: InvoiceIn):
     if not cust:
         raise HTTPException(400, "Customer not found")
     inv = body.model_dump()
+    if inv.get("opening_balance") is None or inv.get("opening_balance") is False:
+        inv.pop("opening_balance", None)
     if uses_unified_price_list(active_company_id.get()):
         inv["zone"] = 1
     if inv.get("discount", 0) < 0 or inv.get("extra_charges", 0) < 0 or inv.get("tax_rate", 0) < 0:
@@ -963,9 +990,11 @@ async def update_invoice(iid: str, body: InvoiceIn, user=Depends(get_current_use
     compute_invoice(inv)
     inv["number"] = existing.get("number")
     inv["audit"] = existing.get("audit", [])
-    for keep in ("opening_balance", "issued_at", "void_reason"):
+    for keep in ("issued_at", "void_reason"):
         if keep in existing:
             inv[keep] = existing[keep]
+    if "opening_balance" in existing and body.opening_balance is not False:
+        inv["opening_balance"] = existing["opening_balance"]
     if existing.get("number"):
         inv["status"] = existing.get("status")
     if inv["status"] != "draft":
@@ -1686,7 +1715,83 @@ async def dashboard(user=Depends(get_current_user)):
         "timezone": "Africa/Johannesburg",
     }
 
-# ---------------- Expenses ----------------
+# ---------------- Buyings and expenses ----------------
+class BuyingIn(BaseModel):
+    product: str
+    source: str
+    quantity: float
+    unit_price: float
+    date: str = Field(default_factory=today_str)
+    notes: Optional[str] = ""
+
+def _check_buying(body):
+    if not body.product.strip():
+        raise HTTPException(400, "Product is required")
+    if not body.source.strip():
+        raise HTTPException(400, "Source is required")
+    if not math.isfinite(body.quantity) or body.quantity <= 0:
+        raise HTTPException(400, "Quantity must be greater than 0")
+    if not math.isfinite(body.unit_price) or body.unit_price <= 0:
+        raise HTTPException(400, "Unit price must be greater than 0")
+
+def set_buying_quantity_unit(data):
+    data["quantity_unit"] = "L" if data["product"].strip().casefold() == "chemical" else ""
+
+def buying_amount(quantity, unit_price):
+    amount = r2(D(quantity) * D(unit_price))
+    if not math.isfinite(amount):
+        raise HTTPException(400, "Buying total is too large")
+    return amount
+
+@api.get("/buyings")
+async def get_buyings(user=Depends(get_current_user)):
+    return await listall("buyings", {"voided": {"$ne": True}}, sort=("date", -1))
+
+@api.post("/buyings")
+async def add_buying(body: BuyingIn, user=Depends(get_current_user)):
+    _check_buying(body)
+    data = body.model_dump()
+    data["product"] = data["product"].strip()
+    data["source"] = data["source"].strip()
+    set_buying_quantity_unit(data)
+    data["quantity"] = float(data["quantity"])
+    data["unit_price"] = r2(data["unit_price"])
+    data["amount"] = buying_amount(data["quantity"], data["unit_price"])
+    rec = await insert("buyings", data)
+    await log_audit("buying", rec["id"], "created", user, after=rec)
+    return rec
+
+@api.put("/buyings/{bid}")
+async def edit_buying(bid: str, body: BuyingIn, user=Depends(get_current_user)):
+    _check_buying(body)
+    before = await db.buyings.find_one({"id": bid, "voided": {"$ne": True}}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Buying not found")
+    data = body.model_dump()
+    data["product"] = data["product"].strip()
+    data["source"] = data["source"].strip()
+    set_buying_quantity_unit(data)
+    data["quantity"] = float(data["quantity"])
+    data["unit_price"] = r2(data["unit_price"])
+    data["amount"] = buying_amount(data["quantity"], data["unit_price"])
+    rec = await update_doc("buyings", bid, data)
+    await log_audit("buying", bid, "updated", user, before=before, after=rec)
+    return rec
+
+@api.post("/buyings/{bid}/void")
+async def void_buying(bid: str, body: ReasonIn, user=Depends(get_current_user)):
+    if not body.reason.strip():
+        raise HTTPException(400, "A reason is required")
+    rec = await db.buyings.find_one_and_update(
+        {"id": bid, "voided": {"$ne": True}},
+        {"$set": {"voided": True, "void_reason": body.reason, "voided_at": now_iso()}},
+        projection={"_id": 0}, return_document=ReturnDocument.AFTER,
+    )
+    if not rec:
+        raise HTTPException(404, "Buying not found or already voided")
+    await log_audit("buying", bid, "voided", user, reason=body.reason)
+    return rec
+
 class ExpenseIn(BaseModel):
     description: str
     amount: float
@@ -1774,8 +1879,12 @@ async def profit_for(since, until=None):
     pays = [p for p in await listall("payments") if not p.get("reversed")]
     revenue = dsum(p.get("amount", 0) for p in pays if (p.get("date") or "") >= since and (not until or (p.get("date") or "") <= until))
     expense = dsum(x["amount"] for x in await cost_ledger(since, until))
-    return {"revenue": revenue, "expenses": expense, "profit": r2(D(revenue) - D(expense)),
-            "label": "Estimated cash result — incomplete cost data", "basis": "payment dates & expense dates"}
+    buyings = dsum(b.get("amount", 0) for b in await listall("buyings", {"voided": {"$ne": True}})
+                   if (b.get("date") or "") >= since and (not until or (b.get("date") or "") <= until))
+    return {"revenue": revenue, "expenses": expense, "buyings": buyings,
+            "profit": r2(D(revenue) - D(expense) - D(buyings)),
+            "label": "Estimated result — payments received minus recorded expenses and buyings",
+            "basis": "payment dates, expense dates & buying dates"}
 
 @api.get("/reports/profit")
 async def profit_report(user=Depends(get_current_user)):
@@ -1983,8 +2092,8 @@ async def import_customers(body: ImportIn, user=Depends(get_current_user)):
             continue
         inv = {"customer_id": cust["id"], "customer_name": name, "date": today.isoformat(),
                "due_date": (today + timedelta(days=30)).isoformat(), "zone": cust.get("default_zone", 1),
-               "payment_terms": "Opening Balance", "reference": "Opening Balance", "destination": "", "order_ids": [],
-               "notes": "Opening balance imported from previous records", "discount": 0, "extra_charges": 0,
+               "payment_terms": "Opening Balance", "reference": "", "destination": "", "order_ids": [],
+               "notes": "", "discount": 0, "extra_charges": 0,
                "tax_enabled": False, "tax_rate": 0, "amount_paid": 0, "opening_balance": True, "status": "issued",
                "items": [{"qty": 1, "category": "", "size": "", "description": "Opening Balance", "unit_price": amt,
                           "price_override": True, "tax": False, "order_id": ""}],
@@ -2159,6 +2268,11 @@ async def get_audit(entity: Optional[str] = None, entity_id: Optional[str] = Non
 class OrderIn(BaseModel):
     customer_id: Optional[str] = ""
     customer_name: Optional[str] = ""
+    customer_address: Optional[str] = ""
+    customer_phone: Optional[str] = ""
+    customer_email: Optional[str] = ""
+    invoice_id: Optional[str] = ""
+    invoice_number: Optional[str] = ""
     destination: str = ""
     products: str = ""
     items: List[dict] = []  # [{qty, category, size}]
@@ -2180,6 +2294,16 @@ async def add_order(body: OrderIn, user=Depends(get_current_user)):
         c = await db.customers.find_one({"id": d["customer_id"]})
         if c:
             d["customer_name"] = c["name"]
+            d["customer_address"] = c.get("address", "")
+            d["customer_phone"] = c.get("phone", "")
+            d["customer_email"] = c.get("email", "")
+    if d.get("invoice_id"):
+        invoice = await db.invoices.find_one({"id": d["invoice_id"]}, {"_id": 0})
+        if not invoice:
+            raise HTTPException(404, "Invoice not found")
+        if invoice.get("customer_id") != d.get("customer_id"):
+            raise HTTPException(400, "Invoice must belong to the selected customer")
+        d["invoice_number"] = invoice.get("number") or invoice.get("reference") or ""
     return await insert("orders", d)
 
 @api.put("/orders/{oid}")
@@ -2193,6 +2317,16 @@ async def edit_order(oid: str, body: OrderIn, user=Depends(get_current_user)):
         c = await db.customers.find_one({"id": d["customer_id"]})
         if c:
             d["customer_name"] = c["name"]
+            d["customer_address"] = c.get("address", "")
+            d["customer_phone"] = c.get("phone", "")
+            d["customer_email"] = c.get("email", "")
+    if d.get("invoice_id"):
+        invoice = await db.invoices.find_one({"id": d["invoice_id"]}, {"_id": 0})
+        if not invoice:
+            raise HTTPException(404, "Invoice not found")
+        if invoice.get("customer_id") != d.get("customer_id"):
+            raise HTTPException(400, "Invoice must belong to the selected customer")
+        d["invoice_number"] = invoice.get("number") or invoice.get("reference") or ""
     return await update_doc("orders", oid, d)
 
 @api.delete("/orders/{oid}")

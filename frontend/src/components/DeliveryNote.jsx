@@ -1,17 +1,17 @@
 import { forwardRef } from "react";
-import { COMPANY } from "@/components/InvoiceDocument";
+import { COMPANY, thickness } from "@/components/InvoiceDocument";
 
 const T = {
-  en: { title: "DELIVERY NOTE", date: "Date", no: "Note No.", deliverTo: "Deliver To", details: "Details", qty: "Quantity", product: "Product", size: "Size", total: "Total pieces",
+  en: { title: "DELIVERY NOTE", date: "Date", no: "Note No.", deliverTo: "Deliver To", details: "Details", qty: "Quantity", product: "Product", description: "Description", size: "Size / Measurements", thickness: "Thickness", total: "Total pieces", phone: "Phone", email: "Email",
     priority: "Priority", ship: "Ship date", vehicle: "Vehicle", notes: "Notes", received: "Received in good order by", sign: "Signature", name: "Name", driver: "Driver" },
-  ur: { title: "ڈلیوری نوٹ", date: "تاریخ", no: "نوٹ نمبر", deliverTo: "ترسیل برائے", details: "تفصیلات", qty: "مقدار", product: "پروڈکٹ", size: "سائز", total: "کل تعداد",
+  ur: { title: "ڈلیوری نوٹ", date: "تاریخ", no: "نوٹ نمبر", deliverTo: "ترسیل برائے", details: "تفصیلات", qty: "مقدار", product: "پروڈکٹ", description: "تفصیل", size: "سائز / پیمائش", thickness: "موٹائی", total: "کل تعداد", phone: "فون", email: "ای میل",
     priority: "ترجیح", ship: "روانگی کی تاریخ", vehicle: "گاڑی", notes: "نوٹس", received: "سامان درست حالت میں وصول کیا", sign: "دستخط", name: "نام", driver: "ڈرائیور" },
 };
-const UR_PRODUCTS = { Simple: "سادہ", Standard: "سادہ", "Ribbon Black": "ربن کالا", "Ribbon Pink": "ربن گلابی", "Strong Boy": "سٹرانگ بوائے", Uncovered: "بغیر کور", Candy: "کینڈی", "Uncovered Blue 16 Density": "بغیر کور نیلا 16 ڈینسٹی" };
+const UR_PRODUCTS = { Simple: "سادہ", Standard: "سادہ", "Simple/Mix color": "سادہ / مکس رنگ", "Ribbon Black": "ربن کالا", "Ribbon Pink": "ربن گلابی", "Strong Boy": "سٹرانگ بوائے", Uncovered: "بغیر کور", Candy: "کینڈی", "Uncovered Blue 16 Density": "بغیر کور نیلا 16 ڈینسٹی" };
 const UR_PRIORITY = { Low: "کم", Normal: "عام", High: "زیادہ", Urgent: "فوری" };
 
 export function orderLines(order) {
-  if (order.items?.length) return order.items.filter((i) => Number(i.qty) > 0);
+  if (order.items?.length) return order.items.filter((i) => Number(i.qty) > 0 && (i.size || i.description || i.category));
   return (order.products || "").split(/\n|,/).map((l) => l.trim()).filter(Boolean).map((l) => {
     const m = l.match(/^(\d+)\s*[x×]?\s*(.*)$/i);
     return m ? { qty: Number(m[1]), category: m[2], size: "" } : { qty: "", category: l, size: "" };
@@ -41,15 +41,35 @@ export const DeliveryNote = forwardRef(function DeliveryNote({ order, lang = "en
         </div>
       </div>
       <div className="grid grid-cols-2 gap-8 mt-8 text-[12px]">
-        <div className="border border-slate-800"><div className="border-b border-slate-800 bg-slate-100 px-3 py-1 font-bold">{t.deliverTo}</div><div className="px-3 py-2 min-h-[70px] leading-6"><p dir="ltr" className={ur ? "text-right" : ""}>{order.customer_name}</p><p dir="ltr" className={ur ? "text-right" : ""}>{order.destination}</p></div></div>
+        <div className="border border-slate-800"><div className="border-b border-slate-800 bg-slate-100 px-3 py-1 font-bold">{t.deliverTo}</div><div className="px-3 py-2 min-h-[70px] leading-6">
+          <p dir="ltr" className={ur ? "text-right" : ""}>{order.customer_name}</p>
+          {order.customer_address && <p dir="ltr" className={ur ? "text-right" : ""}>{order.customer_address}</p>}
+          {order.destination && order.destination !== order.customer_address && <p dir="ltr" className={ur ? "text-right" : ""}>{order.destination}</p>}
+          {order.customer_phone && <p dir="ltr" className={ur ? "text-right" : ""}>{t.phone}: {order.customer_phone}</p>}
+          {order.customer_email && <p dir="ltr" className={ur ? "text-right" : ""}>{t.email}: {order.customer_email}</p>}
+        </div></div>
         <div className="border border-slate-800"><div className="border-b border-slate-800 bg-slate-100 px-3 py-1 font-bold">{t.details}</div><div className="px-3 py-2 min-h-[70px] leading-6">
-          <p>{t.priority}: {ur ? UR_PRIORITY[order.priority] || order.priority : order.priority}</p>{vehicleName && <p>{t.vehicle}: <span dir="ltr">{vehicleName}</span></p>}</div></div>
+          {order.priority && <p>{t.priority}: {ur ? UR_PRIORITY[order.priority] || order.priority : order.priority}</p>}
+          {vehicleName && <p>{t.vehicle}: <span dir="ltr">{vehicleName}</span></p>}
+        </div></div>
       </div>
       <table className="w-full border border-slate-800 text-[13px] mt-6">
-        <thead><tr className="bg-slate-100"><th className={`${cell} w-24`}>{t.qty}</th><th className={cell}>{t.product}</th><th className={`${cell} w-32`}>{t.size}</th></tr></thead>
+        <thead><tr className="bg-slate-100">
+          <th className={`${cell} w-20`}>{t.qty}</th>
+          <th className={`${cell} w-40`}>{t.product}</th>
+          <th className={cell}>{t.description}</th>
+          <th className={`${cell} w-32`}>{t.size}</th>
+          <th className={`${cell} w-24`}>{t.thickness}</th>
+        </tr></thead>
         <tbody>
-          {lines.map((l, i) => <tr key={i}><td className={`${cell} text-center font-bold`}>{l.qty}</td><td className={cell}>{prod(l.category)}</td><td className={`${cell} text-center`} dir="ltr">{l.size}</td></tr>)}
-          <tr className="bg-slate-100"><td className={`${cell} text-center font-bold`}>{total}</td><td className={`${cell} font-bold`} colSpan={2}>{t.total}</td></tr>
+          {lines.map((l, i) => <tr key={i}>
+            <td className={`${cell} text-center font-bold`}>{l.qty}</td>
+            <td className={cell}>{prod(l.category) || "-"}</td>
+            <td className={cell}>{l.description || "-"}</td>
+            <td className={`${cell} text-center`} dir="ltr">{l.size || "-"}</td>
+            <td className={`${cell} text-center`} dir="ltr">{thickness(l.size) || "-"}</td>
+          </tr>)}
+          <tr className="bg-slate-100"><td className={`${cell} text-center font-bold`}>{total}</td><td className={`${cell} font-bold`} colSpan={4}>{t.total}</td></tr>
         </tbody>
       </table>
       {order.notes && <p className="text-[12px] mt-4"><b>{t.notes}:</b> {order.notes}</p>}

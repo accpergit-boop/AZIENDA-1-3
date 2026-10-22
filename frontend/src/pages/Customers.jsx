@@ -6,7 +6,7 @@ import { fmtMoney, fmtDate, STATUS_META } from "@/lib/format";
 import { Card, Btn, Input, Select, Badge, Modal, PageHeader, Empty } from "@/components/common";
 import { useAuth } from "@/context/AuthContext";
 import { usesUnifiedPriceList } from "@/lib/company";
-import { Users, Search, Plus, Pencil, Eye } from "lucide-react";
+import { Users, Search, Plus, Pencil, Eye, Trash2 } from "lucide-react";
 
 const blank = { name: "", phone: "", email: "", address: "", city: "", notes: "", default_zone: 1, payment_terms: "Due on Delivery", active: true };
 
@@ -34,6 +34,17 @@ export default function Customers() {
       toast.success("Customer saved");
       setModal(null); load();
     } catch (e) { toast.error(apiError(e)); }
+  };
+
+  const removeCustomer = async (customer) => {
+    if (!window.confirm(`Delete customer "${customer.name}"? Customers with linked invoices, payments, orders, or deliveries cannot be deleted.`)) return;
+    try {
+      await api.del(`/customers/${customer.id}`);
+      toast.success("Customer deleted");
+      setList((current) => current.filter((item) => item.id !== customer.id));
+    } catch (error) {
+      toast.error(apiError(error));
+    }
   };
 
   const openProfile = async (c) => {
@@ -80,6 +91,7 @@ export default function Customers() {
                   <td className="px-4 text-right whitespace-nowrap">
                     <button onClick={() => openProfile(c)} className="text-slate-400 hover:text-primary p-1.5" data-testid={`view-customer-${c.id}`}><Eye size={16} /></button>
                     <button onClick={() => setModal({ ...c })} className="text-slate-400 hover:text-primary p-1.5" data-testid={`edit-customer-${c.id}`}><Pencil size={16} /></button>
+                    <button onClick={() => removeCustomer(c)} className="text-slate-400 hover:text-red-600 p-1.5" aria-label={`Delete ${c.name}`} title="Delete customer" data-testid={`delete-customer-${c.id}`}><Trash2 size={16} /></button>
                   </td>
                 </tr>))}</tbody>
             </table>

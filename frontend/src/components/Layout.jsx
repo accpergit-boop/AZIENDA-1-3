@@ -3,27 +3,29 @@ import { Suspense, useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   LayoutDashboard, Users, FileText, Boxes, Factory, CalendarCheck,
-  Truck, Settings as Cog, Menu, X, LogOut, Search, Bell, Layers,
-  ClipboardList, Banknote, Wrench,
+  Truck, Menu, X, LogOut, Search, Bell, Layers,
+  ClipboardList, Banknote, Wrench, Wallet, ShoppingCart, ChevronDown, Building2, Settings as Cog, Sparkles,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import { Sparkles } from "lucide-react";
+import { Input, Btn } from "@/components/common";
 import { api, apiError } from "@/lib/api";
 import { preloadPage } from "@/lib/pageLoaders";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
+  { to: "/assistant", label: "AI Assistant", icon: Sparkles },
   { to: "/customers", label: "Customers", icon: Users },
-  { to: "/invoices", label: "Invoices", icon: FileText },
+  { to: "/expenses", label: "Expenses", icon: Banknote },
+  { to: "/buyings", label: "Buying", icon: ShoppingCart },
+  { to: "/client-payments", label: "Clients payment and balances", icon: Wallet },
+  { to: "/invoices", label: "Invoice", icon: FileText },
   { to: "/orders", label: "Orders", icon: ClipboardList },
   { to: "/stock", label: "Stock", icon: Boxes },
   { to: "/production", label: "Production", icon: Factory },
-  { to: "/attendance", label: "Attendance", icon: CalendarCheck },
   { to: "/deliveries", label: "Deliveries", icon: Truck },
   { to: "/fleet", label: "Fleet", icon: Wrench },
-  { to: "/expenses", label: "Expenses", icon: Banknote },
-  { to: "/assistant", label: "AI Assistant", icon: Sparkles },
+  { to: "/attendance", label: "Attendance", icon: CalendarCheck },
   { to: "/settings", label: "Settings", icon: Cog },
 ];
 
@@ -31,7 +33,7 @@ function SidebarContent({ onNav, companyName }) {
   const reduceMotion = useReducedMotion();
   return (
     <>
-      <div className="flex items-center gap-3 px-6 h-20 border-b border-white/10">
+      <div className="flex items-center gap-3 px-5 h-16 border-b border-white/10">
         <div className="h-10 w-10 rounded-lg border border-emerald-100/20 bg-[hsl(158_28%_15%)] flex items-center justify-center shrink-0">
           <Layers className="text-white" size={22} />
         </div>
@@ -40,10 +42,10 @@ function SidebarContent({ onNav, companyName }) {
           <div className="text-emerald-100/55 text-[10px] font-semibold uppercase tracking-[0.16em]">Business Management</div>
         </div>
       </div>
-      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+      <nav className="flex-1 px-2 py-2 space-y-0.5 overflow-y-auto">
         {NAV.map((n) => (
           <NavLink key={n.to} to={n.to} end={n.end} onClick={onNav} onMouseEnter={() => preloadPage(n.to)} onFocus={() => preloadPage(n.to)} onPointerDown={() => preloadPage(n.to)} data-testid={`nav-${n.label.toLowerCase()}`}
-            className={({ isActive }) => `relative isolate flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${isActive ? "text-white" : "text-emerald-50/65 hover:bg-white/5 hover:text-white"}`}>
+            className={({ isActive }) => `relative isolate flex min-h-9 items-center gap-2.5 px-2.5 py-1.5 rounded-md text-xs leading-tight font-medium transition-colors ${isActive ? "text-white" : "text-emerald-50/65 hover:bg-white/5 hover:text-white"}`}>
             {({ isActive }) => <>
               {isActive && <motion.span layoutId={`active-nav-${onNav ? "mobile" : "desktop"}`} className="pointer-events-none absolute inset-0 z-0 rounded-md bg-white/10 shadow-[inset_2px_0_0_hsl(72_42%_65%)]" transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 480, damping: 38, mass: 0.5 }} />}
               <n.icon className="relative z-10" size={18} />
@@ -62,9 +64,13 @@ function AnimatedOutlet() {
 }
 
 export default function Layout() {
-  const { user, logout, switchCompany } = useAuth();
+  const { user, logout, switchCompany, login } = useAuth();
   const reduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [selectedProfile, setSelectedProfile] = useState(null);
+  const [profilePassword, setProfilePassword] = useState("");
+  const [profileLoginBusy, setProfileLoginBusy] = useState(false);
   const [profiles, setProfiles] = useState([]);
   const [switching, setSwitching] = useState(false);
   const nav = useNavigate();
@@ -77,6 +83,19 @@ export default function Layout() {
     setSwitching(true);
     try { await switchCompany(companyId); }
     catch (e) { toast.error(apiError(e)); setSwitching(false); }
+  };
+  const loginToProfile = async (event) => {
+    event.preventDefault();
+    if (!selectedProfile || profileLoginBusy) return;
+    setProfileLoginBusy(true);
+    try {
+      await login(user.username || user.email, profilePassword, selectedProfile.id);
+      window.location.assign("/");
+    } catch (error) {
+      toast.error(apiError(error));
+    } finally {
+      setProfileLoginBusy(false);
+    }
   };
 
   return (
@@ -119,12 +138,59 @@ export default function Layout() {
             </div>
           </div>
           <div className="flex-1 sm:hidden" />
-          {availableProfiles.length > 1 && <label className="sr-only" htmlFor="active-company-select">Active company</label>}
-          {availableProfiles.length > 1 && <select id="active-company-select" aria-label="Switch company" value={user.company_id || ""} disabled={switching}
-            onChange={(e) => changeCompany(e.target.value)} data-testid="company-switcher"
-            className="max-w-40 sm:max-w-56 rounded-md border border-border bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60">
-            {availableProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
-          </select>}
+          {availableProfiles.length > 1 && user?.is_owner && <>
+            <label className="sr-only" htmlFor="active-company-select">Active company</label>
+            <select id="active-company-select" aria-label="Switch company" value={user.company_id || ""} disabled={switching}
+              onChange={(e) => changeCompany(e.target.value)} data-testid="company-switcher"
+              className="max-w-40 sm:max-w-56 rounded-md border border-border bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60">
+              {availableProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+            </select>
+          </>}
+          {availableProfiles.length > 1 && !user?.is_owner && (
+            <div className="relative" onMouseEnter={() => setProfileMenuOpen(true)} onMouseLeave={() => setProfileMenuOpen(false)}>
+              <button
+                type="button"
+                onClick={() => setProfileMenuOpen((current) => !current)}
+                onFocus={() => setProfileMenuOpen(true)}
+                aria-expanded={profileMenuOpen}
+                aria-haspopup="menu"
+                data-testid="company-profile-menu"
+                className="flex max-w-36 sm:max-w-56 items-center gap-2 rounded-md border border-border bg-white px-2 py-2 text-left text-xs font-semibold text-slate-700 hover:border-primary/50"
+              >
+                <Building2 size={15} className="shrink-0 text-primary" />
+                <span className="truncate">{activeProfile?.name || "Company"}</span>
+                <ChevronDown size={14} className={`shrink-0 transition-transform ${profileMenuOpen ? "rotate-180" : ""}`} />
+              </button>
+              <AnimatePresence>
+                {profileMenuOpen && (
+                  <motion.div
+                    role="menu"
+                    initial={reduceMotion ? false : { opacity: 0, y: -8, scale: 0.98 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -6, scale: 0.98 }}
+                    transition={reduceMotion ? { duration: 0 } : { duration: 0.16 }}
+                    className="absolute right-0 top-full z-40 w-64 overflow-hidden rounded-lg border border-border bg-white py-1 shadow-xl"
+                  >
+                    {availableProfiles.filter((profile) => profile.id !== user.company_id).map((profile) => (
+                      <button
+                        key={profile.id}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setSelectedProfile(profile);
+                          setProfilePassword("");
+                          setProfileMenuOpen(false);
+                        }}
+                        className="block w-full px-3 py-2.5 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50 hover:text-primary"
+                      >
+                        {profile.name}
+                      </button>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
           <motion.button whileHover={reduceMotion ? undefined : { scale: 1.06, y: -1 }} whileTap={reduceMotion ? undefined : { scale: 0.96 }} transition={{ type: "spring", stiffness: 480, damping: 24 }} className="relative rounded-full p-2 text-slate-500 hover:text-slate-800 hover:bg-white/40" data-testid="notifications-btn">
             <Bell size={20} />
           </motion.button>
@@ -148,6 +214,43 @@ export default function Layout() {
           </Suspense>
         </main>
       </div>
+      {selectedProfile && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !profileLoginBusy) setSelectedProfile(null);
+        }}>
+          <motion.form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="profile-login-title"
+            onSubmit={loginToProfile}
+            initial={reduceMotion ? false : { opacity: 0, y: 12, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            className="w-full max-w-md space-y-4 rounded-xl border border-white/70 bg-white p-6 shadow-2xl"
+          >
+            <div>
+              <h2 id="profile-login-title" className="text-lg font-bold text-slate-900">Sign in to {selectedProfile.name}</h2>
+              <p className="mt-1 text-sm text-slate-500">Enter the password for this company profile.</p>
+              <p className="mt-2 text-xs text-slate-500">Username: {user?.username || user?.email}</p>
+            </div>
+            <Input
+              label="Password"
+              type="password"
+              autoComplete="current-password"
+              value={profilePassword}
+              onChange={(event) => setProfilePassword(event.target.value)}
+              required
+              autoFocus
+              data-testid="company-profile-password"
+            />
+            <div className="flex justify-end gap-2">
+              <Btn type="button" variant="outline" onClick={() => setSelectedProfile(null)} disabled={profileLoginBusy}>Cancel</Btn>
+              <Btn type="submit" disabled={profileLoginBusy} data-testid="company-profile-login">
+                {profileLoginBusy ? "Signing in..." : "Sign in"}
+              </Btn>
+            </div>
+          </motion.form>
+        </div>
+      )}
       {(user?.is_admin || user?.role === "admin") && <a href="https://web.whatsapp.com/" target="_blank" rel="noreferrer"
         aria-label="Open WhatsApp Web" title="WhatsApp Web" data-testid="whatsapp-floating-button"
         className="fixed right-5 bottom-5 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[#25D366] text-white shadow-lg transition-transform hover:scale-105 hover:bg-[#20bd5a] focus:outline-none focus:ring-4 focus:ring-[#25D366]/30">

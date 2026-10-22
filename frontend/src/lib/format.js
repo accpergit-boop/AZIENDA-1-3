@@ -4,6 +4,18 @@ export function fmtMoney(n) {
   return (v < 0 ? "-R " : "R ") + s;
 }
 
+export function documentFilename(...parts) {
+  const safeParts = parts
+    .filter(Boolean)
+    .map((part) => String(part).normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^[.-]+|[.-]+$/g, ""));
+  return safeParts.filter(Boolean).join("-") || "document";
+}
+
 export const TZ = "Africa/Johannesburg";
 
 export function fmtDateTime(s) {

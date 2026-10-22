@@ -1,25 +1,30 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { InvoiceDocument, thickness } from "@/components/InvoiceDocument";
+import { DeliveryNote } from "@/components/DeliveryNote";
 import { elementToPdf, printElement } from "@/lib/pdf";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
-import { fmtMoney, fmtDate, fmtDateTime, today, newKey, STATUS_META } from "@/lib/format";
+import { fmtMoney, fmtDate, fmtDateTime, today, newKey, STATUS_META, documentFilename } from "@/lib/format";
 import { usesUnifiedPriceList } from "@/lib/company";
 import { useAuth } from "@/context/AuthContext";
 import { Card, Btn, Input, Select, Textarea, Badge, Modal } from "@/components/common";
 import { Copy, Download, Save, Send, CreditCard, Plus, Trash2, ArrowLeft, Ban, Printer, AlertTriangle, Pencil, X, History, Eye, EyeOff } from "lucide-react";
 
 const CATS = {
-  1: ["Standard", "Ribbon Black", "Ribbon Pink", "Candy", "Strong Boy", "Uncovered"],
-  2: ["Standard", "Ribbon Black", "Ribbon Pink", "Candy", "Strong Boy", "Uncovered Blue 16 Density"],
+  1: ["Simple/Mix color", "Ribbon Black", "Ribbon Pink", "Candy", "Strong Boy", "Uncovered"],
+  2: ["Simple/Mix color", "Ribbon Black", "Ribbon Pink", "Candy", "Strong Boy", "Uncovered Blue 16 Density"],
 };
-const UNIFIED_CATS = ["Simple", "Ribbon Black", "Ribbon Pink"];
+const UNIFIED_CATS = ["Simple/Mix color", "Ribbon Black", "Ribbon Pink"];
 const RIBBON = ["Ribbon Black", "Ribbon Pink", "Candy"];
-const priceCat = (zone, cat) => (cat === "Candy" ? "Ribbon Black" : cat);
+const priceCat = (zone, cat, unifiedPriceList) => {
+  if (cat === "Simple/Mix color") return unifiedPriceList ? "Simple" : "Standard";
+  return cat === "Candy" ? "Ribbon Black" : cat;
+};
 const manualOnly = (cat, size) => RIBBON.includes(cat) && size === "1370x150";
+const isOpeningBalancePlaceholder = (item) => !item.category && !item.size && item.description?.trim().toLowerCase() === "opening balance";
 
-const emptyItem = (category = "Standard") => ({ qty: 1, category, size: "", description: "", unit_price: 0, price_override: false, tax: false, _needsConfig: false });
+const emptyItem = (category = "Simple/Mix color") => ({ qty: 1, category, size: "", description: "", unit_price: 0, price_override: false, tax: false, _needsConfig: false });
 
 export default function InvoiceEditor() {
   const { user } = useAuth();
@@ -31,7 +36,7 @@ export default function InvoiceEditor() {
   const [settings, setSettings] = useState({});
   const [inv, setInv] = useState({
     customer_id: "", customer_name: "", date: today(), due_date: today(), zone: 1,
-    payment_terms: "Due on Delivery", reference: "", notes: "", items: [emptyItem(unifiedPriceList ? "Simple" : "Standard")],
+    payment_terms: "Due on Delivery", reference: "", notes: "", items: [emptyItem()],
     discount: 0, extra_charges: 0, tax_enabled: false, tax_rate: 15, status: "draft",
     amount_paid: 0, number: null,
   });
@@ -43,7 +48,12 @@ export default function InvoiceEditor() {
   const [editing, setEditing] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
   const [compactPreview, setCompactPreview] = useState(false);
+  const deliveryNoteRef = useRef(null);
   const locked = !!id && !editing;
+
+  const prepareForEdit = (invoice) => invoice.opening_balance
+    ? { ...invoice, opening_balance: false, reference: "", notes: "", items: [emptyItem()] }
+    : invoice;
 
   useEffect(() => {
     Promise.all([api.get("/customers"), api.get("/prices"), api.get("/settings")]).then(([c, p, s]) => {
@@ -52,22 +62,38 @@ export default function InvoiceEditor() {
     });
     setEditing(false);
     if (id) api.get(`/invoices/${id}`).then((d) => {
-      const items = unifiedPriceList ? (d.items || []).map((item) => ({ ...item, category: item.category === "Standard" ? "Simple" : item.category })) : d.items;
-      setInv({ ...d, zone: unifiedPriceList ? 1 : d.zone, items }); setPayRecords(d.payment_records || []);
-      if (sp.get("edit") && d.status !== "void") { setSnapshot(d); setEditing(true); setSp({}, { replace: true }); }
+      const loaded = { ...d, zone: unifiedPriceList ? 1 : d.zone, items: (d.items || []).map((item) => ({
+        ...item,
+        category: ["Standard", "Simple"].includes(item.category) ? "Simple/Mix color" : item.category,
+      })) };
+      setInv(loaded); setPayRecords(d.payment_records || []);
+      if (sp.get("edit") && d.status !== "void") {
+        setSnapshot(loaded);
+        setInv(prepareForEdit(loaded));
+        setEditing(true);
+        setSp({}, { replace: true });
+      }
     });
     else api.get("/invoices/next-number").then((d) => setNextNum(d.number));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  const startEdit = () => { setSnapshot(inv); setEditing(true); };
+  const startEdit = () => { setSnapshot(inv); setInv(prepareForEdit(inv)); setEditing(true); };
   const cancelEdit = () => { setInv(snapshot); setEditing(false); };
 
-  const sizesFor = (zone, cat) => prices.filter((p) => p.zone === zone && p.category === priceCat(zone, cat) && p.active).map((p) => p.size);
+  const categoriesFor = (zone) => {
+    const defaults = unifiedPriceList ? UNIFIED_CATS : CATS[zone];
+    const configured = prices
+      .filter((p) => p.zone === zone && p.active && p.category)
+      .map((p) => ["Standard", "Simple"].includes(p.category) ? "Simple/Mix color" : p.category);
+    return [...new Set([...defaults, ...configured])];
+  };
+
+  const sizesFor = (zone, cat) => prices.filter((p) => p.zone === zone && p.category === priceCat(zone, cat, unifiedPriceList) && p.active).map((p) => p.size);
 
   const lookupPrice = (zone, cat, size) => {
     if (!unifiedPriceList && manualOnly(cat, size)) return { price: null, needsConfig: true };
-    const p = prices.find((x) => x.zone === zone && x.category === priceCat(zone, cat) && x.size === size && x.active);
+    const p = prices.find((x) => x.zone === zone && x.category === priceCat(zone, cat, unifiedPriceList) && x.size === size && x.active);
     if (!p) return { price: null, needsConfig: false, missing: true };
     if (p.price == null || !p.confirmed) return { price: null, needsConfig: true };
     return { price: p.price, needsConfig: false };
@@ -94,7 +120,7 @@ export default function InvoiceEditor() {
 
   const repriceItems = (items, zone) => items.map((it) => {
     if (it.price_override) return it;
-    const cats = unifiedPriceList ? UNIFIED_CATS : CATS[zone];
+    const cats = categoriesFor(zone);
     const cat = cats.includes(it.category) ? it.category : cats[0];
     const r = lookupPrice(zone, cat, it.size);
     return { ...it, category: cat, unit_price: r.price ?? 0, _needsConfig: !!it.size && (r.needsConfig || r.missing) };
@@ -134,6 +160,8 @@ export default function InvoiceEditor() {
     const outstanding = total - Number(inv.amount_paid || 0);
     return { subtotal, tax, total, outstanding };
   }, [inv]);
+  const invoiceItems = (inv.items || []).filter((item) => !isOpeningBalancePlaceholder(item));
+  const openingBalanceOnly = !!inv.opening_balance && invoiceItems.length === 0;
 
   const hasConfigIssue = inv.items.some((it) => it._needsConfig && it.size && !(it.price_override && Number(it.unit_price) > 0));
   const [busy, setBusy] = useState(false);
@@ -146,6 +174,7 @@ export default function InvoiceEditor() {
       qty: Number(it.qty) || 0, category: it.category, size: it.size, description: it.description,
       unit_price: Number(it.unit_price) || 0, price_override: it.price_override, tax: it.tax,
     })),
+    opening_balance: !!inv.opening_balance,
     discount: Number(inv.discount) || 0, extra_charges: Number(inv.extra_charges) || 0,
     tax_enabled: inv.tax_enabled, tax_rate: Number(inv.tax_rate) || 0, status,
   });
@@ -233,18 +262,21 @@ export default function InvoiceEditor() {
     if (!unifiedPriceList) L.push(`Price Zone: Zone ${inv.zone}`);
     L.push(`Payment Terms: ${inv.payment_terms}`);
     if (inv.destination) L.push(`Delivery To: ${inv.destination}`);
-    if (inv.reference) L.push(`Reference: ${inv.reference}`);
+    if (inv.reference && !inv.opening_balance) L.push(`Reference: ${inv.reference}`);
     L.push("");
-    L.push("ITEMS");
-    L.push("--------------------------------");
-    inv.items.filter((it) => it.size || it.description).forEach((it) => {
-      L.push(`Qty: ${it.qty}`);
-      L.push(`Category: ${it.category}`);
-      L.push(`Size: ${it.size || it.description}`);
-      L.push(`Unit Price: ${fmtMoney(it.unit_price)}`);
-      L.push(`Line Total: ${fmtMoney((Number(it.qty) || 0) * (Number(it.unit_price) || 0))}`);
+    const textItems = invoiceItems.filter((it) => it.size || it.description);
+    if (textItems.length) {
+      L.push("ITEMS");
       L.push("--------------------------------");
-    });
+      textItems.forEach((it) => {
+        L.push(`Qty: ${it.qty}`);
+        L.push(`Category: ${it.category}`);
+        L.push(`Size: ${it.size || it.description}`);
+        L.push(`Unit Price: ${fmtMoney(it.unit_price)}`);
+        L.push(`Line Total: ${fmtMoney((Number(it.qty) || 0) * (Number(it.unit_price) || 0))}`);
+        L.push("--------------------------------");
+      });
+    }
     L.push(`Subtotal: ${fmtMoney(totals.subtotal)}`);
     if (Number(inv.discount)) L.push(`Discount: ${fmtMoney(inv.discount)}`);
     if (Number(inv.extra_charges)) L.push(`Extra Charges: ${fmtMoney(inv.extra_charges)}`);
@@ -252,7 +284,7 @@ export default function InvoiceEditor() {
     L.push(`Total: ${fmtMoney(totals.total)}`);
     L.push(`Amount Paid: ${fmtMoney(inv.amount_paid)}`);
     L.push(`Outstanding Balance: ${fmtMoney(totals.outstanding)}`);
-    if (inv.notes) { L.push(""); L.push(`Notes: ${inv.notes}`); }
+    if (inv.notes && !inv.opening_balance) { L.push(""); L.push(`Notes: ${inv.notes}`); }
     if (settings.telephone || settings.email) {
       L.push(""); L.push([settings.telephone, settings.email].filter(Boolean).join(" | "));
     }
@@ -277,9 +309,35 @@ export default function InvoiceEditor() {
   };
 
   const downloadPDF = async () => {
-    try { await elementToPdf(docRef.current, `${inv.number || "invoice-draft"}.pdf`); toast.success("PDF downloaded"); } catch (e) { toast.error("PDF failed: " + e.message); }
+    try { await elementToPdf(docRef.current, `${documentFilename("Invoice", inv.customer_name || "Customer", inv.number || "Draft")}.pdf`); toast.success("PDF downloaded"); } catch (e) { toast.error("PDF failed: " + e.message); }
   };
   const custObj = customers.find((c) => c.id === inv.customer_id) || {};
+  const invoiceDeliveryNote = {
+    reference: inv.number || "DRAFT",
+    expected_ship_date: inv.date,
+    customer_name: inv.customer_name,
+    customer_address: custObj.address || "",
+    customer_phone: custObj.phone || "",
+    customer_email: custObj.email || "",
+    destination: inv.destination || custObj.city || "",
+    vehicle_id: "",
+    notes: inv.notes || "",
+    opening_balance: !!inv.opening_balance,
+    items: inv.opening_balance ? [] : (inv.items || []).filter((item) => item.size || item.description).map((item) => ({
+      qty: item.qty,
+      category: item.category || "",
+      description: item.description || "",
+      size: item.size || "",
+    })),
+  };
+  const downloadDeliveryNote = async () => {
+    try {
+      await elementToPdf(deliveryNoteRef.current, `${documentFilename("Delivery-note", inv.customer_name || "Customer", inv.number || "Draft")}.pdf`);
+      toast.success("Delivery note downloaded");
+    } catch (error) {
+      toast.error(`Delivery note PDF failed: ${error.message}`);
+    }
+  };
   const createAndDownload = async () => {
     if (id) return downloadPDF();
     sessionStorage.setItem("iq-dl", "1"); await save("issued");
@@ -289,6 +347,10 @@ export default function InvoiceEditor() {
     if (id && inv.id === id && customers.length && sp.get("pdf") === "1") {
       setSp({}, { replace: true });
       setTimeout(downloadPDF, 500);
+    }
+    if (id && inv.id === id && customers.length && sp.get("delivery-note") === "1") {
+      setSp({}, { replace: true });
+      setTimeout(downloadDeliveryNote, 500);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, inv.id, customers.length, sp]);
@@ -302,7 +364,10 @@ export default function InvoiceEditor() {
         <button onClick={() => nav("/invoices")} className="flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-800">
           <ArrowLeft size={16} /> Back to Invoices
         </button>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Btn variant="outline" onClick={downloadDeliveryNote} disabled={!inv.customer_name || !invoiceDeliveryNote.items.length} data-testid="download-delivery-note-btn">
+            <Download size={15} /> Download Delivery Note
+          </Btn>
           <button onClick={() => setCompactPreview((v) => !v)} className="inline-flex items-center gap-1.5 h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 hover:border-primary hover:text-primary transition-colors" data-testid="toggle-invoice-preview-mode">
             {compactPreview ? <Eye size={15} /> : <EyeOff size={15} />}
             {compactPreview ? "Show sections" : "Hide sections"}
@@ -330,6 +395,11 @@ export default function InvoiceEditor() {
           </div>
         </div>
       )}
+      {editing && snapshot?.opening_balance && (
+        <div className="no-print mb-5 rounded-lg border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-800" data-testid="opening-balance-conversion-warning">
+          Saving this change will replace the imported opening balance with the products and prices entered below.
+        </div>
+      )}
 
       <div className={`grid gap-6 ${compactPreview ? "grid-cols-1 xl:grid-cols-[1fr_420px]" : "grid-cols-1 xl:grid-cols-5"}`}>
         {!compactPreview && (
@@ -351,14 +421,14 @@ export default function InvoiceEditor() {
                 <Textarea label="Notes (optional)" rows={2} value={inv.notes || ""} onChange={(e) => setInv({ ...inv, notes: e.target.value })} placeholder="Additional notes..." /></div></Card>
             </div>
 
-            <Card className="p-5">
+            {(!openingBalanceOnly || editing) && <Card className="p-5">
               <h3 className="font-bold text-slate-800 mb-4 font-display">3. Products</h3>
               <div className="overflow-x-auto -mx-5 px-5">
                 <table className="w-full text-sm min-w-[720px]">
                   <thead><tr className="text-left text-xs text-slate-400 border-b border-border">
-                    <th className="pb-2 font-semibold w-16">Qty</th><th className="pb-2 font-semibold">Category</th><th className="pb-2 font-semibold">Size</th><th className="pb-2 font-semibold w-20">Thickness</th><th className="pb-2 font-semibold w-32">Unit Price (R)</th><th className="pb-2 font-semibold text-right w-28">Line Total</th><th className="w-10"></th>
+                    <th className="pb-2 font-semibold w-16">Qty</th>                    <th className="pb-2 font-semibold">Product / Category</th><th className="pb-2 font-semibold">Size / Unit</th><th className="pb-2 font-semibold w-20">Thickness</th><th className="pb-2 font-semibold w-32">Unit Price (R)</th><th className="pb-2 font-semibold text-right w-28">Line Total</th><th className="w-10"></th>
                   </tr></thead>
-                  <tbody>{inv.items.map((it, idx) => (
+                  <tbody>{invoiceItems.map((it, idx) => (
                     <tr key={idx} className="border-b border-border/50" data-testid={`item-row-${idx}`}>
                       <td className="py-2 pr-2">
                         <input type="number" min="0" value={it.qty} onChange={(e) => updateItem(idx, { qty: e.target.value })} data-testid={`item-qty-${idx}`}
@@ -371,7 +441,7 @@ export default function InvoiceEditor() {
                         ) : (
                         <select value={it.category} onChange={(e) => onCatSize(idx, { category: e.target.value, size: "" })} data-testid={`item-cat-${idx}`}
                           className="w-full rounded border border-input px-2 py-1.5 text-sm min-w-[130px]">
-                          {(unifiedPriceList ? UNIFIED_CATS : CATS[inv.zone]).map((c) => <option key={c}>{c}</option>)}
+                          {categoriesFor(inv.zone).map((c) => <option key={c}>{c}</option>)}
                         </select>)}
                       </td>
                       {!(!it.category && it.description) && <td className="pr-2">
@@ -399,7 +469,7 @@ export default function InvoiceEditor() {
                 </table>
               </div>
               <Btn variant="outline" className="mt-4" onClick={() => setInv({ ...inv, items: [...inv.items, emptyItem()] })} data-testid="add-item-btn"><Plus size={16} /> Add Product</Btn>
-            </Card>
+            </Card>}
           </fieldset>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
               <div className="space-y-6">
@@ -490,6 +560,9 @@ export default function InvoiceEditor() {
             </FitPreview></Card>
           </div>
           <div style={{ position: "fixed", left: -10000, top: 0 }} aria-hidden="true"><InvoiceDocument ref={docRef} inv={inv} totals={totals} settings={settings} customer={custObj} /></div>
+          <div style={{ position: "fixed", left: -10000, top: 0 }} aria-hidden="true">
+            <DeliveryNote ref={deliveryNoteRef} order={invoiceDeliveryNote} settings={settings} />
+          </div>
         </div>
       </div>
 

@@ -2,7 +2,7 @@ import { forwardRef } from "react";
 import { fmtMoney, fmtDate } from "@/lib/format";
 
 export const COMPANY = { name: "SUPER IQ-FOAM", address: ["ROCKY RIDGE LODGE", "ROCKY RIDGE FARM", "KOKSTAD, 4700"], phones: "0659279036 - 0634029112" };
-export const thickness = (size) => (size || "").split("x")[1] || "";
+export const thickness = (size) => (size || "").split(/[xX×]/)[1] || "";
 
 const Logo = () => (
   <svg width="58" height="58" viewBox="0 0 64 64" aria-hidden="true">
@@ -13,7 +13,8 @@ const Logo = () => (
 );
 
 export const InvoiceDocument = forwardRef(function InvoiceDocument({ inv, totals, customer = {}, settings = {} }, ref) {
-  const rows = (inv.items || []).filter((it) => it.size || it.description);
+  const rows = (inv.items || []).filter((it) => (it.size || it.description) &&
+    !(!it.category && !it.size && it.description?.trim().toLowerCase() === "opening balance"));
   const shipTo = inv.destination || customer.city || customer.address || "";
   const L = ({ k, v }) => (v ? <p className="leading-6"><span className="font-semibold text-slate-800">{k}</span> <span className="text-slate-600">{v}</span></p> : null);
   return (
@@ -41,18 +42,18 @@ export const InvoiceDocument = forwardRef(function InvoiceDocument({ inv, totals
           <p className="leading-6 text-slate-600">{[inv.customer_name, shipTo].filter(Boolean).join(" — ")}</p>
         </div>
         <div className="justify-self-end w-[250px]">
-            {[["Invoice Date:", fmtDate(inv.date)], ["Due Date:", fmtDate(inv.due_date)], ["Price Zone:", `Zone ${inv.zone}`], ["Payment Terms:", inv.payment_terms], ["Reference:", inv.reference]].filter(([k, v]) => v && (k !== "Price Zone:" || !settings.unified_price_list)).map(([k, v]) => (
+            {[["Invoice Date:", fmtDate(inv.date)], ["Due Date:", fmtDate(inv.due_date)], ["Price Zone:", `Zone ${inv.zone}`], ["Payment Terms:", inv.payment_terms], ["Reference:", inv.reference]].filter(([k, v]) => v && (k !== "Price Zone:" || !settings.unified_price_list) && !(inv.opening_balance && k === "Reference:")).map(([k, v]) => (
             <div key={k} className="flex justify-between leading-6"><span className="font-semibold">{k}</span><span className="text-slate-600">{v}</span></div>))}
         </div>
       </div>
-      <table className="w-full mt-6 border border-slate-200">
+      {rows.length > 0 && <table className="w-full mt-6 border border-slate-200">
         <thead><tr className="bg-slate-100 text-left">{["#", "Category", "Size", "Thickness", "Qty", "Unit Price", "Total"].map((h, i) => <th key={h} className={`px-3 py-2.5 font-semibold ${i >= 4 ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
         <tbody>{rows.map((it, i) => (
           <tr key={i} className="border-t border-slate-200">
             <td className="px-3 py-3">{i + 1}</td><td className="px-3">{it.category || it.description}</td><td className="px-3">{it.size}</td><td className="px-3">{thickness(it.size)}</td>
             <td className="px-3 text-right">{it.qty}</td><td className="px-3 text-right">{fmtMoney(it.unit_price)}</td><td className="px-3 text-right">{fmtMoney((Number(it.qty) || 0) * (Number(it.unit_price) || 0))}</td>
           </tr>))}</tbody>
-      </table>
+      </table>}
       <div className="flex justify-end mt-4"><div className="w-[300px] text-[13px]">
         {[["Subtotal", totals.subtotal], ["Discount", Number(inv.discount) || 0], ...(Number(inv.extra_charges) ? [["Additional Charges", inv.extra_charges]] : []), ...(inv.tax_enabled ? [[`Tax (${inv.tax_rate}%)`, totals.tax]] : [])].map(([k, v]) => (
           <div key={k} className="flex justify-between py-1.5 px-3"><span className="font-semibold text-slate-700">{k}</span><span>{fmtMoney(v)}</span></div>))}
@@ -62,7 +63,7 @@ export const InvoiceDocument = forwardRef(function InvoiceDocument({ inv, totals
       </div></div>
       <div className="flex justify-between mt-10 border-b border-slate-300 pb-6">
         <div className="leading-6 whitespace-pre-line"><p className="font-bold text-[13px]">Banking Details</p><p className="text-slate-600">{settings.banking_details || "Bank: N/A"}</p><p className="text-slate-600">Reference: Use invoice number</p>
-          {inv.notes && <p className="text-slate-600 mt-2"><b>Notes:</b> {inv.notes}</p>}</div>
+          {inv.notes && !inv.opening_balance && <p className="text-slate-600 mt-2"><b>Notes:</b> {inv.notes}</p>}</div>
         <p className="italic text-slate-500">Thank you for your business!</p>
       </div>
     </div>
