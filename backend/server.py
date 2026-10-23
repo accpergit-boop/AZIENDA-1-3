@@ -1298,6 +1298,27 @@ async def get_production(user=Depends(get_current_user)):
     hours = await resting_hours()
     return [enrich_production(p, hours) for p in await listall("production", sort=("created_at", -1))]
 
+class BlockCuttingIn(BaseModel):
+    block: str
+    size: str
+
+@api.get("/production/block-cutting")
+async def get_block_cuttings(user=Depends(get_current_user)):
+    return await listall("block_cuttings", sort=("created_at", -1))
+
+@api.post("/production/block-cutting")
+async def add_block_cutting(body: BlockCuttingIn, user=Depends(get_current_user)):
+    if body.block not in ("Blue", "Bianco"):
+        raise HTTPException(400, "Block must be Blue or Bianco")
+    size = body.size.strip()
+    if not size:
+        raise HTTPException(400, "A size is required")
+    if not await db.stock.find_one({"size": size}):
+        raise HTTPException(400, "Select a size currently available in Stock")
+    record = await insert("block_cuttings", {"block": body.block, "size": size})
+    await log_audit("block_cutting", record["id"], "created", user, after=record)
+    return record
+
 @api.post("/production")
 async def add_production(body: ProductionIn, user=Depends(get_current_user)):
     d = body.model_dump()

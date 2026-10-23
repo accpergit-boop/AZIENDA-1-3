@@ -13,9 +13,12 @@ const MOVE_TYPES = [
 ];
 const TYPE_LABEL = { production: "Production Received", dispatch: "Delivery Dispatched", adjustment_in: "Adjustment In", adjustment_out: "Adjustment Out", return: "Return", damage: "Damage/Waste", reversal: "Reversal" };
 const sign = (m) => (m.direction ? m.direction : ["production", "adjustment_in", "return"].includes(m.type) ? 1 : -1);
+const CATEGORIES = ["Simple", "Ribbon Balck", "Ribbon Pink", "Candy", "Uncovered", "Strong Boy"];
+const STOCK_CATEGORY = { "Ribbon Balck": "Ribbon Black" };
 
 export default function Stock() {
   const [list, setList] = useState(null);
+  const [category, setCategory] = useState("");
   const [movements, setMovements] = useState([]);
   const [addModal, setAddModal] = useState(null);
   const [moveModal, setMoveModal] = useState(null);
@@ -27,6 +30,8 @@ export default function Stock() {
     api.get("/stock/movements").then(setMovements).catch(() => {});
   };
   useEffect(() => { load(); }, []);
+
+  const filteredList = (list || []).filter((item) => !category || item.product === (STOCK_CATEGORY[category] || category));
 
   const run = async (fn, ok) => {
     if (busy) return; setBusy(true);
@@ -58,14 +63,21 @@ export default function Stock() {
         <Btn onClick={() => setAddModal({ product: "", size: "", opening: 0, threshold: 5 })} data-testid="add-stock-btn"><Plus size={16} /> Add Product</Btn>
       </PageHeader>
 
+      <div className="mb-4 max-w-xs">
+        <Select label="Filter by category" value={category} onChange={(event) => setCategory(event.target.value)} data-testid="stock-category-filter">
+          <option value="">All categories</option>
+          {CATEGORIES.map((item) => <option key={item} value={item}>{item}</option>)}
+        </Select>
+      </div>
+
       <Card className="overflow-hidden">
-        {list === null ? <p className="p-6 text-sm text-slate-400">Loading stock...</p> : list.length === 0 ? <Empty icon={Boxes} title="No stock records" /> : (
+        {list === null ? <p className="p-6 text-sm text-slate-400">Loading stock...</p> : filteredList.length === 0 ? <Empty icon={Boxes} title={category ? "No stock items in this category" : "No stock records"} /> : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm min-w-[800px]">
               <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
                 <th className="px-4 py-3 font-semibold">Product</th><th className="px-4 font-semibold">Size</th><th className="px-4 font-semibold text-right">Opening</th><th className="px-4 font-semibold text-right">Production</th><th className="px-4 font-semibold text-right">Dispatched</th><th className="px-4 font-semibold text-right">Other</th><th className="px-4 font-semibold text-right">Current</th><th className="px-4 font-semibold text-right">Min</th><th className="px-4 font-semibold text-right">Action</th>
               </tr></thead>
-              <tbody>{list.map((s) => (
+              <tbody>{filteredList.map((s) => (
                 <tr key={s.id} className="border-b border-border/60 hover:bg-slate-50" data-testid={`stock-row-${s.id}`}>
                   <td className="px-4 py-3 font-semibold text-slate-800">{s.product}</td>
                   <td className="px-4 text-slate-500 font-mono">{s.size}</td>

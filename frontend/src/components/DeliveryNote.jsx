@@ -23,37 +23,37 @@ export const DeliveryNote = forwardRef(function DeliveryNote({ order, lang = "en
   const lines = orderLines(order);
   const total = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
   const prod = (c) => (ur ? UR_PRODUCTS[c] || c : c);
-  const cell = "border border-slate-800 px-3 py-1.5";
+  const cell = "border border-slate-800 px-3 py-2";
   return (
-    <div ref={ref} dir={ur ? "rtl" : "ltr"} lang={lang} className="bg-white text-slate-900 mx-auto p-10" style={{ width: 794, minHeight: 1050, fontFamily: ur ? "'Noto Nastaliq Urdu','Jameel Noori Nastaleeq',Tahoma,sans-serif" : undefined }} data-testid="delivery-note">
+    <div ref={ref} dir={ur ? "rtl" : "ltr"} lang={lang} className="bg-white text-slate-900 mx-auto p-8 text-[14px]" style={{ width: 794, minHeight: 1123, boxSizing: "border-box", fontFamily: ur ? "'Noto Nastaliq Urdu','Jameel Noori Nastaleeq',Tahoma,sans-serif" : undefined }} data-testid="delivery-note">
       <div className="flex justify-between items-start">
         <div>
-          <p className="text-[26px] font-extrabold" dir="ltr">{settings.company_name || COMPANY.name}</p>
-          <p className="whitespace-pre-line text-[12px] leading-5" dir="ltr">{settings.address || COMPANY.address.join(", ")}</p>
-          <p className="text-[12px] leading-5" dir="ltr">{settings.telephone || COMPANY.phones}</p>
+          <p className="text-[28px] font-extrabold" dir="ltr">{settings.company_name || COMPANY.name}</p>
+          <p className="whitespace-pre-line text-[14px] leading-6" dir="ltr">{settings.address || COMPANY.address.join(", ")}</p>
+          <p className="text-[14px] leading-6" dir="ltr">{settings.telephone || COMPANY.phones}</p>
         </div>
         <div className={ur ? "text-left" : "text-right"}>
-          <p className="text-[26px] font-bold mb-2">{t.title}</p>
-          <table className="border border-slate-800 text-[12px]">
+          <p className="text-[28px] font-bold mb-2">{t.title}</p>
+          <table className="border border-slate-800 text-[14px]">
             <thead><tr className="bg-slate-100"><th className={cell}>{t.date}</th><th className={cell}>{t.no}</th></tr></thead>
             <tbody><tr><td className={cell} dir="ltr">{order.expected_ship_date || new Date().toISOString().slice(0, 10)}</td><td className={`${cell} font-mono`} dir="ltr">{order.reference}</td></tr></tbody>
           </table>
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-8 mt-8 text-[12px]">
-        <div className="border border-slate-800"><div className="border-b border-slate-800 bg-slate-100 px-3 py-1 font-bold">{t.deliverTo}</div><div className="px-3 py-2 min-h-[70px] leading-6">
+      <div className="grid grid-cols-2 gap-6 mt-6">
+        <div className="border border-slate-800"><div className="border-b border-slate-800 bg-slate-100 px-3 py-2 font-bold">{t.deliverTo}</div><div className="px-3 py-2 min-h-[70px] leading-6">
           <p dir="ltr" className={ur ? "text-right" : ""}>{order.customer_name}</p>
           {order.customer_address && <p dir="ltr" className={ur ? "text-right" : ""}>{order.customer_address}</p>}
           {order.destination && order.destination !== order.customer_address && <p dir="ltr" className={ur ? "text-right" : ""}>{order.destination}</p>}
           {order.customer_phone && <p dir="ltr" className={ur ? "text-right" : ""}>{t.phone}: {order.customer_phone}</p>}
           {order.customer_email && <p dir="ltr" className={ur ? "text-right" : ""}>{t.email}: {order.customer_email}</p>}
         </div></div>
-        <div className="border border-slate-800"><div className="border-b border-slate-800 bg-slate-100 px-3 py-1 font-bold">{t.details}</div><div className="px-3 py-2 min-h-[70px] leading-6">
+        <div className="border border-slate-800"><div className="border-b border-slate-800 bg-slate-100 px-3 py-2 font-bold">{t.details}</div><div className="px-3 py-2 min-h-[70px] leading-6">
           {order.priority && <p>{t.priority}: {ur ? UR_PRIORITY[order.priority] || order.priority : order.priority}</p>}
           {vehicleName && <p>{t.vehicle}: <span dir="ltr">{vehicleName}</span></p>}
         </div></div>
       </div>
-      <table className="w-full border border-slate-800 text-[13px] mt-6">
+      <table className="w-full border border-slate-800 text-[14px] mt-5">
         <thead><tr className="bg-slate-100">
           <th className={`${cell} w-20`}>{t.qty}</th>
           <th className={`${cell} w-40`}>{t.product}</th>
@@ -72,8 +72,8 @@ export const DeliveryNote = forwardRef(function DeliveryNote({ order, lang = "en
           <tr className="bg-slate-100"><td className={`${cell} text-center font-bold`}>{total}</td><td className={`${cell} font-bold`} colSpan={4}>{t.total}</td></tr>
         </tbody>
       </table>
-      {order.notes && <p className="text-[12px] mt-4"><b>{t.notes}:</b> {order.notes}</p>}
-      <div className="grid grid-cols-3 gap-8 mt-24 text-[12px]">
+      {order.notes && <p className="mt-4"><b>{t.notes}:</b> {order.notes}</p>}
+      <div className="grid grid-cols-3 gap-8 mt-16">
         {[t.received, t.name, t.driver].map((x) => <div key={x}><div className="border-b border-slate-800 h-10" /><p className="mt-1">{x} / {t.sign}</p></div>)}
       </div>
     </div>

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
-import { fmtDate, documentFilename } from "@/lib/format";
+import { fmtDate, fmtDateTime, documentFilename } from "@/lib/format";
 import { Card, Btn, Input, Select, Textarea, Badge, Modal, PageHeader, Empty } from "@/components/common";
-import { ClipboardList, Plus, Trash2, Pencil, ArrowRight, FileText, Printer, Download } from "lucide-react";
+import { ClipboardList, Plus, Trash2, Pencil, ArrowRight, Eye, FileText, Printer, Download } from "lucide-react";
 import { useRef } from "react";
 import { DeliveryNote, orderLines } from "@/components/DeliveryNote";
 import { elementToPdf, printElement } from "@/lib/pdf";
@@ -51,6 +51,7 @@ export default function Orders() {
   const [filter, setFilter] = useState("open");
   const [modal, setModal] = useState(null);
   const [note, setNote] = useState(null);
+  const [viewOrder, setViewOrder] = useState(null);
   const [stock, setStock] = useState([]);
   const [settings, setSettings] = useState({});
   const products = [...new Set(stock.map((s) => s.product))];
@@ -167,6 +168,7 @@ export default function Orders() {
                   <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{o.expected_ship_date ? fmtDate(o.expected_ship_date) : "-"}</td>
                   <td className="px-4 py-3 text-slate-500">{vName(o.vehicle_id) || "-"}</td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <button onClick={() => setViewOrder(o)} className="text-slate-400 hover:text-primary mr-3" title="View order" aria-label={`View order ${o.reference}`} data-testid={`view-order-${o.id}`}><Eye size={15} /></button>
                     {o.status !== "Delivered" && o.status !== "Cancelled" && (
                       <button onClick={() => advance(o)} className="inline-flex items-center gap-1 text-emerald-600 hover:underline text-xs font-semibold mr-3" data-testid={`advance-order-${o.id}`}>
                         {STATUSES[STATUSES.indexOf(o.status) + 1]} <ArrowRight size={12} />
@@ -180,6 +182,41 @@ export default function Orders() {
           </div>
         )}
       </Card>
+
+      <Modal open={!!viewOrder} onClose={() => setViewOrder(null)} title={`Order Details ${viewOrder?.reference || ""}`} wide>
+        {viewOrder && <div className="space-y-5 text-sm" data-testid={`order-details-${viewOrder.id}`}>
+          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
+            {[
+              ["Order Number", viewOrder.reference],
+              ["Invoice", viewOrder.invoice_number],
+              ["Customer", viewOrder.customer_name],
+              ["Customer Address", viewOrder.customer_address],
+              ["Phone", viewOrder.customer_phone],
+              ["Email", viewOrder.customer_email],
+              ["Destination", viewOrder.destination],
+              ["Ship Date", viewOrder.expected_ship_date ? fmtDate(viewOrder.expected_ship_date) : ""],
+              ["Priority", viewOrder.priority],
+              ["Status", viewOrder.status],
+              ["Vehicle", vName(viewOrder.vehicle_id)],
+              ["Created", viewOrder.created_at ? fmtDateTime(viewOrder.created_at) : ""],
+            ].filter(([, value]) => value !== undefined && value !== null && value !== "").map(([label, value]) => (
+              <div key={label}><dt className="text-xs font-semibold text-slate-500">{label}</dt><dd className="mt-1 whitespace-pre-wrap text-slate-800">{value}</dd></div>
+            ))}
+          </dl>
+          <div>
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Products</h4>
+            {orderLines(viewOrder).length ? <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead><tr className="bg-slate-50 text-left text-xs text-slate-500"><th className="px-3 py-2">Quantity</th><th className="px-3 py-2">Product</th><th className="px-3 py-2">Description</th><th className="px-3 py-2">Size / Measurements</th></tr></thead>
+                <tbody>{orderLines(viewOrder).map((line, index) => <tr key={index} className="border-t border-border/70">
+                  <td className="px-3 py-2">{line.qty}</td><td className="px-3 py-2">{line.category || "-"}</td><td className="px-3 py-2">{line.description || "-"}</td><td className="px-3 py-2">{line.size || "-"}</td>
+                </tr>)}</tbody>
+              </table>
+            </div> : <p className="text-slate-500">No product details recorded.</p>}
+          </div>
+          {viewOrder.notes && <div><h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Notes</h4><p className="mt-1 whitespace-pre-wrap text-slate-800">{viewOrder.notes}</p></div>}
+        </div>}
+      </Modal>
 
       <Modal open={!!modal} onClose={() => setModal(null)} title={modal?.id ? `Edit Order ${modal.reference}` : "New Order"} wide>
         {modal && <div className="space-y-4">

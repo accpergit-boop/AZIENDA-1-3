@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api } from "@/lib/api";
-import { fmtMoney, fmtDate, STATUS_META } from "@/lib/format";
-import { Card, Btn, Badge, PageHeader, Empty } from "@/components/common";
-import { FileText, Search, Plus, Pencil, Trash2, Download } from "lucide-react";
+import { fmtMoney, fmtDate, fmtDateTime, STATUS_META } from "@/lib/format";
+import { Card, Btn, Badge, PageHeader, Empty, Modal } from "@/components/common";
+import { Eye, FileText, Search, Plus, Pencil, Trash2, Download } from "lucide-react";
 import { toast } from "sonner";
-import { apiError } from "@/lib/api";
+import { api, apiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { usesUnifiedPriceList } from "@/lib/company";
 
@@ -20,8 +19,34 @@ export default function InvoiceList() {
   const [zone, setZone] = useState("all");
   const nav = useNavigate();
   const [sel, setSel] = useState([]);
+  const [viewOpen, setViewOpen] = useState(false);
+  const [viewLoading, setViewLoading] = useState(false);
+  const [viewInvoice, setViewInvoice] = useState(null);
+  const [viewCustomer, setViewCustomer] = useState(null);
   const load = () => api.get("/invoices").then((d) => { setList(d); setSel([]); }).catch((e) => toast.error(apiError(e))).finally(() => setLoading(false));
   useEffect(() => { load(); }, []);
+
+  const view = async (id) => {
+    setViewOpen(true);
+    setViewLoading(true);
+    setViewInvoice(null);
+    setViewCustomer(null);
+    try {
+      const invoice = await api.get(`/invoices/${id}`);
+      setViewInvoice(invoice);
+      try {
+        const customers = await api.get("/customers");
+        setViewCustomer(customers.find((customer) => customer.id === invoice.customer_id) || null);
+      } catch (error) {
+        toast.error(`Invoice loaded, but customer details could not be loaded: ${apiError(error)}`);
+      }
+    } catch (error) {
+      toast.error(apiError(error));
+      setViewOpen(false);
+    } finally {
+      setViewLoading(false);
+    }
+  };
 
   const toggle = (id) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const removeMany = async (ids) => {
@@ -83,8 +108,12 @@ export default function InvoiceList() {
                   <td className="px-4 text-right font-mono text-emerald-600">{fmtMoney(i.amount_paid)}</td>
                   <td className="px-4 text-right font-mono text-red-600">{fmtMoney(i.outstanding)}</td>
                   <td className="px-4 text-center"><Badge cls={STATUS_META[i.status]?.cls}>{STATUS_META[i.status]?.label}</Badge></td>
-                  <td className="px-4 text-right">{i.status !== "void" && (
-                    <>
+                  <td className="px-4 text-right">
+                    <button onClick={(e) => { e.stopPropagation(); view(i.id); }} data-testid={`view-invoice-row-${i.id}`} title="View invoice" aria-label={`View invoice ${i.number || "draft"}`} className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:border-primary hover:text-primary transition-colors">
+                      <Eye size={12} />
+                    </button>
+                    {i.status !== "void" && (
+                      <>
                       <button onClick={(e) => { e.stopPropagation(); nav(`/invoices/${i.id}?pdf=1`); }} data-testid={`pdf-invoice-row-${i.id}`} title="Download PDF" className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:border-primary hover:text-primary transition-colors">
                         <Download size={12} />
                       </button>
@@ -100,6 +129,61 @@ export default function InvoiceList() {
           </div>
         )}
       </Card>
+
+      <Modal open={viewOpen} onClose={() => setViewOpen(false)} title={`Invoice Details ${viewInvoice?.number || ""}`} wide>
+        {viewLoading ? <p className="text-sm text-slate-500" role="status">Loading invoice details...</p> : viewInvoice && <div className="space-y-5 text-sm" data-testid={`invoice-details-${viewInvoice.id}`}>
+          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
+            {[
+              ["Invoice Number", viewInvoice.number || "DRAFT"],
+              ["Customer", viewInvoice.customer_name],
+              ["Address", viewCustomer?.address],
+              ["City", viewCustomer?.city],
+              ["Phone", viewCustomer?.phone],
+              ["Email", viewCustomer?.email],
+              ["Issue Date", fmtDate(viewInvoice.date)],
+              ["Due Date", fmtDate(viewInvoice.due_date)],
+              ...(!unifiedPriceList ? [["Price Zone", `Zone ${viewInvoice.zone}`]] : []),
+              ["Payment Terms", viewInvoice.payment_terms],
+              ["Reference", viewInvoice.reference],
+              ["Destination", viewInvoice.destination],
+              ["Status", STATUS_META[viewInvoice.status]?.label || viewInvoice.status],
+              ["Tax Rate", viewInvoice.tax_enabled ? `${viewInvoice.tax_rate}%` : ""],
+              ["Related Orders", viewInvoice.order_ids?.join(", ")],
+              ["Invoice Type", viewInvoice.opening_balance ? "Opening Balance" : "Standard"],
+              ["Created", viewInvoice.created_at ? fmtDateTime(viewInvoice.created_at) : ""],
+            ].filter(([, value]) => value !== undefined && value !== null && value !== "").map(([label, value]) => (
+              <div key={label}><dt className="text-xs font-semibold text-slate-500">{label}</dt><dd className="mt-1 whitespace-pre-wrap text-slate-800">{value}</dd></div>
+            ))}
+          </dl>
+          <div>
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Items</h4>
+            {(viewInvoice.items || []).length ? <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead><tr className="bg-slate-50 text-left text-xs text-slate-500"><th className="px-3 py-2">Product / Description</th><th className="px-3 py-2">Size</th><th className="px-3 py-2 text-right">Quantity</th><th className="px-3 py-2 text-right">Unit Price</th><th className="px-3 py-2 text-right">Line Total</th></tr></thead>
+                <tbody>{viewInvoice.items.map((item, index) => <tr key={index} className="border-t border-border/70">
+                  <td className="px-3 py-2">{item.category || item.description || "Item"}</td><td className="px-3 py-2">{item.size || "-"}</td>
+                  <td className="px-3 py-2 text-right">{item.qty}</td><td className="px-3 py-2 text-right">{fmtMoney(item.unit_price)}</td>
+                  <td className="px-3 py-2 text-right">{fmtMoney(item.line_total ?? (Number(item.qty || 0) * Number(item.unit_price || 0)))}</td>
+                </tr>)}</tbody>
+              </table>
+            </div> : <p className="text-slate-500">{viewInvoice.opening_balance ? "Opening balance invoice" : "No invoice items recorded."}</p>}
+          </div>
+          <div className="ml-auto max-w-sm space-y-2 rounded-lg bg-slate-50 p-4">
+            {[["Subtotal", viewInvoice.subtotal], ["Discount", viewInvoice.discount], ["Additional Charges", viewInvoice.extra_charges], ...(viewInvoice.tax_enabled ? [["Tax", viewInvoice.tax_amount]] : []), ["Total", viewInvoice.total], ["Amount Paid", viewInvoice.amount_paid], ["Outstanding Balance", viewInvoice.outstanding]].map(([label, value]) => (
+              <div key={label} className="flex justify-between gap-4"><span className="font-semibold text-slate-600">{label}</span><span className="font-mono">{fmtMoney(value)}</span></div>
+            ))}
+          </div>
+          {viewInvoice.payment_records?.length > 0 && <div>
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Payments</h4>
+            <div className="space-y-2">{viewInvoice.payment_records.map((payment) => <div key={payment.id} className="flex flex-wrap justify-between gap-2 rounded-lg border border-border px-3 py-2">
+              <span>{fmtDate(payment.date)}{payment.method ? ` · ${payment.method}` : ""}</span><span className="font-mono font-semibold">{fmtMoney(payment.amount)}</span>
+              {(payment.reference || payment.notes) && <span className="w-full text-xs text-slate-500">{[payment.reference, payment.notes].filter(Boolean).join(" · ")}</span>}
+            </div>)}</div>
+          </div>}
+          {viewInvoice.notes && <div><h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Notes</h4><p className="mt-1 whitespace-pre-wrap text-slate-800">{viewInvoice.notes}</p></div>}
+          {viewInvoice.audit?.length > 0 && <p className="text-xs text-slate-500">Last updated: {fmtDateTime(viewInvoice.audit[viewInvoice.audit.length - 1].at)}</p>}
+        </div>}
+      </Modal>
     </div>
   );
 }

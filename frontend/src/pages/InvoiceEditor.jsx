@@ -44,6 +44,8 @@ export default function InvoiceEditor() {
   const [payModal, setPayModal] = useState(null);
   const [nextNum, setNextNum] = useState("");
   const docRef = useRef(null);
+  const pdfBusyRef = useRef(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [sp, setSp] = useSearchParams();
   const [editing, setEditing] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
@@ -308,9 +310,26 @@ export default function InvoiceEditor() {
     }
   };
 
-  const downloadPDF = async () => {
-    try { await elementToPdf(docRef.current, `${documentFilename("Invoice", inv.customer_name || "Customer", inv.number || "Draft")}.pdf`); toast.success("PDF downloaded"); } catch (e) { toast.error("PDF failed: " + e.message); }
+  const runPdfDownload = async (element, filename, successMessage, errorLabel) => {
+    if (pdfBusyRef.current) return;
+    pdfBusyRef.current = true;
+    setPdfBusy(true);
+    try {
+      await elementToPdf(element, filename);
+      toast.success(successMessage);
+    } catch (error) {
+      toast.error(`${errorLabel}: ${error.message}`);
+    } finally {
+      pdfBusyRef.current = false;
+      setPdfBusy(false);
+    }
   };
+  const downloadPDF = () => runPdfDownload(
+    docRef.current,
+    `${documentFilename("Invoice", inv.customer_name || "Customer", inv.number || "Draft")}.pdf`,
+    "PDF downloaded",
+    "PDF failed",
+  );
   const custObj = customers.find((c) => c.id === inv.customer_id) || {};
   const invoiceDeliveryNote = {
     reference: inv.number || "DRAFT",
@@ -330,14 +349,12 @@ export default function InvoiceEditor() {
       size: item.size || "",
     })),
   };
-  const downloadDeliveryNote = async () => {
-    try {
-      await elementToPdf(deliveryNoteRef.current, `${documentFilename("Delivery-note", inv.customer_name || "Customer", inv.number || "Draft")}.pdf`);
-      toast.success("Delivery note downloaded");
-    } catch (error) {
-      toast.error(`Delivery note PDF failed: ${error.message}`);
-    }
-  };
+  const downloadDeliveryNote = () => runPdfDownload(
+    deliveryNoteRef.current,
+    `${documentFilename("Delivery-note", inv.customer_name || "Customer", inv.number || "Draft")}.pdf`,
+    "Delivery note downloaded",
+    "Delivery note PDF failed",
+  );
   const createAndDownload = async () => {
     if (id) return downloadPDF();
     sessionStorage.setItem("iq-dl", "1"); await save("issued");
@@ -365,8 +382,8 @@ export default function InvoiceEditor() {
           <ArrowLeft size={16} /> Back to Invoices
         </button>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <Btn variant="outline" onClick={downloadDeliveryNote} disabled={!inv.customer_name || !invoiceDeliveryNote.items.length} data-testid="download-delivery-note-btn">
-            <Download size={15} /> Download Delivery Note
+          <Btn variant="outline" onClick={downloadDeliveryNote} disabled={pdfBusy || !inv.customer_name || !invoiceDeliveryNote.items.length} data-testid="download-delivery-note-btn">
+            <Download size={15} /> {pdfBusy ? "Generating..." : "Download Delivery Note"}
           </Btn>
           <button onClick={() => setCompactPreview((v) => !v)} className="inline-flex items-center gap-1.5 h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 hover:border-primary hover:text-primary transition-colors" data-testid="toggle-invoice-preview-mode">
             {compactPreview ? <Eye size={15} /> : <EyeOff size={15} />}
@@ -481,7 +498,7 @@ export default function InvoiceEditor() {
                   {!id && <Btn variant="outline" disabled={busy} onClick={() => save("draft")} data-testid="save-draft-btn"><Save size={15} /> Draft</Btn>}
                   {!id && <Btn disabled={busy} onClick={() => save("issued")} data-testid="issue-invoice-btn"><Send size={15} /> Issue</Btn>}
                   <Btn variant="outline" onClick={copyInvoice} data-testid="copy-btn-2"><Copy size={15} /> Copy</Btn>
-                  <Btn variant="outline" onClick={downloadPDF} data-testid="download-pdf-btn"><Download size={15} /> PDF</Btn>
+                  <Btn variant="outline" onClick={downloadPDF} disabled={pdfBusy} data-testid="download-pdf-btn"><Download size={15} /> {pdfBusy ? "Generating..." : "PDF"}</Btn>
                   <Btn variant="outline" onClick={printInvoice} data-testid="print-invoice-btn"><Printer size={15} /> Print</Btn>
                   {id && inv.status !== "draft" && totals.outstanding > 0 && !editing && (
                     <Btn variant="success" onClick={() => setPayModal({ amount: totals.outstanding.toFixed(2), method: "Cash", date: today(), reference: "", notes: "", idempotency_key: newKey() })} data-testid="record-payment-btn"><CreditCard size={15} /> Pay</Btn>
@@ -544,7 +561,7 @@ export default function InvoiceEditor() {
               <div className="flex flex-wrap gap-2">
                 {!id && <Btn variant="outline" disabled={busy} onClick={() => save("draft")} data-testid="bottom-save-draft-btn"><Save size={15} /> Save Draft</Btn>}
                 <Btn variant="outline" onClick={() => document.querySelector('[data-testid="invoice-preview"]')?.scrollIntoView({ behavior: "smooth" })} data-testid="bottom-preview-btn">Preview Invoice</Btn>
-                <Btn disabled={busy} onClick={createAndDownload} data-testid="create-download-pdf-btn"><Download size={15} /> {id ? "Download PDF" : "Create & Download PDF"}</Btn>
+                <Btn disabled={busy || pdfBusy} onClick={createAndDownload} data-testid="create-download-pdf-btn"><Download size={15} /> {pdfBusy ? "Generating..." : id ? "Download PDF" : "Create & Download PDF"}</Btn>
               </div>
             </div>
           </div>
@@ -553,7 +570,7 @@ export default function InvoiceEditor() {
           <div className="xl:sticky xl:top-20 space-y-3 no-print" data-testid="invoice-preview">
             <div className="grid grid-cols-2 rounded-lg bg-white border border-border p-1">
               <button className="rounded-md bg-primary text-white py-2 text-sm font-semibold" data-testid="tab-preview">Invoice Preview</button>
-              <button onClick={downloadPDF} className="rounded-md py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50" data-testid="tab-pdf">PDF</button>
+              <button onClick={downloadPDF} disabled={pdfBusy} className="rounded-md py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50" data-testid="tab-pdf">{pdfBusy ? "Generating..." : "PDF"}</button>
             </div>
             <Card className="p-3 overflow-hidden"><FitPreview>
               <InvoiceDocument inv={inv} totals={totals} settings={settings} customer={custObj} />

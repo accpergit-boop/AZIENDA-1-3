@@ -36,7 +36,6 @@ export async function elementToPdf(el, filename = "document.pdf") {
       scale: 2,
       backgroundColor: "#ffffff",
       useCORS: true,
-      allowTaint: true,
       logging: false,
       width: clone.scrollWidth || clone.offsetWidth || 794,
       height: clone.scrollHeight || clone.offsetHeight || 1200,

@@ -1,16 +1,27 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
-import { fmtDate, today } from "@/lib/format";
-import { Card, Btn, Input, PageHeader, Empty } from "@/components/common";
-import { Factory, Save, Trash2 } from "lucide-react";
+import { fmtDate, fmtDateTime, today } from "@/lib/format";
+import { Card, Btn, Input, Select, Modal, PageHeader, Empty } from "@/components/common";
+import { Factory, Plus, Save, Trash2 } from "lucide-react";
 
 export default function Production() {
   const [data, setData] = useState(null);
   const [form, setForm] = useState({ date: today(), white_blocks: "", blue_blocks: "", notes: "" });
+  const [stock, setStock] = useState([]);
+  const [blockCuttings, setBlockCuttings] = useState([]);
+  const [cutOpen, setCutOpen] = useState(false);
+  const [cutForm, setCutForm] = useState({ block: "", size: "" });
   const [busy, setBusy] = useState(false);
-  const load = () => api.get("/production/daily").then(setData).catch((e) => toast.error(apiError(e)));
+  const [cutBusy, setCutBusy] = useState(false);
+  const load = () => {
+    api.get("/production/daily").then(setData).catch((e) => toast.error(apiError(e)));
+    api.get("/production/block-cutting").then(setBlockCuttings).catch((e) => toast.error(apiError(e)));
+    api.get("/stock").then(setStock).catch((e) => toast.error(apiError(e)));
+  };
   useEffect(() => { load(); }, []);
+
+  const availableSizes = [...new Set(stock.map((item) => item.size).filter(Boolean))].sort();
 
   const save = async () => {
     if (busy) return; setBusy(true);
@@ -18,6 +29,22 @@ export default function Production() {
       await api.post("/production/daily", { ...form, white_blocks: Number(form.white_blocks) || 0, blue_blocks: Number(form.blue_blocks) || 0 });
       toast.success("Production saved"); setForm({ ...form, white_blocks: "", blue_blocks: "", notes: "" }); load();
     } catch (e) { toast.error(apiError(e)); } finally { setBusy(false); }
+  };
+  const saveBlockCutting = async () => {
+    if (!cutForm.block || !cutForm.size) return toast.error("Select a block and size");
+    if (cutBusy) return;
+    setCutBusy(true);
+    try {
+      await api.post("/production/block-cutting", cutForm);
+      toast.success("Block cutting recorded");
+      setCutOpen(false);
+      setCutForm({ block: "", size: "" });
+      api.get("/production/block-cutting").then(setBlockCuttings).catch((e) => toast.error(apiError(e)));
+    } catch (e) {
+      toast.error(apiError(e));
+    } finally {
+      setCutBusy(false);
+    }
   };
   const del = async (r) => { if (!window.confirm(`Delete production of ${fmtDate(r.date)}?`)) return; await api.del(`/production/daily/${r.id}`); load(); };
   const Tot = ({ l, v, k }) => (
@@ -37,6 +64,22 @@ export default function Production() {
         </div>
         <p className="text-xs text-slate-400 mt-2">Saving the same date again replaces that day's numbers.</p>
       </Card>
+      <Card className="p-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div><h2 className="font-semibold text-slate-800">Block Cutting</h2><p className="text-sm text-slate-500">Record cut block type and size without changing stock quantities.</p></div>
+          <Btn onClick={() => { setCutForm({ block: "", size: "" }); setCutOpen(true); }} data-testid="add-block-cutting-btn"><Plus size={16} /> Add Block Cutted</Btn>
+        </div>
+        {blockCuttings.length === 0 ? <p className="text-sm text-slate-400">No block cutting records yet.</p> : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="border-b border-border bg-slate-50 text-left text-xs text-slate-500"><th className="px-3 py-2">Block</th><th className="px-3 py-2">Size</th><th className="px-3 py-2">Date and Time</th></tr></thead>
+              <tbody>{blockCuttings.map((record) => <tr key={record.id} className="border-b border-border/70" data-testid={`block-cutting-row-${record.id}`}>
+                <td className="px-3 py-2 font-semibold">{record.block}</td><td className="px-3 py-2">{record.size}</td><td className="px-3 py-2 text-slate-500">{fmtDateTime(record.created_at)}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        )}
+      </Card>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4"><Tot l="Today" v={data?.today} k="today" /><Tot l="This week" v={data?.week} k="week" /><Tot l="This month" v={data?.month} k="month" /></div>
       <Card className="overflow-hidden">
         {!data ? <p className="p-6 text-sm text-slate-400">Loading...</p> : data.rows.length === 0 ? <Empty icon={Factory} title="No production recorded yet" /> : (
@@ -50,6 +93,18 @@ export default function Production() {
               </tr>))}</tbody>
           </table>)}
       </Card>
+      <Modal open={cutOpen} onClose={() => setCutOpen(false)} title="Add Block Cutted">
+        <div className="space-y-4">
+          <Select label="Which block?" value={cutForm.block} onChange={(event) => setCutForm({ block: event.target.value, size: "" })} data-testid="block-cutting-type-select">
+            <option value="">Select block...</option><option value="Blue">Blue</option><option value="Bianco">Bianco</option>
+          </Select>
+          <Select label="Which size?" value={cutForm.size} onChange={(event) => setCutForm({ ...cutForm, size: event.target.value })} disabled={!cutForm.block || availableSizes.length === 0} data-testid="block-cutting-size-select">
+            <option value="">{availableSizes.length ? "Select size..." : "No sizes available in Stock"}</option>
+            {availableSizes.map((size) => <option key={size} value={size}>{size}</option>)}
+          </Select>
+          <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setCutOpen(false)}>Cancel</Btn><Btn disabled={cutBusy || !cutForm.block || !cutForm.size} onClick={saveBlockCutting} data-testid="save-block-cutting-btn">Confirm</Btn></div>
+        </div>
+      </Modal>
     </div>
   );
 }

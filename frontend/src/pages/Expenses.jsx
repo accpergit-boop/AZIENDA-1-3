@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
-import { fmtMoney, fmtDate, today } from "@/lib/format";
+import { fmtMoney, fmtDate, fmtDateTime, today } from "@/lib/format";
 import { Card, Btn, Input, Select, Badge, Modal, PageHeader, Empty } from "@/components/common";
-import { Banknote, Plus, TrendingUp, TrendingDown, Wallet, Trash2, Pencil } from "lucide-react";
+import { Banknote, Eye, Plus, TrendingUp, TrendingDown, Wallet, Trash2, Pencil } from "lucide-react";
 
 const CATS = ["General", "Materials", "Fuel", "Salaries", "Rent", "Utilities", "Vehicle", "Maintenance", "Other"];
 const blank = () => ({ description: "", amount: "", date: today(), category: "General", payment_method: "Cash", reference: "", vehicle_id: "", notes: "" });
@@ -42,6 +42,7 @@ export default function Expenses() {
   const [costs, setCosts] = useState(null);
   const [vehicles, setVehicles] = useState([]);
   const [modal, setModal] = useState(null);
+  const [viewExpense, setViewExpense] = useState(null);
   const [cat, setCat] = useState("");
   const [month, setMonth] = useState("");
   const [q, setQ] = useState("");
@@ -122,6 +123,7 @@ export default function Expenses() {
                   <td className="px-4"><Badge>{e.category}</Badge></td>
                   <td className="px-4 text-right font-mono text-slate-800">{fmtMoney(e.amount)}</td>
                   <td className="px-4 text-right whitespace-nowrap">
+                    <button onClick={() => setViewExpense(e)} className="text-slate-400 hover:text-primary mr-3" title="View expense" aria-label={`View ${e.description}`} data-testid={`view-expense-${e.id}`}><Eye size={15} /></button>
                     {!e.source_key && <>
                       <button onClick={() => setModal({ ...e })} className="text-slate-400 hover:text-primary mr-3" data-testid={`edit-expense-${e.id}`}><Pencil size={15} /></button>
                       <button onClick={() => remove(e)} className="text-slate-400 hover:text-red-600" data-testid={`delete-expense-${e.id}`}><Trash2 size={15} /></button>
@@ -132,6 +134,29 @@ export default function Expenses() {
           </div>
         )}
       </Card>
+
+      <Modal open={!!viewExpense} onClose={() => setViewExpense(null)} title="Expense Details">
+        {viewExpense && <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
+          {[
+            ["Description", viewExpense.description],
+            ["Category", viewExpense.category],
+            ["Amount", fmtMoney(viewExpense.amount)],
+            ["Date", fmtDate(viewExpense.date)],
+            ["Payment Method", viewExpense.payment_method],
+            ["Reference", viewExpense.reference],
+            ["Vehicle", vehicles.find((vehicle) => vehicle.id === viewExpense.vehicle_id)?.name],
+            ["Notes", viewExpense.notes],
+            ["Source", viewExpense.source_key ? "Fleet part purchase" : ""],
+            ["Source Reference", viewExpense.source_key],
+            ["Created", viewExpense.created_at ? fmtDateTime(viewExpense.created_at) : ""],
+            ["Voided", viewExpense.voided ? "Yes" : ""],
+            ["Void Reason", viewExpense.void_reason],
+            ["Voided At", viewExpense.voided_at ? fmtDateTime(viewExpense.voided_at) : ""],
+          ].filter(([, value]) => value !== undefined && value !== null && value !== "").map(([label, value]) => (
+            <div key={label}><dt className="text-xs font-semibold text-slate-500">{label}</dt><dd className="mt-1 whitespace-pre-wrap text-slate-800">{value}</dd></div>
+          ))}
+        </dl>}
+      </Modal>
 
       <Modal open={!!modal} onClose={() => setModal(null)} title={modal?.id ? "Edit Expense" : "Add Expense"}>
         {modal && <div className="space-y-4">
