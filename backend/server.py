@@ -748,6 +748,15 @@ async def edit_price(pid: str, body: PriceIn, user=Depends(get_current_user)):
     await log_audit("price", pid, "updated", user, before=before, after=rec)
     return rec
 
+@api.delete("/prices/{pid}")
+async def delete_price(pid: str, user=Depends(get_current_user)):
+    before = await db.prices.find_one({"id": pid}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Product price not found")
+    await db.prices.delete_one({"id": pid})
+    await log_audit("price", pid, "deleted", user, before=before)
+    return {"ok": True}
+
 RIBBON_FAMILY = {"Ribbon", "Ribbon Black & Pink", "Ribbon Black", "Ribbon Pink", "Candy"}
 MANUAL_ONLY_SIZES = {"1370x150"}
 
@@ -846,7 +855,7 @@ class InvoiceItem(BaseModel):
     order_id: Optional[str] = ""
 
 class InvoiceIn(BaseModel):
-    customer_id: str
+    customer_id: Optional[str] = ""
     customer_name: str = ""
     date: str = Field(default_factory=today_str)
     due_date: Optional[str] = None
@@ -878,24 +887,44 @@ def invoice_changes(old, new):
         ch.append({"field": "items", "old": "; ".join(ol), "new": "; ".join(nl)})
     return ch
 
+async def invoice_sequence_start():
+    legacy_counters = await listall("counters")
+    legacy_seq = max(
+        (int(counter.get("seq", 0)) for counter in legacy_counters
+         if re.fullmatch(r"inv-\d{4}", str(counter.get("id", "")))),
+        default=0,
+    )
+    invoices = await db.invoices.find({}, {"_id": 0, "number": 1}).to_list(None)
+    legacy_numbers = [
+        int(match.group(1))
+        for invoice in invoices
+        if (match := re.search(r"(\d+)$", str(invoice.get("number") or "")))
+    ]
+    return max([legacy_seq, *legacy_numbers], default=0)
+
+async def current_invoice_sequence():
+    counter = await db.counters.find_one({"_id": "invoice-sequence"})
+    if counter:
+        return int(counter["seq"])
+    return await invoice_sequence_start()
+
 async def next_invoice_number():
-    s = await db.settings.find_one({"id": "singleton"}) or {}
-    prefix = s.get("invoice_prefix", "IQF")
-    year = local_today().year
+    counter = await db.counters.find_one({"_id": "invoice-sequence"})
+    if not counter:
+        initial_seq = await invoice_sequence_start()
+        try:
+            await db.counters.insert_one({"_id": "invoice-sequence", "seq": initial_seq + 1})
+            return f"{initial_seq + 1:03d}"
+        except DuplicateKeyError:
+            pass
     counter = await db.counters.find_one_and_update(
-        {"id": f"inv-{year}"}, {"$inc": {"seq": 1}},
-        upsert=True, return_document=ReturnDocument.AFTER)
-    seq = counter["seq"]
-    return f"{prefix}-{year}-{seq:04d}"
+        {"_id": "invoice-sequence"}, {"$inc": {"seq": 1}},
+        return_document=ReturnDocument.AFTER)
+    return f"{counter['seq']:03d}"
 
 @api.get("/invoices/next-number")
 async def get_next_number(user=Depends(get_current_user)):
-    s = await db.settings.find_one({"id": "singleton"}) or {}
-    prefix = s.get("invoice_prefix", "IQF")
-    year = local_today().year
-    c = await db.counters.find_one({"id": f"inv-{year}"})
-    seq = (c["seq"] + 1) if c else 1
-    return {"number": f"{prefix}-{year}-{seq:04d}"}
+    return {"number": f"{(await current_invoice_sequence()) + 1:03d}"}
 
 @api.get("/invoices")
 async def get_invoices(user=Depends(get_current_user)):
@@ -943,10 +972,14 @@ async def bulk_delete_invoices(body: BulkDeleteIn, user=Depends(get_current_user
     return {"deleted": n}
 
 async def _prepare_invoice(body: InvoiceIn):
-    cust = await db.customers.find_one({"id": body.customer_id})
-    if not cust:
+    customer_id = (body.customer_id or "").strip()
+    cust = await db.customers.find_one({"id": customer_id}) if customer_id else None
+    if customer_id and not cust:
         raise HTTPException(400, "Customer not found")
+    if not cust and not body.customer_name.strip():
+        raise HTTPException(400, "Customer name is required")
     inv = body.model_dump()
+    inv["customer_id"] = customer_id
     if inv.get("opening_balance") is None or inv.get("opening_balance") is False:
         inv.pop("opening_balance", None)
     if uses_unified_price_list(active_company_id.get()):
@@ -955,7 +988,7 @@ async def _prepare_invoice(body: InvoiceIn):
         raise HTTPException(400, "Discount, additional charges and tax rate cannot be negative")
     if any((it.get("unit_price") or 0) < 0 for it in inv.get("items", [])):
         raise HTTPException(400, "Unit prices cannot be negative")
-    inv["customer_name"] = cust["name"]
+    inv["customer_name"] = cust["name"] if cust else body.customer_name.strip()
     if not inv.get("due_date"):
         inv["due_date"] = inv["date"]
     inv["amount_paid"] = 0
@@ -1319,6 +1352,29 @@ async def add_block_cutting(body: BlockCuttingIn, user=Depends(get_current_user)
     await log_audit("block_cutting", record["id"], "created", user, after=record)
     return record
 
+@api.put("/production/block-cutting/{record_id}")
+async def edit_block_cutting(record_id: str, body: BlockCuttingIn, user=Depends(get_current_user)):
+    before = await db.block_cuttings.find_one({"id": record_id}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Block cutting record not found")
+    if body.block not in ("Blue", "Bianco"):
+        raise HTTPException(400, "Block must be Blue or Bianco")
+    size = body.size.strip()
+    if not size or not await db.stock.find_one({"size": size}):
+        raise HTTPException(400, "Select a size currently available in Stock")
+    record = await update_doc("block_cuttings", record_id, {"block": body.block, "size": size})
+    await log_audit("block_cutting", record_id, "updated", user, before=before, after=record)
+    return record
+
+@api.delete("/production/block-cutting/{record_id}")
+async def delete_block_cutting(record_id: str, user=Depends(get_current_user)):
+    before = await db.block_cuttings.find_one({"id": record_id}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Block cutting record not found")
+    await db.block_cuttings.delete_one({"id": record_id})
+    await log_audit("block_cutting", record_id, "deleted", user, before=before)
+    return {"ok": True}
+
 @api.post("/production")
 async def add_production(body: ProductionIn, user=Depends(get_current_user)):
     d = body.model_dump()
@@ -1407,6 +1463,7 @@ class AttendanceIn(BaseModel):
     employee_id: str
     date: str
     status: str = "Present"
+    overtime_hours: Optional[float] = Field(default=None, ge=0)
     notes: Optional[str] = ""
 
 @api.get("/attendance")
@@ -1422,11 +1479,202 @@ async def add_attendance(body: AttendanceIn, user=Depends(get_current_user)):
         raise HTTPException(400, "Invalid attendance status")
     existing = await db.attendance.find_one({"employee_id": body.employee_id, "date": body.date})
     data = body.model_dump()
+    if data["overtime_hours"] is None:
+        data["overtime_hours"] = (existing or {}).get("overtime_hours", 0) if body.status in ("Present", "Half Day") else 0
     data["employee_name"] = emp["name"]
     data["department"] = emp.get("department", "")
     if existing:
         return await update_doc("attendance", existing["id"], data)
     return await insert("attendance", data)
+
+class SalaryAdvanceIn(BaseModel):
+    employee_id: str
+    amount: float = Field(gt=0)
+    date: str = Field(default_factory=today_str)
+    notes: Optional[str] = ""
+
+class SalaryCutIn(BaseModel):
+    employee_id: str
+    start_date: str
+    end_date: str
+    amount: float = Field(ge=0)
+    notes: Optional[str] = ""
+
+class SalaryRateIn(BaseModel):
+    hourly_rate: float = Field(ge=0.01)
+
+def salary_period_dates(start_date, end_date):
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Use valid YYYY-MM-DD salary period dates")
+    if end < start:
+        raise HTTPException(400, "Salary period end date must not be before start date")
+    return start_date, end_date
+
+async def salary_report(start_date, end_date):
+    salary_period_dates(start_date, end_date)
+    employees = await listall("employees", sort=("name", 1))
+    attendance = await listall("attendance", {"date": {"$gte": start_date, "$lte": end_date}}, ("date", 1))
+    advances = await listall("salary_advances")
+    cuts = await listall("salary_cuts")
+    result = []
+    for employee in employees:
+        hourly_rate = float(employee.get("hourly_rate") or 20)
+        rows = sorted(
+            [record for record in attendance if record.get("employee_id") == employee["id"]],
+            key=lambda record: record.get("date", ""),
+        )
+        days = []
+        regular_hours = 0.0
+        overtime_hours = 0.0
+        present_days = 0
+        half_days = 0
+        for record in rows:
+            status = record.get("status")
+            standard = 8 if status == "Present" else 4 if status == "Half Day" else 0
+            overtime = float(record.get("overtime_hours", 0) or 0) if standard else 0
+            regular_hours += standard
+            overtime_hours += overtime
+            present_days += int(status == "Present")
+            half_days += int(status == "Half Day")
+            days.append({"date": record.get("date"), "status": status, "regular_hours": standard,
+                         "overtime_hours": overtime, "pay": r2(D(standard + overtime) * D(hourly_rate))})
+        employee_advances = [item for item in advances if item.get("employee_id") == employee["id"]]
+        employee_cuts = [item for item in cuts if item.get("employee_id") == employee["id"]]
+        all_advance_total = sum((D(item.get("amount", 0)) for item in employee_advances), Decimal("0"))
+        all_cut_total = sum((D(item.get("amount", 0)) for item in employee_cuts), Decimal("0"))
+        period_cut = next((item for item in employee_cuts
+                           if item.get("start_date") == start_date and item.get("end_date") == end_date), None)
+        regular_pay = r2(D(regular_hours) * D(hourly_rate))
+        overtime_pay = r2(D(overtime_hours) * D(hourly_rate))
+        gross = r2(regular_pay + overtime_pay)
+        cut = r2((period_cut or {}).get("amount", 0))
+        balance = all_advance_total - all_cut_total
+        balance_before_period = sum(
+            (D(item.get("amount", 0)) for item in employee_advances if item.get("date", "") < start_date),
+            Decimal("0"),
+        ) - sum(
+            (D(item.get("amount", 0)) for item in employee_cuts if item.get("end_date", "") < start_date),
+            Decimal("0"),
+        )
+        balance_through_period = sum(
+            (D(item.get("amount", 0)) for item in employee_advances if item.get("date", "") <= end_date),
+            Decimal("0"),
+        ) - sum(
+            (D(item.get("amount", 0)) for item in employee_cuts if item.get("end_date", "") <= end_date),
+            Decimal("0"),
+        )
+        balance_history = [
+            {
+                "id": item.get("id"), "type": "advance", "date": item.get("date", ""),
+                "recorded_at": item.get("created_at", ""), "amount": r2(item.get("amount", 0)),
+                "notes": item.get("notes", ""), "_sort_at": item.get("created_at", ""),
+            }
+            for item in employee_advances
+        ] + [
+            {
+                "id": item.get("id"), "type": "cut", "date": item.get("end_date", ""),
+                "start_date": item.get("start_date", ""), "end_date": item.get("end_date", ""),
+                "recorded_at": item.get("updated_at") or item.get("created_at", ""),
+                "amount": r2(item.get("amount", 0)), "notes": item.get("notes", ""),
+                "_sort_at": item.get("updated_at") or item.get("created_at", ""),
+            }
+            for item in employee_cuts
+        ]
+        balance_history.sort(key=lambda item: (item["date"], item["_sort_at"], item["type"]))
+        running_balance = Decimal("0")
+        for transaction in balance_history:
+            transaction["balance_before"] = r2(running_balance)
+            amount = D(transaction["amount"])
+            running_balance += amount if transaction["type"] == "advance" else -amount
+            transaction["balance_after"] = r2(running_balance)
+            transaction.pop("_sort_at")
+        result.append({
+            "employee_id": employee["id"], "name": employee.get("name", ""),
+            "department": employee.get("department", ""), "active": employee.get("active", True),
+            "hourly_rate": hourly_rate,
+            "days": days, "present_days": present_days, "half_days": half_days,
+            "regular_hours": regular_hours, "overtime_hours": overtime_hours,
+            "regular_pay": regular_pay, "overtime_pay": overtime_pay, "gross_salary": gross,
+            "balance_before_period": r2(balance_before_period),
+            "balance_after_period": r2(balance_through_period),
+            "balance": r2(balance),
+            "available_balance": r2(balance_through_period + D(cut)),
+            "balance_history": balance_history,
+            "cut": cut, "net_salary": r2(gross - cut),
+        })
+    return {"start_date": start_date, "end_date": end_date, "employees": result}
+
+@api.get("/salaries")
+async def get_salaries(start_date: str, end_date: str, user=Depends(get_current_user)):
+    require_admin(user)
+    return await salary_report(start_date, end_date)
+
+@api.put("/salaries/rates/{eid}")
+async def save_salary_rate(eid: str, body: SalaryRateIn, user=Depends(get_current_user)):
+    require_admin(user)
+    employee = await db.employees.find_one({"id": eid}, {"_id": 0})
+    if not employee:
+        raise HTTPException(404, "Employee not found")
+    updated = await update_doc("employees", eid, {"hourly_rate": r2(body.hourly_rate)})
+    await log_audit("employee", eid, "salary_rate_updated", user,
+                    before={"hourly_rate": employee.get("hourly_rate", 20)},
+                    after={"hourly_rate": updated["hourly_rate"]})
+    return updated
+
+@api.post("/salaries/advances")
+async def add_salary_advance(body: SalaryAdvanceIn, user=Depends(get_current_user)):
+    require_admin(user)
+    if not await db.employees.find_one({"id": body.employee_id}):
+        raise HTTPException(404, "Employee not found")
+    record = await insert("salary_advances", body.model_dump())
+    await log_audit("salary_advance", record["id"], "created", user, after=record)
+    return record
+
+@api.delete("/salaries/history/{eid}")
+async def clear_salary_history(eid: str, user=Depends(get_current_user)):
+    require_admin(user)
+    employee = await db.employees.find_one({"id": eid}, {"_id": 0})
+    if not employee:
+        raise HTTPException(404, "Employee not found")
+    advances = await listall("salary_advances", {"employee_id": eid})
+    cuts = await listall("salary_cuts", {"employee_id": eid})
+    await db.salary_advances.delete_many({"employee_id": eid})
+    await db.salary_cuts.delete_many({"employee_id": eid})
+    await log_audit(
+        "salary_balance_history", eid, "cleared", user,
+        before={"employee_name": employee.get("name", ""), "advances": advances, "cuts": cuts},
+        after={"employee_name": employee.get("name", ""), "outstanding_balance": 0},
+    )
+    return {"ok": True, "deleted_advances": len(advances), "deleted_cuts": len(cuts)}
+
+@api.post("/salaries/cuts")
+async def save_salary_cut(body: SalaryCutIn, user=Depends(get_current_user)):
+    require_admin(user)
+    salary_period_dates(body.start_date, body.end_date)
+    report = await salary_report(body.start_date, body.end_date)
+    employee = next((item for item in report["employees"] if item["employee_id"] == body.employee_id), None)
+    if not employee:
+        raise HTTPException(404, "Employee not found")
+    before = await db.salary_cuts.find_one({
+        "employee_id": body.employee_id, "start_date": body.start_date, "end_date": body.end_date,
+    }, {"_id": 0})
+    available_balance = employee["available_balance"]
+    if body.amount > available_balance:
+        raise HTTPException(400, f"Cut exceeds the outstanding balance of R {available_balance:.2f}")
+    if body.amount > employee["gross_salary"]:
+        raise HTTPException(400, f"Cut exceeds this period's gross salary of R {employee['gross_salary']:.2f}")
+    if body.amount == 0:
+        if before:
+            await db.salary_cuts.delete_one({"id": before["id"]})
+            await log_audit("salary_cut", before["id"], "deleted", user, before=before)
+        return {"ok": True, "amount": 0}
+    data = body.model_dump()
+    record = await update_doc("salary_cuts", before["id"], data) if before else await insert("salary_cuts", data)
+    await log_audit("salary_cut", record["id"], "saved", user, before=before, after=record)
+    return record
 
 # ---------------- Drivers & Vehicles ----------------
 class DriverIn(BaseModel):

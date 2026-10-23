@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { fmtDate, fmtDateTime, today } from "@/lib/format";
 import { Card, Btn, Input, Select, Modal, PageHeader, Empty } from "@/components/common";
-import { Factory, Plus, Save, Trash2 } from "lucide-react";
+import { Factory, Plus, Save, Trash2, Pencil } from "lucide-react";
 
 export default function Production() {
   const [data, setData] = useState(null);
@@ -35,8 +35,9 @@ export default function Production() {
     if (cutBusy) return;
     setCutBusy(true);
     try {
-      await api.post("/production/block-cutting", cutForm);
-      toast.success("Block cutting recorded");
+      if (cutForm.id) await api.put(`/production/block-cutting/${cutForm.id}`, cutForm);
+      else await api.post("/production/block-cutting", cutForm);
+      toast.success(cutForm.id ? "Block cutting updated" : "Block cutting recorded");
       setCutOpen(false);
       setCutForm({ block: "", size: "" });
       api.get("/production/block-cutting").then(setBlockCuttings).catch((e) => toast.error(apiError(e)));
@@ -44,6 +45,16 @@ export default function Production() {
       toast.error(apiError(e));
     } finally {
       setCutBusy(false);
+    }
+  };
+  const deleteBlockCutting = async (record) => {
+    if (!window.confirm(`Delete the ${record.block} ${record.size} block cutting record?`)) return;
+    try {
+      await api.del(`/production/block-cutting/${record.id}`);
+      toast.success("Block cutting deleted");
+      setBlockCuttings((current) => current.filter((item) => item.id !== record.id));
+    } catch (e) {
+      toast.error(apiError(e));
     }
   };
   const del = async (r) => { if (!window.confirm(`Delete production of ${fmtDate(r.date)}?`)) return; await api.del(`/production/daily/${r.id}`); load(); };
@@ -72,9 +83,13 @@ export default function Production() {
         {blockCuttings.length === 0 ? <p className="text-sm text-slate-400">No block cutting records yet.</p> : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr className="border-b border-border bg-slate-50 text-left text-xs text-slate-500"><th className="px-3 py-2">Block</th><th className="px-3 py-2">Size</th><th className="px-3 py-2">Date and Time</th></tr></thead>
+              <thead><tr className="border-b border-border bg-slate-50 text-left text-xs text-slate-500"><th className="px-3 py-2">Block</th><th className="px-3 py-2">Size</th><th className="px-3 py-2">Date and Time</th><th className="px-3 py-2 text-right">Actions</th></tr></thead>
               <tbody>{blockCuttings.map((record) => <tr key={record.id} className="border-b border-border/70" data-testid={`block-cutting-row-${record.id}`}>
                 <td className="px-3 py-2 font-semibold">{record.block}</td><td className="px-3 py-2">{record.size}</td><td className="px-3 py-2 text-slate-500">{fmtDateTime(record.created_at)}</td>
+                <td className="px-3 py-2 text-right whitespace-nowrap">
+                  <button onClick={() => { setCutForm({ id: record.id, block: record.block, size: record.size }); setCutOpen(true); }} className="mr-3 text-slate-400 hover:text-primary" aria-label={`Edit ${record.block} ${record.size}`} data-testid={`edit-block-cutting-${record.id}`}><Pencil size={15} /></button>
+                  <button onClick={() => deleteBlockCutting(record)} className="text-slate-400 hover:text-red-600" aria-label={`Delete ${record.block} ${record.size}`} data-testid={`delete-block-cutting-${record.id}`}><Trash2 size={15} /></button>
+                </td>
               </tr>)}</tbody>
             </table>
           </div>
@@ -93,7 +108,7 @@ export default function Production() {
               </tr>))}</tbody>
           </table>)}
       </Card>
-      <Modal open={cutOpen} onClose={() => setCutOpen(false)} title="Add Block Cutted">
+      <Modal open={cutOpen} onClose={() => setCutOpen(false)} title={cutForm.id ? "Edit Block Cutting" : "Add Block Cutted"}>
         <div className="space-y-4">
           <Select label="Which block?" value={cutForm.block} onChange={(event) => setCutForm({ block: event.target.value, size: "" })} data-testid="block-cutting-type-select">
             <option value="">Select block...</option><option value="Blue">Blue</option><option value="Bianco">Bianco</option>

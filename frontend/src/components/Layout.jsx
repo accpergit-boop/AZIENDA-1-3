@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import {
   LayoutDashboard, Users, FileText, Boxes, Factory, CalendarCheck,
   Truck, Menu, X, LogOut, Search, Bell, Layers,
-  ClipboardList, Banknote, Wrench, Wallet, ShoppingCart, ChevronDown, Building2, Settings as Cog, Sparkles,
+  ClipboardList, Banknote, Wrench, Wallet, ShoppingCart, ChevronDown, Building2, Settings as Cog,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { Input, Btn } from "@/components/common";
@@ -14,7 +14,6 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
-  { to: "/assistant", label: "AI Assistant", icon: Sparkles },
   { to: "/customers", label: "Customers", icon: Users },
   { to: "/expenses", label: "Expenses", icon: Banknote },
   { to: "/buyings", label: "Buying", icon: ShoppingCart },

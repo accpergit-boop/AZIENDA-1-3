@@ -218,6 +218,15 @@ export default function Settings() {
     } catch (e) { toast.error(apiError(e)); }
   };
 
+  const deletePrice = async (price) => {
+    if (!window.confirm(`Remove ${priceProductName(price.category)} — ${price.size} from this price list? Existing invoices will not change.`)) return;
+    try {
+      await api.del(`/prices/${price.id}`);
+      setPrices((current) => current.filter((item) => item.id !== price.id));
+      toast.success("Product removed from the price list");
+    } catch (e) { toast.error(apiError(e)); }
+  };
+
   const saveDriver = async () => {
     try {
       if (dModal.id) await api.put(`/drivers/${dModal.id}`, dModal);
@@ -292,7 +301,7 @@ export default function Settings() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
-                  <th className="px-4 py-3 font-semibold">Product / Category</th><th className="px-4 font-semibold">Size / Unit</th><th className="px-4 font-semibold text-right">Unit Price</th><th className="px-4 font-semibold text-center">Status</th><th className="px-4 font-semibold text-right">Edit</th>
+                  <th className="px-4 py-3 font-semibold">Product / Category</th><th className="px-4 font-semibold">Size / Unit</th><th className="px-4 font-semibold text-right">Unit Price</th><th className="px-4 font-semibold text-center">Status</th><th className="px-4 font-semibold text-right">Actions</th>
                 </tr></thead>
                 <tbody>{zonePrices.map((p) => (
                   <tr key={p.id} className="border-b border-border/60 hover:bg-slate-50">
@@ -300,7 +309,10 @@ export default function Settings() {
                     <td className="px-4 font-mono text-slate-600">{p.size}</td>
                     <td className="px-4 text-right font-mono">{p.price == null ? <span className="text-red-600 text-xs font-semibold">NEEDS CONFIG</span> : fmtMoney(p.price)}</td>
                     <td className="px-4 text-center"><Badge cls={p.active ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-500 border-slate-200"}>{p.active ? "Active" : "Inactive"}</Badge></td>
-                    <td className="px-4 text-right"><button onClick={() => setPModal({ ...p, category: priceProductName(p.category), price: p.price == null ? "" : p.price })} className="text-slate-400 hover:text-primary p-1" data-testid={`edit-price-${p.id}`}><Pencil size={15} /></button></td>
+                    <td className="px-4 text-right whitespace-nowrap">
+                      <button onClick={() => setPModal({ ...p, category: priceProductName(p.category), price: p.price == null ? "" : p.price })} className="text-slate-400 hover:text-primary p-1" aria-label={`Edit ${priceProductName(p.category)} ${p.size}`} data-testid={`edit-price-${p.id}`}><Pencil size={15} /></button>
+                      <button onClick={() => deletePrice(p)} className="ml-2 p-1 text-slate-400 hover:text-red-600" aria-label={`Delete ${priceProductName(p.category)} ${p.size}`} data-testid={`delete-price-${p.id}`}><Trash2 size={15} /></button>
+                    </td>
                   </tr>))}</tbody>
               </table>
             </div>

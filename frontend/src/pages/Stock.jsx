@@ -14,7 +14,10 @@ const MOVE_TYPES = [
 const TYPE_LABEL = { production: "Production Received", dispatch: "Delivery Dispatched", adjustment_in: "Adjustment In", adjustment_out: "Adjustment Out", return: "Return", damage: "Damage/Waste", reversal: "Reversal" };
 const sign = (m) => (m.direction ? m.direction : ["production", "adjustment_in", "return"].includes(m.type) ? 1 : -1);
 const CATEGORIES = ["Simple", "Ribbon Balck", "Ribbon Pink", "Candy", "Uncovered", "Strong Boy"];
-const STOCK_CATEGORY = { "Ribbon Balck": "Ribbon Black" };
+const STOCK_CATEGORY = {
+  "Ribbon Balck": ["Ribbon Black", "Black"],
+  "Ribbon Pink": ["Ribbon Pink", "Ribbon"],
+};
 
 export default function Stock() {
   const [list, setList] = useState(null);
@@ -31,7 +34,9 @@ export default function Stock() {
   };
   useEffect(() => { load(); }, []);
 
-  const filteredList = (list || []).filter((item) => !category || item.product === (STOCK_CATEGORY[category] || category));
+  const filteredList = (list || []).filter((item) =>
+    !category || (STOCK_CATEGORY[category] || [category]).includes(item.product)
+  );
 
   const run = async (fn, ok) => {
     if (busy) return; setBusy(true);

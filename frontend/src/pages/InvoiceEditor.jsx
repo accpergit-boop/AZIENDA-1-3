@@ -43,7 +43,9 @@ export default function InvoiceEditor() {
   const [payRecords, setPayRecords] = useState([]);
   const [payModal, setPayModal] = useState(null);
   const [nextNum, setNextNum] = useState("");
+  const [pendingSave, setPendingSave] = useState(null);
   const docRef = useRef(null);
+  const saveLockRef = useRef(false);
   const pdfBusyRef = useRef(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [sp, setSp] = useSearchParams();
@@ -154,6 +156,15 @@ export default function InvoiceEditor() {
     if (!c.city) toast.info("This customer has no saved city. Please confirm the delivery destination.");
   };
 
+  const setCustomerName = (name) => {
+    const match = customers.find((customer) => customer.active && customer.name.trim().toLowerCase() === name.trim().toLowerCase());
+    if (match) {
+      selectCustomer(match.id);
+      return;
+    }
+    setInv((prev) => ({ ...prev, customer_id: "", customer_name: name, destination: "" }));
+  };
+
   const totals = useMemo(() => {
     const subtotal = inv.items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_price) || 0), 0);
     const taxed = Math.max(subtotal - Number(inv.discount || 0) + Number(inv.extra_charges || 0), 0);
@@ -182,35 +193,79 @@ export default function InvoiceEditor() {
   });
 
   const validate = (status) => {
-    if (!inv.customer_id) { toast.error("Select a customer"); return false; }
+    if (!inv.customer_name.trim()) { toast.error("Enter or select a customer"); return false; }
     if (!inv.items.some((it) => it.size || it.description)) { toast.error("Add at least one item"); return false; }
     if (inv.items.some((it) => (Number(it.qty) || 0) <= 0 && (it.size || it.description))) { toast.error("Quantity must be positive"); return false; }
     if (status !== "draft" && hasConfigIssue) { toast.error("Some items require administrator confirmation. Enter a manual price before issuing."); return false; }
     return true;
   };
 
-  const save = async (status) => {
-    if (!validate(status) || busy) return;
+  const save = async (status, saveNewEntries = null) => {
+    if (!validate(status) || busy || saveLockRef.current) return;
+    if (!id && saveNewEntries === null) {
+      const knownCustomer = customers.some((customer) => customer.active && customer.name.trim().toLowerCase() === inv.customer_name.trim().toLowerCase());
+      const newProducts = [...new Map(invoiceItems
+        .filter((item) => item.category?.trim() && item.size?.trim())
+        .filter((item) => !prices.some((price) => price.zone === inv.zone &&
+          price.category === priceCat(inv.zone, item.category, unifiedPriceList) && price.size === item.size))
+        .map((item) => [`${priceCat(inv.zone, item.category, unifiedPriceList)}|${item.size}`, item])).values()];
+      if (!knownCustomer || newProducts.length) {
+        setPendingSave({ status, newCustomer: !knownCustomer, newProducts });
+        return;
+      }
+    }
+    saveLockRef.current = true;
     setBusy(true);
     try {
-      const payload = buildPayload(status);
+      let customerId = inv.customer_id;
+      if (saveNewEntries && !customerId) {
+        const existingCustomer = customers.find((customer) => customer.name.trim().toLowerCase() === inv.customer_name.trim().toLowerCase());
+        if (existingCustomer) customerId = existingCustomer.id;
+        else if (inv.customer_name.trim()) {
+          const createdCustomer = await api.post("/customers", {
+            name: inv.customer_name.trim(),
+            default_zone: inv.zone,
+            payment_terms: inv.payment_terms,
+            active: true,
+          });
+          customerId = createdCustomer.id;
+          setCustomers((current) => [...current, createdCustomer]);
+        }
+      }
+      if (saveNewEntries && pendingSave?.newProducts.length) {
+        const savedPrices = await Promise.all(pendingSave.newProducts.map((item) => {
+          const price = Number(item.unit_price);
+          return api.post("/prices", {
+            zone: unifiedPriceList ? 1 : inv.zone,
+            category: priceCat(inv.zone, item.category, unifiedPriceList),
+            size: item.size.trim(),
+            price: price > 0 ? price : null,
+            active: true,
+            confirmed: price > 0,
+          });
+        }));
+        if (savedPrices.length) setPrices((current) => [...current, ...savedPrices]);
+      }
+      const payload = { ...buildPayload(status), customer_id: customerId, customer_name: inv.customer_name.trim() };
       const res = id ? await api.put(`/invoices/${id}`, payload) : await api.post("/invoices", payload);
       toast.success(status === "draft" ? "Saved as draft" : "Invoice saved");
+      setPendingSave(null);
       nav(`/invoices/${res.id}`);
       if (id) { setInv(res); }
-    } catch (e) { toast.error(apiError(e)); } finally { setBusy(false); }
+    } catch (e) { toast.error(apiError(e)); } finally { saveLockRef.current = false; setBusy(false); }
   };
 
   const saveEdit = async () => {
-    if (!validate(inv.status === "draft" ? "draft" : "issued") || busy) return;
+    if (!validate(inv.status === "draft" ? "draft" : "issued") || busy || saveLockRef.current) return;
     const reason = window.prompt("Reason for this change (optional):", "");
     if (reason === null) return;
+    saveLockRef.current = true;
     setBusy(true);
     try {
       const res = await api.put(`/invoices/${id}`, { ...buildPayload(inv.status === "draft" ? "draft" : "issued"), edit_reason: reason });
       setInv(res); setPayRecords(res.payment_records || []); setEditing(false);
       toast.success("Invoice updated");
-    } catch (e) { toast.error(apiError(e)); } finally { setBusy(false); }
+    } catch (e) { toast.error(apiError(e)); } finally { saveLockRef.current = false; setBusy(false); }
   };
 
   const issueExisting = async () => {
@@ -424,10 +479,8 @@ export default function InvoiceEditor() {
           <fieldset disabled={locked} className="space-y-6 min-w-0" data-testid="invoice-form">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <Card className="p-5"><h3 className="font-bold text-slate-800 font-display mb-4 flex items-center gap-2">1. Customer Information</h3>
-                <div className="space-y-4"><Select label="Customer *" value={inv.customer_id} onChange={(e) => selectCustomer(e.target.value)} data-testid="invoice-customer-select">
-                  <option value="">Select customer...</option>
-                  {customers.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </Select>
+                <div className="space-y-4"><Input label="Customer *" list="invoice-customer-options" value={inv.customer_name || ""} onChange={(e) => setCustomerName(e.target.value)} data-testid="invoice-customer-select" />
+                <datalist id="invoice-customer-options">{customers.filter((customer) => customer.active).map((customer) => <option key={customer.id} value={customer.name} />)}</datalist>
                 <div className={`grid ${unifiedPriceList ? "grid-cols-1" : "grid-cols-2"} gap-3`}>{!unifiedPriceList && <Select label="Price Zone" value={inv.zone} onChange={(e) => changeZone(Number(e.target.value))} data-testid="invoice-zone-select">
                   <option value={1}>Zone 1</option><option value={2}>Zone 2</option>
                 </Select>}<Select label="Payment Terms" value={inv.payment_terms} onChange={(e) => setInv({ ...inv, payment_terms: e.target.value })}>
@@ -456,17 +509,16 @@ export default function InvoiceEditor() {
                           <input value={it.description} onChange={(e) => updateItem(idx, { description: e.target.value })} data-testid={`item-desc-${idx}`}
                             className="w-full rounded border border-input px-2 py-1.5 text-sm" />
                         ) : (
-                        <select value={it.category} onChange={(e) => onCatSize(idx, { category: e.target.value, size: "" })} data-testid={`item-cat-${idx}`}
-                          className="w-full rounded border border-input px-2 py-1.5 text-sm min-w-[130px]">
-                          {categoriesFor(inv.zone).map((c) => <option key={c}>{c}</option>)}
-                        </select>)}
+                        <>
+                        <input list={`invoice-category-options-${idx}`} value={it.category} onChange={(e) => onCatSize(idx, { category: e.target.value, size: "" })} data-testid={`item-cat-${idx}`}
+                          className="w-full rounded border border-input px-2 py-1.5 text-sm min-w-[130px]" />
+                        <datalist id={`invoice-category-options-${idx}`}>{categoriesFor(inv.zone).map((category) => <option key={category} value={category} />)}</datalist>
+                        </>)}
                       </td>
                       {!(!it.category && it.description) && <td className="pr-2">
-                        <select value={it.size} onChange={(e) => onCatSize(idx, { size: e.target.value })} data-testid={`item-size-${idx}`}
-                          className="w-full rounded border border-input px-2 py-1.5 text-sm min-w-[110px]">
-                          <option value="">Select...</option>
-                          {sizesFor(inv.zone, it.category).map((s) => <option key={s}>{s}</option>)}
-                        </select>
+                        <input list={`invoice-size-options-${idx}`} value={it.size} onChange={(e) => onCatSize(idx, { size: e.target.value })} data-testid={`item-size-${idx}`}
+                          className="w-full rounded border border-input px-2 py-1.5 text-sm min-w-[110px]" />
+                        <datalist id={`invoice-size-options-${idx}`}>{sizesFor(inv.zone, it.category).map((size) => <option key={size} value={size} />)}</datalist>
                       </td>}
                       <td className="pr-2 text-slate-500 font-mono" data-testid={`item-thickness-${idx}`}>{thickness(it.size) || "-"}</td>
                       <td className="pr-2">
@@ -495,8 +547,8 @@ export default function InvoiceEditor() {
               <h3 className="font-bold text-slate-800 mb-3 font-display">4. Payment Information</h3>
               {inv.status === "void" ? <p className="text-sm text-slate-400" data-testid="void-reason">This invoice is voided.{inv.void_reason ? ` Reason: ${inv.void_reason}` : ""}</p> : (
                 <div className="grid grid-cols-2 gap-2">
-                  {!id && <Btn variant="outline" disabled={busy} onClick={() => save("draft")} data-testid="save-draft-btn"><Save size={15} /> Draft</Btn>}
-                  {!id && <Btn disabled={busy} onClick={() => save("issued")} data-testid="issue-invoice-btn"><Send size={15} /> Issue</Btn>}
+                  {!id && <Btn variant="outline" disabled={busy} onClick={() => save("draft")} data-testid="save-draft-btn"><Save size={15} /> {busy ? "Saving…" : "Draft"}</Btn>}
+                  {!id && <Btn disabled={busy} onClick={() => save("issued")} data-testid="issue-invoice-btn"><Send size={15} /> {busy ? "Saving…" : "Issue"}</Btn>}
                   <Btn variant="outline" onClick={copyInvoice} data-testid="copy-btn-2"><Copy size={15} /> Copy</Btn>
                   <Btn variant="outline" onClick={downloadPDF} disabled={pdfBusy} data-testid="download-pdf-btn"><Download size={15} /> {pdfBusy ? "Generating..." : "PDF"}</Btn>
                   <Btn variant="outline" onClick={printInvoice} data-testid="print-invoice-btn"><Printer size={15} /> Print</Btn>
@@ -559,7 +611,7 @@ export default function InvoiceEditor() {
             <div className="no-print flex flex-wrap justify-between gap-3">
               <Btn variant="outline" onClick={() => (editing ? cancelEdit() : nav("/invoices"))} data-testid="bottom-cancel-btn">Cancel</Btn>
               <div className="flex flex-wrap gap-2">
-                {!id && <Btn variant="outline" disabled={busy} onClick={() => save("draft")} data-testid="bottom-save-draft-btn"><Save size={15} /> Save Draft</Btn>}
+                {!id && <Btn variant="outline" disabled={busy} onClick={() => save("draft")} data-testid="bottom-save-draft-btn"><Save size={15} /> {busy ? "Saving…" : "Save Draft"}</Btn>}
                 <Btn variant="outline" onClick={() => document.querySelector('[data-testid="invoice-preview"]')?.scrollIntoView({ behavior: "smooth" })} data-testid="bottom-preview-btn">Preview Invoice</Btn>
                 <Btn disabled={busy || pdfBusy} onClick={createAndDownload} data-testid="create-download-pdf-btn"><Download size={15} /> {pdfBusy ? "Generating..." : id ? "Download PDF" : "Create & Download PDF"}</Btn>
               </div>
@@ -599,6 +651,20 @@ export default function InvoiceEditor() {
             <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setPayModal(null)}>Cancel</Btn><Btn variant="success" disabled={busy} onClick={recordPayment} data-testid="confirm-payment-btn">{busy ? "Saving..." : "Confirm Payment"}</Btn></div>
           </div>
         )}
+      </Modal>
+      <Modal open={!!pendingSave} onClose={() => setPendingSave(null)} title="Save new customer or products?">
+        {pendingSave && <div className="space-y-4">
+          <p className="text-sm text-slate-600">It seems like you've added new information that does not exist in your lists. Do you want to save it?</p>
+          {pendingSave.newCustomer && <p className="text-sm"><span className="font-semibold">New customer:</span> {inv.customer_name}</p>}
+          {pendingSave.newProducts.length > 0 && <ul className="list-inside list-disc text-sm text-slate-700">
+            {pendingSave.newProducts.map((item) => <li key={`${item.category}-${item.size}`}>{item.category} · {item.size} · {fmtMoney(item.unit_price)}</li>)}
+          </ul>}
+          <p className="text-xs text-slate-500">If you choose not to save, the customer name and product details will still appear on this invoice only.</p>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Btn variant="outline" disabled={busy} onClick={() => { const status = pendingSave.status; setPendingSave(null); save(status, false); }} data-testid="invoice-dont-save-new-entry">Don't save it</Btn>
+            <Btn disabled={busy} onClick={() => save(pendingSave.status, true)} data-testid="invoice-save-new-entry">Save it</Btn>
+          </div>
+        </div>}
       </Modal>
     </div>
   );

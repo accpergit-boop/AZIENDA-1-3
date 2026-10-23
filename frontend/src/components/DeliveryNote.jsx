@@ -11,8 +11,10 @@ const UR_PRODUCTS = { Simple: "سادہ", Standard: "سادہ", "Simple/Mix colo
 const UR_PRIORITY = { Low: "کم", Normal: "عام", High: "زیادہ", Urgent: "فوری" };
 
 export function orderLines(order) {
-  if (order.items?.length) return order.items.filter((i) => Number(i.qty) > 0 && (i.size || i.description || i.category));
-  return (order.products || "").split(/\n|,/).map((l) => l.trim()).filter(Boolean).map((l) => {
+  const items = Array.isArray(order?.items) ? order.items : [];
+  if (items.length) return items.filter((i) => i && Number(i.qty) > 0 && (i.size || i.description || i.category));
+  const products = typeof order?.products === "string" ? order.products : "";
+  return products.split(/\n|,/).map((l) => l.trim()).filter(Boolean).map((l) => {
     const m = l.match(/^(\d+)\s*[x×]?\s*(.*)$/i);
     return m ? { qty: Number(m[1]), category: m[2], size: "" } : { qty: "", category: l, size: "" };
   });

@@ -9,7 +9,6 @@ import { pageLoaders } from "@/lib/pageLoaders";
 const AuthCallback = lazy(() => import("@/pages/AuthCallback"));
 const Login = lazy(() => import("@/pages/Login"));
 const Dashboard = lazy(pageLoaders["/"]);
-const Assistant = lazy(pageLoaders["/assistant"]);
 const Customers = lazy(pageLoaders["/customers"]);
 const ClientPayments = lazy(pageLoaders["/client-payments"]);
 const Buyings = lazy(pageLoaders["/buyings"]);
@@ -39,7 +38,6 @@ function AppRouter() {
           <Route path="/login" element={<Suspense fallback={<RouteLoading />}><Login /></Suspense>} />
           <Route element={<Protected><Layout /></Protected>}>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/assistant" element={<Assistant />} />
             <Route path="/customers" element={<Customers />} />
             <Route path="/client-payments" element={<ClientPayments />} />
             <Route path="/buyings" element={<Buyings />} />
@@ -54,6 +52,7 @@ function AppRouter() {
             <Route path="/fleet" element={<Fleet />} />
             <Route path="/expenses" element={<Expenses />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
   );

@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { fmtMoney, fmtDate, fmtDateTime, STATUS_META } from "@/lib/format";
-import { Card, Btn, Badge, PageHeader, Empty, Modal } from "@/components/common";
+import { Card, Btn, Input, Badge, PageHeader, Empty, Modal } from "@/components/common";
 import { Eye, FileText, Search, Plus, Pencil, Trash2, Download } from "lucide-react";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
@@ -17,32 +17,44 @@ export default function InvoiceList() {
   const [q, setQ] = useState(sp.get("q") || "");
   const [status, setStatus] = useState("all");
   const [zone, setZone] = useState("all");
+  const [invoiceDate, setInvoiceDate] = useState("");
   const nav = useNavigate();
   const [sel, setSel] = useState([]);
   const [viewOpen, setViewOpen] = useState(false);
   const [viewLoading, setViewLoading] = useState(false);
   const [viewInvoice, setViewInvoice] = useState(null);
   const [viewCustomer, setViewCustomer] = useState(null);
+  const customersRequest = useRef(null);
+  const loadCustomers = () => {
+    if (!customersRequest.current) {
+      customersRequest.current = api.get("/customers").catch((error) => {
+        customersRequest.current = null;
+        throw error;
+      });
+    }
+    return customersRequest.current;
+  };
   const load = () => api.get("/invoices").then((d) => { setList(d); setSel([]); }).catch((e) => toast.error(apiError(e))).finally(() => setLoading(false));
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    loadCustomers().catch((error) => toast.error(apiError(error)));
+  }, []);
 
   const view = async (id) => {
     setViewOpen(true);
     setViewLoading(true);
     setViewInvoice(null);
     setViewCustomer(null);
+    let invoiceLoaded = false;
     try {
       const invoice = await api.get(`/invoices/${id}`);
       setViewInvoice(invoice);
-      try {
-        const customers = await api.get("/customers");
-        setViewCustomer(customers.find((customer) => customer.id === invoice.customer_id) || null);
-      } catch (error) {
-        toast.error(`Invoice loaded, but customer details could not be loaded: ${apiError(error)}`);
-      }
+      invoiceLoaded = true;
+      const customers = await loadCustomers();
+      setViewCustomer(customers.find((customer) => customer.id === invoice.customer_id) || null);
     } catch (error) {
-      toast.error(apiError(error));
-      setViewOpen(false);
+      toast.error(invoiceLoaded ? `Invoice loaded, but customer details could not be loaded: ${apiError(error)}` : apiError(error));
+      if (!invoiceLoaded) setViewOpen(false);
     } finally {
       setViewLoading(false);
     }
@@ -60,6 +72,7 @@ export default function InvoiceList() {
     const text = `${i.number || ""} ${i.customer_name}`.toLowerCase();
     return text.includes(q.toLowerCase()) &&
       (status === "all" || i.status === status) &&
+      (!invoiceDate || i.date === invoiceDate) &&
       (zone === "all" || String(i.zone) === zone);
   });
 
@@ -69,7 +82,7 @@ export default function InvoiceList() {
         <Btn onClick={() => nav("/invoices/new")} data-testid="new-invoice-btn"><Plus size={16} /> Create Invoice</Btn>
       </PageHeader>
 
-      <Card className={`p-4 mb-4 grid grid-cols-1 ${unifiedPriceList ? "sm:grid-cols-3" : "sm:grid-cols-4"} gap-3`}>
+      <Card className={`p-4 mb-4 grid grid-cols-1 ${unifiedPriceList ? "sm:grid-cols-4" : "sm:grid-cols-5"} gap-3`}>
         <div className="relative sm:col-span-2">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
           <input data-testid="invoice-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search number or customer..."
@@ -79,6 +92,7 @@ export default function InvoiceList() {
           <option value="all">All Statuses</option>
           {Object.keys(STATUS_META).map((s) => <option key={s} value={s}>{STATUS_META[s].label}</option>)}
         </select>
+        <Input label="Invoice date" type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="invoice-date-filter" />
         {!unifiedPriceList && <select value={zone} onChange={(e) => setZone(e.target.value)} className="rounded-lg border border-input px-3 py-2.5 text-sm">
           <option value="all">All Zones</option><option value="1">Zone 1</option><option value="2">Zone 2</option>
         </select>}

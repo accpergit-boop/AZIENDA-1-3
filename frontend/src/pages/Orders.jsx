@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
-import { fmtDate, fmtDateTime, documentFilename } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtMoney, documentFilename } from "@/lib/format";
 import { Card, Btn, Input, Select, Textarea, Badge, Modal, PageHeader, Empty } from "@/components/common";
 import { ClipboardList, Plus, Trash2, Pencil, ArrowRight, Eye, FileText, Printer, Download } from "lucide-react";
 import { useRef } from "react";
@@ -49,12 +49,17 @@ export default function Orders() {
   const [invoices, setInvoices] = useState([]);
   const [vehicles, setVehicles] = useState([]);
   const [filter, setFilter] = useState("open");
+  const [orderDate, setOrderDate] = useState("");
   const [modal, setModal] = useState(null);
   const [note, setNote] = useState(null);
   const [viewOrder, setViewOrder] = useState(null);
+  const [visibleInvoiceItems, setVisibleInvoiceItems] = useState(50);
   const [stock, setStock] = useState([]);
   const [settings, setSettings] = useState({});
   const products = [...new Set(stock.map((s) => s.product))];
+  const viewInvoice = viewOrder && invoices.find((invoice) => invoice.id === viewOrder.invoice_id);
+  const viewOrderLines = useMemo(() => viewOrder ? orderLines(viewOrder) : [], [viewOrder]);
+  const viewInvoiceItems = Array.isArray(viewInvoice?.items) ? viewInvoice.items.filter((item) => item && typeof item === "object") : [];
 
   const load = () => { api.get("/orders").then(setList).catch((e) => toast.error(apiError(e))).finally(() => setLoading(false)); };
   useEffect(() => {
@@ -69,8 +74,9 @@ export default function Orders() {
   const vName = (id) => vehicles.find((v) => v.id === id)?.name;
   const shown = useMemo(() => {
     const f = filter === "open" ? list.filter((o) => OPEN.includes(o.status)) : filter === "all" ? list : list.filter((o) => o.status === filter);
-    return [...f].sort((a, b) => (P_RANK[a.priority] ?? 9) - (P_RANK[b.priority] ?? 9) || (a.expected_ship_date || "9").localeCompare(b.expected_ship_date || "9"));
-  }, [list, filter]);
+    const dated = orderDate ? f.filter((order) => order.created_at && new Date(order.created_at).toLocaleDateString("en-CA", { timeZone: "Africa/Johannesburg" }) === orderDate) : f;
+    return [...dated].sort((a, b) => (P_RANK[a.priority] ?? 9) - (P_RANK[b.priority] ?? 9) || (a.expected_ship_date || "9").localeCompare(b.expected_ship_date || "9"));
+  }, [list, filter, orderDate]);
   const count = (s) => (s === "open" ? list.filter((o) => OPEN.includes(o.status)).length : s === "all" ? list.length : list.filter((o) => o.status === s).length);
 
   const pickCustomer = (id) => {
@@ -148,6 +154,7 @@ export default function Orders() {
             {t === "open" ? "Open" : t === "all" ? "All" : t} <span className="opacity-70 ml-1">{loading ? "..." : count(t)}</span>
           </button>
         ))}
+        <div className="ml-auto w-48"><Input label="Order date" type="date" value={orderDate} onChange={(event) => setOrderDate(event.target.value)} data-testid="order-date-filter" /></div>
       </div>
 
       <Card className="overflow-hidden">
@@ -168,7 +175,7 @@ export default function Orders() {
                   <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{o.expected_ship_date ? fmtDate(o.expected_ship_date) : "-"}</td>
                   <td className="px-4 py-3 text-slate-500">{vName(o.vehicle_id) || "-"}</td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
-                    <button onClick={() => setViewOrder(o)} className="text-slate-400 hover:text-primary mr-3" title="View order" aria-label={`View order ${o.reference}`} data-testid={`view-order-${o.id}`}><Eye size={15} /></button>
+                    <button onClick={() => { setVisibleInvoiceItems(50); setViewOrder(o); }} className="text-slate-400 hover:text-primary mr-3" title="View order" aria-label={`View order ${o.reference}`} data-testid={`view-order-${o.id}`}><Eye size={15} /></button>
                     {o.status !== "Delivered" && o.status !== "Cancelled" && (
                       <button onClick={() => advance(o)} className="inline-flex items-center gap-1 text-emerald-600 hover:underline text-xs font-semibold mr-3" data-testid={`advance-order-${o.id}`}>
                         {STATUSES[STATUSES.indexOf(o.status) + 1]} <ArrowRight size={12} />
@@ -184,7 +191,7 @@ export default function Orders() {
       </Card>
 
       <Modal open={!!viewOrder} onClose={() => setViewOrder(null)} title={`Order Details ${viewOrder?.reference || ""}`} wide>
-        {viewOrder && <div className="space-y-5 text-sm" data-testid={`order-details-${viewOrder.id}`}>
+        {viewOrder && <div className="max-h-[calc(100vh-9rem)] space-y-5 overflow-y-auto p-1 text-sm" data-testid={`order-details-${viewOrder.id}`}>
           <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
             {[
               ["Order Number", viewOrder.reference],
@@ -205,15 +212,34 @@ export default function Orders() {
           </dl>
           <div>
             <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Products</h4>
-            {orderLines(viewOrder).length ? <div className="overflow-x-auto rounded-lg border border-border">
+            {viewOrderLines.length ? <div className="overflow-x-auto rounded-lg border border-border">
               <table className="w-full text-sm">
                 <thead><tr className="bg-slate-50 text-left text-xs text-slate-500"><th className="px-3 py-2">Quantity</th><th className="px-3 py-2">Product</th><th className="px-3 py-2">Description</th><th className="px-3 py-2">Size / Measurements</th></tr></thead>
-                <tbody>{orderLines(viewOrder).map((line, index) => <tr key={index} className="border-t border-border/70">
+                <tbody>{viewOrderLines.slice(0, 100).map((line, index) => <tr key={index} className="border-t border-border/70">
                   <td className="px-3 py-2">{line.qty}</td><td className="px-3 py-2">{line.category || "-"}</td><td className="px-3 py-2">{line.description || "-"}</td><td className="px-3 py-2">{line.size || "-"}</td>
                 </tr>)}</tbody>
-              </table>
+              </table>{viewOrderLines.length > 100 && <p className="px-3 py-2 text-xs text-slate-500">Showing the first 100 of {viewOrderLines.length} order lines.</p>}
             </div> : <p className="text-slate-500">No product details recorded.</p>}
           </div>
+          {viewInvoice && <div>
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Linked Invoice Details</h4>
+            {viewInvoiceItems.length > 0 && <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead><tr className="bg-slate-50 text-left text-xs text-slate-500"><th className="px-3 py-2">Product / Description</th><th className="px-3 py-2">Size</th><th className="px-3 py-2 text-right">Quantity</th><th className="px-3 py-2 text-right">Unit Price</th><th className="px-3 py-2 text-right">Line Total</th></tr></thead>
+                <tbody>{viewInvoiceItems.slice(0, visibleInvoiceItems).map((item, index) => <tr key={index} className="border-t border-border/70">
+                  <td className="px-3 py-2">{item.category || item.description || "Item"}</td><td className="px-3 py-2">{item.size || "-"}</td>
+                  <td className="px-3 py-2 text-right">{item.qty}</td><td className="px-3 py-2 text-right">{fmtMoney(item.unit_price)}</td>
+                  <td className="px-3 py-2 text-right">{fmtMoney(item.line_total ?? (Number(item.qty || 0) * Number(item.unit_price || 0)))}</td>
+                </tr>)}</tbody>
+              </table>{viewInvoiceItems.length > visibleInvoiceItems && <button onClick={() => setVisibleInvoiceItems((current) => current + 50)} className="w-full border-t border-border px-3 py-2 text-xs font-semibold text-primary hover:bg-slate-50">Show next {Math.min(50, viewInvoiceItems.length - visibleInvoiceItems)} invoice items ({viewInvoiceItems.length - visibleInvoiceItems} remaining)</button>}
+            </div>}
+            <dl className="ml-auto mt-3 grid max-w-sm grid-cols-2 gap-x-4 gap-y-2 rounded-lg bg-slate-50 p-4 text-sm">
+              {[["Subtotal", viewInvoice.subtotal], ["Discount", viewInvoice.discount], ["Additional Charges", viewInvoice.extra_charges],
+                ...(viewInvoice.tax_enabled ? [["Tax", viewInvoice.tax_amount]] : []),
+                ["Total", viewInvoice.total], ["Amount Paid", viewInvoice.amount_paid], ["Outstanding Balance", viewInvoice.outstanding],
+              ].map(([label, value]) => <div key={label} className="contents"><dt className="font-semibold text-slate-600">{label}</dt><dd className="text-right font-mono">{fmtMoney(value)}</dd></div>)}
+            </dl>
+          </div>}
           {viewOrder.notes && <div><h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Notes</h4><p className="mt-1 whitespace-pre-wrap text-slate-800">{viewOrder.notes}</p></div>}
         </div>}
       </Modal>

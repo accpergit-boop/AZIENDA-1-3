@@ -4,7 +4,6 @@ const invoiceEditor = () => import("@/pages/InvoiceEditor");
 
 export const pageLoaders = {
   "/": () => import("@/pages/Dashboard"),
-  "/assistant": () => import("@/pages/Assistant"),
   "/customers": () => import("@/pages/Customers"),
   "/client-payments": () => import("@/pages/ClientPayments"),
   "/buyings": () => import("@/pages/Buyings"),
@@ -22,7 +21,6 @@ export const pageLoaders = {
 
 const pageData = {
   "/": ["/dashboard"],
-  "/assistant": ["/assistant/sessions"],
   "/customers": ["/customers"],
   "/client-payments": ["/customers"],
   "/buyings": ["/buyings"],
