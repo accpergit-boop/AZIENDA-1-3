@@ -63,9 +63,9 @@ export default function Deliveries() {
   };
 
   const remove = async (d) => {
-    if (d.dispatched) return toast.error("A dispatched delivery cannot be deleted because stock was deducted");
-    if (!window.confirm(`Delete delivery ${d.reference}? This cannot be undone.`)) return;
-    try { await api.del(`/deliveries/${d.id}`); toast.success("Delivery deleted"); load(); }
+    if (d.dispatched) return toast.error("A dispatched delivery cannot be cancelled because stock was deducted");
+    if (!window.confirm(`Cancel delivery ${d.reference}? The delivery record will be retained.`)) return;
+    try { await api.del(`/deliveries/${d.id}`); toast.success("Delivery cancelled"); load(); }
     catch (e) { toast.error(apiError(e)); }
   };
 
@@ -110,7 +110,7 @@ export default function Deliveries() {
                       <button onClick={() => openModal(d)} className="text-primary hover:underline text-xs font-semibold mr-3" data-testid={`edit-delivery-${d.id}`}>Edit</button>
                       {!d.dispatched && d.items?.length > 0 && <button onClick={() => dispatch(d)} className="text-emerald-600 hover:underline text-xs font-semibold" data-testid={`dispatch-${d.id}`}>Dispatch</button>}
                       {d.dispatched && <span className="text-xs text-slate-400">Dispatched</span>}
-                      <button onClick={() => remove(d)} disabled={d.dispatched} title={d.dispatched ? "Cannot delete: stock was deducted" : "Delete delivery"} aria-label={`Delete delivery ${d.reference}`} className="ml-3 text-slate-400 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40" data-testid={`delete-delivery-${d.id}`}><Trash2 size={15} /></button>
+                      {d.status !== "Cancelled" && <button onClick={() => remove(d)} disabled={d.dispatched} title={d.dispatched ? "Cannot cancel: stock was deducted" : "Cancel delivery"} aria-label={`Cancel delivery ${d.reference}`} className="ml-3 text-slate-400 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40" data-testid={`delete-delivery-${d.id}`}><Trash2 size={15} /></button>}
                     </td>
                   </tr>))}</tbody>
               </table>

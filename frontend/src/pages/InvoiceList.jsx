@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { fmtMoney, fmtDate, fmtDateTime, STATUS_META } from "@/lib/format";
 import { Card, Btn, Input, Badge, PageHeader, Empty, Modal } from "@/components/common";
-import { Eye, FileText, Search, Plus, Pencil, Trash2, Download } from "lucide-react";
+import { Eye, FileText, Search, Plus, Pencil, Trash2, Download, Archive, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
@@ -18,6 +18,7 @@ export default function InvoiceList() {
   const [status, setStatus] = useState("all");
   const [zone, setZone] = useState("all");
   const [invoiceDate, setInvoiceDate] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const nav = useNavigate();
   const [sel, setSel] = useState([]);
   const [viewOpen, setViewOpen] = useState(false);
@@ -34,11 +35,14 @@ export default function InvoiceList() {
     }
     return customersRequest.current;
   };
-  const load = () => api.get("/invoices").then((d) => { setList(d); setSel([]); }).catch((e) => toast.error(apiError(e))).finally(() => setLoading(false));
+  const load = () => api.get(showArchived ? "/invoices?include_archived=true" : "/invoices")
+    .then((d) => { setList(d); setSel([]); })
+    .catch((e) => toast.error(apiError(e)))
+    .finally(() => setLoading(false));
   useEffect(() => {
     load();
     loadCustomers().catch((error) => toast.error(apiError(error)));
-  }, []);
+  }, [showArchived]);
 
   const view = async (id) => {
     setViewOpen(true);
@@ -62,13 +66,19 @@ export default function InvoiceList() {
 
   const toggle = (id) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const removeMany = async (ids) => {
-    const invs = list.filter((i) => ids.includes(i.id));
-    const paid = invs.filter((i) => i.amount_paid > 0).length;
-    if (!window.confirm(`Delete ${ids.length} invoice(s)${paid ? ` — ${paid} with payments; their payments will be deleted too` : ""}? This cannot be undone.`)) return;
-    try { const r = await api.post("/invoices/bulk-delete", { ids }); toast.success(`${r.deleted} invoice(s) deleted`); load(); } catch (e) { toast.error(apiError(e)); }
+    if (!window.confirm(`Archive ${ids.length} invoice(s)? They and their payment records will be retained and can be restored.`)) return;
+    try { const r = await api.post("/invoices/bulk-delete", { ids }); toast.success(`${r.archived} invoice(s) archived`); load(); } catch (e) { toast.error(apiError(e)); }
+  };
+  const restore = async (id) => {
+    try {
+      await api.post(`/invoices/${id}/restore`);
+      toast.success("Invoice restored");
+      load();
+    } catch (e) { toast.error(apiError(e)); }
   };
 
   const filtered = list.filter((i) => {
+    if (showArchived && !i.archived) return false;
     const text = `${i.number || ""} ${i.customer_name}`.toLowerCase();
     return text.includes(q.toLowerCase()) &&
       (status === "all" || i.status === status) &&
@@ -96,11 +106,15 @@ export default function InvoiceList() {
         {!unifiedPriceList && <select value={zone} onChange={(e) => setZone(e.target.value)} className="rounded-lg border border-input px-3 py-2.5 text-sm">
           <option value="all">All Zones</option><option value="1">Zone 1</option><option value="2">Zone 2</option>
         </select>}
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
+          Show archived invoices
+        </label>
       </Card>
 
-      {sel.length > 0 && <div className="flex items-center justify-between rounded-xl border border-red-200 bg-red-50 px-4 py-2" data-testid="bulk-bar">
-        <span className="text-sm font-semibold text-red-700">{sel.length} selected</span>
-        <Btn variant="danger" onClick={() => removeMany(sel)} data-testid="bulk-delete-btn"><Trash2 size={15} /> Delete selected</Btn>
+      {sel.length > 0 && <div className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-4 py-2" data-testid="bulk-bar">
+        <span className="text-sm font-semibold text-amber-800">{sel.length} selected</span>
+        <Btn onClick={() => removeMany(sel)} data-testid="bulk-delete-btn"><Archive size={15} /> Archive selected</Btn>
       </div>}
 
       <Card className="overflow-hidden">
@@ -108,12 +122,12 @@ export default function InvoiceList() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
-                <th className="px-3 py-3 w-8"><input type="checkbox" checked={sel.length > 0 && sel.length === filtered.length} onChange={(e) => setSel(e.target.checked ? filtered.map((i) => i.id) : [])} data-testid="select-all-invoices" /></th><th className="px-4 py-3 font-semibold">Invoice</th><th className="px-4 font-semibold">Customer</th><th className="px-4 font-semibold">Date</th><th className="px-4 font-semibold">Due</th>{!unifiedPriceList && <th className="px-4 font-semibold">Zone</th>}<th className="px-4 font-semibold text-right">Total</th><th className="px-4 font-semibold text-right">Paid</th><th className="px-4 font-semibold text-right">Balance</th><th className="px-4 font-semibold text-center">Status</th><th className="px-4 font-semibold text-right">Actions</th>
+                <th className="px-3 py-3 w-8"><input type="checkbox" checked={sel.length > 0 && sel.length === filtered.filter((i) => !i.archived && i.status === "draft").length} onChange={(e) => setSel(e.target.checked ? filtered.filter((i) => !i.archived && i.status === "draft").map((i) => i.id) : [])} data-testid="select-all-invoices" /></th><th className="px-4 py-3 font-semibold">Invoice</th><th className="px-4 font-semibold">Customer</th><th className="px-4 font-semibold">Date</th><th className="px-4 font-semibold">Due</th>{!unifiedPriceList && <th className="px-4 font-semibold">Zone</th>}<th className="px-4 font-semibold text-right">Total</th><th className="px-4 font-semibold text-right">Paid</th><th className="px-4 font-semibold text-right">Balance</th><th className="px-4 font-semibold text-center">Status</th><th className="px-4 font-semibold text-right">Actions</th>
               </tr></thead>
               <tbody>{filtered.map((i) => (
-                <tr key={i.id} className="border-b border-border/60 hover:bg-slate-50 cursor-pointer" onClick={() => nav(`/invoices/${i.id}`)} data-testid={`invoice-row-${i.id}`}>
-                  <td className="px-3" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={sel.includes(i.id)} onChange={() => toggle(i.id)} data-testid={`select-invoice-${i.id}`} /></td>
-                  <td className="px-4 py-3 font-mono font-semibold text-slate-700">{i.number || "DRAFT"}{i.opening_balance && <span className="ml-2 inline-block rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-700 font-sans" data-testid={`opening-badge-${i.id}`}>Opening Balance</span>}</td>
+                <tr key={i.id} className="border-b border-border/60 hover:bg-slate-50 cursor-pointer" onClick={() => i.archived ? view(i.id) : nav(`/invoices/${i.id}`)} data-testid={`invoice-row-${i.id}`}>
+                  <td className="px-3" onClick={(e) => e.stopPropagation()}>{!i.archived && i.status === "draft" && <input type="checkbox" checked={sel.includes(i.id)} onChange={() => toggle(i.id)} data-testid={`select-invoice-${i.id}`} />}</td>
+                  <td className="px-4 py-3 font-mono font-semibold text-slate-700">{i.number || "DRAFT"}{i.archived && <span className="ml-2 inline-block rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 font-sans">Archived</span>}{i.opening_balance && <span className="ml-2 inline-block rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-700 font-sans" data-testid={`opening-badge-${i.id}`}>Opening Balance</span>}</td>
                   <td className="px-4 text-slate-600">{i.customer_name}</td>
                   <td className="px-4 text-slate-500">{fmtDate(i.date)}</td>
                   <td className="px-4 text-slate-500">{fmtDate(i.due_date)}</td>
@@ -126,7 +140,9 @@ export default function InvoiceList() {
                     <button onClick={(e) => { e.stopPropagation(); view(i.id); }} data-testid={`view-invoice-row-${i.id}`} title="View invoice" aria-label={`View invoice ${i.number || "draft"}`} className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:border-primary hover:text-primary transition-colors">
                       <Eye size={12} />
                     </button>
-                    {i.status !== "void" && (
+                    {i.archived ? (
+                      <button onClick={(e) => { e.stopPropagation(); restore(i.id); }} data-testid={`restore-invoice-row-${i.id}`} title="Restore invoice" aria-label={`Restore invoice ${i.number || "draft"}`} className="ml-2 inline-flex items-center rounded-lg border border-emerald-200 px-2 py-1 text-emerald-700 hover:bg-emerald-50"><RotateCcw size={12} /></button>
+                    ) : i.status !== "void" && (
                       <>
                       <button onClick={(e) => { e.stopPropagation(); nav(`/invoices/${i.id}?pdf=1`); }} data-testid={`pdf-invoice-row-${i.id}`} title="Download PDF" className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:border-primary hover:text-primary transition-colors">
                         <Download size={12} />
@@ -137,7 +153,7 @@ export default function InvoiceList() {
                       </button>
                     </>
                   )}
-                    <button onClick={(e) => { e.stopPropagation(); removeMany([i.id]); }} data-testid={`delete-invoice-row-${i.id}`} className="ml-2 inline-flex items-center rounded-lg border border-red-200 px-2 py-1 text-red-600 hover:bg-red-50"><Trash2 size={12} /></button></td>
+                    {!i.archived && i.status === "draft" && <button onClick={(e) => { e.stopPropagation(); removeMany([i.id]); }} data-testid={`delete-invoice-row-${i.id}`} title="Archive draft invoice" aria-label={`Archive invoice ${i.number || "draft"}`} className="ml-2 inline-flex items-center rounded-lg border border-amber-200 px-2 py-1 text-amber-700 hover:bg-amber-50"><Archive size={12} /></button>}</td>
                 </tr>))}</tbody>
             </table>
           </div>

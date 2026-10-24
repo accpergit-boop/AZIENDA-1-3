@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { fmtDate, fmtDateTime, today } from "@/lib/format";
-import { Card, Btn, Input, Select, Modal, PageHeader, Empty } from "@/components/common";
-import { Factory, Plus, Save, Trash2, Pencil } from "lucide-react";
+import { Card, Btn, Input, Select, Modal, PageHeader, Empty, Badge } from "@/components/common";
+import { Factory, Plus, Save, Trash2, Pencil, RotateCcw } from "lucide-react";
 
 export default function Production() {
   const [data, setData] = useState(null);
@@ -48,16 +48,27 @@ export default function Production() {
     }
   };
   const deleteBlockCutting = async (record) => {
-    if (!window.confirm(`Delete the ${record.block} ${record.size} block cutting record?`)) return;
+    if (!window.confirm(`Archive the ${record.block} ${record.size} block cutting record?`)) return;
     try {
       await api.del(`/production/block-cutting/${record.id}`);
-      toast.success("Block cutting deleted");
-      setBlockCuttings((current) => current.filter((item) => item.id !== record.id));
+      toast.success("Block cutting archived");
+      setBlockCuttings((current) => current.map((item) => item.id === record.id ? { ...item, archived: true } : item));
     } catch (e) {
       toast.error(apiError(e));
     }
   };
-  const del = async (r) => { if (!window.confirm(`Delete production of ${fmtDate(r.date)}?`)) return; await api.del(`/production/daily/${r.id}`); load(); };
+  const restoreBlockCutting = async (record) => {
+    try {
+      await api.post(`/production/block-cutting/${record.id}/restore`);
+      toast.success("Block cutting restored");
+      setBlockCuttings((current) => current.map((item) => item.id === record.id ? { ...item, archived: false } : item));
+    } catch (e) { toast.error(apiError(e)); }
+  };
+  const del = async (r) => { if (!window.confirm(`Archive production of ${fmtDate(r.date)}? The record will be retained.`)) return; await api.del(`/production/daily/${r.id}`); load(); };
+  const restoreDaily = async (r) => {
+    try { await api.post(`/production/daily/${r.id}/restore`); toast.success("Production record restored"); load(); }
+    catch (e) { toast.error(apiError(e)); }
+  };
   const Tot = ({ l, v, k }) => (
     <Card className="p-4" data-testid={`prod-total-${k}`}><p className="text-xs text-slate-400 uppercase font-semibold">{l}</p>
       <p className="mt-1 font-mono text-slate-800"><span className="text-xl font-bold">{v?.white_blocks || 0}</span> white · <span className="text-xl font-bold text-blue-600">{v?.blue_blocks || 0}</span> blue</p></Card>);
@@ -85,10 +96,12 @@ export default function Production() {
             <table className="w-full text-sm">
               <thead><tr className="border-b border-border bg-slate-50 text-left text-xs text-slate-500"><th className="px-3 py-2">Block</th><th className="px-3 py-2">Size</th><th className="px-3 py-2">Date and Time</th><th className="px-3 py-2 text-right">Actions</th></tr></thead>
               <tbody>{blockCuttings.map((record) => <tr key={record.id} className="border-b border-border/70" data-testid={`block-cutting-row-${record.id}`}>
-                <td className="px-3 py-2 font-semibold">{record.block}</td><td className="px-3 py-2">{record.size}</td><td className="px-3 py-2 text-slate-500">{fmtDateTime(record.created_at)}</td>
+                <td className="px-3 py-2 font-semibold">{record.block}{record.archived && <Badge cls="ml-2 bg-amber-50 text-amber-700 border-amber-200">Archived</Badge>}</td><td className="px-3 py-2">{record.size}</td><td className="px-3 py-2 text-slate-500">{fmtDateTime(record.created_at)}</td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
-                  <button onClick={() => { setCutForm({ id: record.id, block: record.block, size: record.size }); setCutOpen(true); }} className="mr-3 text-slate-400 hover:text-primary" aria-label={`Edit ${record.block} ${record.size}`} data-testid={`edit-block-cutting-${record.id}`}><Pencil size={15} /></button>
-                  <button onClick={() => deleteBlockCutting(record)} className="text-slate-400 hover:text-red-600" aria-label={`Delete ${record.block} ${record.size}`} data-testid={`delete-block-cutting-${record.id}`}><Trash2 size={15} /></button>
+                  {record.archived ? <button onClick={() => restoreBlockCutting(record)} className="text-emerald-700 hover:text-emerald-900" aria-label={`Restore ${record.block} ${record.size}`} data-testid={`restore-block-cutting-${record.id}`}><RotateCcw size={15} /></button> : <>
+                    <button onClick={() => { setCutForm({ id: record.id, block: record.block, size: record.size }); setCutOpen(true); }} className="mr-3 text-slate-400 hover:text-primary" aria-label={`Edit ${record.block} ${record.size}`} data-testid={`edit-block-cutting-${record.id}`}><Pencil size={15} /></button>
+                    <button onClick={() => deleteBlockCutting(record)} className="text-slate-400 hover:text-red-600" aria-label={`Archive ${record.block} ${record.size}`} data-testid={`delete-block-cutting-${record.id}`}><Trash2 size={15} /></button>
+                  </>}
                 </td>
               </tr>)}</tbody>
             </table>
@@ -102,9 +115,9 @@ export default function Production() {
             <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border"><th className="px-4 py-3">Date</th><th className="px-4 text-right">White</th><th className="px-4 text-right">Blue</th><th className="px-4 text-right">Total</th><th className="px-4">Notes</th><th className="px-4" /></tr></thead>
             <tbody>{data.rows.map((r) => (
               <tr key={r.id} className="border-b border-border/60" data-testid={`prod-row-${r.id}`}>
-                <td className="px-4 py-3">{fmtDate(r.date)}</td><td className="px-4 text-right font-mono">{r.white_blocks}</td><td className="px-4 text-right font-mono text-blue-600">{r.blue_blocks}</td>
+                <td className="px-4 py-3">{fmtDate(r.date)}{r.archived && <Badge cls="ml-2 bg-amber-50 text-amber-700 border-amber-200">Archived</Badge>}</td><td className="px-4 text-right font-mono">{r.white_blocks}</td><td className="px-4 text-right font-mono text-blue-600">{r.blue_blocks}</td>
                 <td className="px-4 text-right font-mono font-bold">{r.white_blocks + r.blue_blocks}</td><td className="px-4 text-slate-500">{r.notes}</td>
-                <td className="px-4 text-right"><button onClick={() => setForm({ date: r.date, white_blocks: r.white_blocks, blue_blocks: r.blue_blocks, notes: r.notes || "" })} className="text-primary text-xs font-semibold mr-3">Edit</button><button onClick={() => del(r)} className="text-slate-400 hover:text-red-600"><Trash2 size={15} /></button></td>
+                <td className="px-4 text-right">{r.archived ? <button onClick={() => restoreDaily(r)} className="text-emerald-700" aria-label="Restore production record"><RotateCcw size={15} /></button> : <><button onClick={() => setForm({ date: r.date, white_blocks: r.white_blocks, blue_blocks: r.blue_blocks, notes: r.notes || "" })} className="text-primary text-xs font-semibold mr-3">Edit</button><button onClick={() => del(r)} className="text-slate-400 hover:text-red-600" aria-label="Archive production record"><Trash2 size={15} /></button></>}</td>
               </tr>))}</tbody>
           </table>)}
       </Card>

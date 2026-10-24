@@ -1,4 +1,4 @@
-import os, re, asyncio, uuid
+import os, re, asyncio, uuid, sys
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 load_dotenv('/app/backend/.env')
@@ -19,10 +19,16 @@ for line in DATA.splitlines():
         size, q = kv.split("=")
         STOCK.append({"product": prod, "size": size, "opening": int(q), "threshold": MINIMUMS.get((prod, size), 0)})
 
-async def main():
+async def main(dry=True):
     db = AsyncIOMotorClient(os.environ['MONGO_URL'])[os.environ['DB_NAME']]
     keep = {(s["product"], s["size"]) for s in STOCK}
     old = [s for s in await db.stock.find({}, {"_id": 0}).to_list(1000) if (s["product"], s["size"]) not in keep]
+    missing = [s for s in STOCK if not await db.stock.find_one({"product": s["product"], "size": s["size"]})]
+    if dry:
+        print("DRY RUN — no changes made. Items to remove:", len(old), "items to add:", len(missing))
+        if "--confirm-stock-reset" not in sys.argv:
+            print("To execute this destructive reset, pass --confirm-stock-reset.")
+        return
     ids = [s["id"] for s in old]
     m = await db.stock_movements.delete_many({"stock_id": {"$in": ids}})
     d = await db.stock.delete_many({"id": {"$in": ids}})
@@ -38,4 +44,4 @@ async def main():
     print("removed items", d.deleted_count, "movements", m.deleted_count, "added", added, "total", await db.stock.count_documents({}))
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(dry="--confirm-stock-reset" not in sys.argv))

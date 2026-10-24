@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { fmtMoney, fmtDate, today } from "@/lib/format";
 import { Card, Btn, Input, Select, Textarea, Badge, Modal, PageHeader, Empty } from "@/components/common";
-import { Truck, Plus, Wrench, Package, Trash2, Pencil, ArrowRight, Fuel, Settings2 } from "lucide-react";
+import { Truck, Plus, Wrench, Package, Trash2, Pencil, ArrowRight, Fuel, Settings2, RotateCcw } from "lucide-react";
 
 const VTYPES = ["Medium Truck", "Large Truck", "Small Truck", "Bakkie", "Trailer", "Other"];
 const RSTATUS = ["Needed", "Scheduled", "In Progress", "Done", "Cancelled"];
@@ -72,7 +72,7 @@ export default function Fleet() {
     if (!rForm.description.trim()) return toast.error("Description required");
     try { await api.post(`/vehicles/${detail.id}/records`, { ...rForm, amount: Number(rForm.amount) || 0 }); toast.success("Record added"); setRForm(blankR()); load(); } catch (e) { err(e); }
   };
-  const delRecord = async (r) => { if (!window.confirm(isDone(r) && r.amount > 0 ? "This cost is already counted in reports. Mark it Cancelled?" : "Delete this record?")) return; try { await api.del(`/vehicles/records/${r.id}`); load(); } catch (e) { err(e); } };
+  const delRecord = async (r) => { if (!window.confirm("Cancel this vehicle record? Its history will be retained.")) return; try { await api.del(`/vehicles/records/${r.id}`); load(); } catch (e) { err(e); } };
   const setRecStatus = async (r, status) => { try { await api.put(`/vehicles/records/${r.id}`, { ...r, status }); load(); } catch (e) { err(e); } };
   const savePart = async () => {
     if (!pModal.name.trim()) return toast.error("Part name required");
@@ -91,10 +91,11 @@ export default function Fleet() {
     }
     try { await api.put(`/spareparts/${p.id}`, { ...p, status: next, actual_cost }); toast.success(`Marked ${PSTAT[next].label}`); load(); } catch (e) { err(e); }
   };
-  const delPart = async (p) => { if (!window.confirm(`Delete "${p.name}"?`)) return; try { await api.del(`/spareparts/${p.id}`); load(); } catch (e) { err(e); } };
+  const delPart = async (p) => { if (!window.confirm(`Archive "${p.name}"? Its record will be retained.`)) return; try { await api.del(`/spareparts/${p.id}`); load(); } catch (e) { err(e); } };
+  const restorePart = async (p) => { try { await api.post(`/spareparts/${p.id}/restore`); toast.success("Spare part restored"); load(); } catch (e) { err(e); } };
 
   const vRecs = (id) => records.filter((r) => r.vehicle_id === id);
-  const partsTotal = (s) => parts.filter((p) => p.status === s).reduce((t, p) => t + (s === "to_buy" ? (p.expected_price || 0) * (p.quantity || 1) : (p.actual_cost || 0)), 0);
+  const partsTotal = (s) => parts.filter((p) => p.status === s && !p.archived).reduce((t, p) => t + (s === "to_buy" ? (p.expected_price || 0) * (p.quantity || 1) : (p.actual_cost || 0)), 0);
 
   return (
     <div className="space-y-6">
@@ -140,11 +141,13 @@ export default function Fleet() {
                       <td className="px-4 text-right font-mono">{p.quantity}</td>
                       <td className="px-4 text-right font-mono">{fmtMoney(p.expected_price)}</td>
                       <td className="px-4 text-right font-mono" data-testid={`part-actual-${p.id}`}>{p.actual_cost ? fmtMoney(p.actual_cost) : "-"}</td>
-                      <td className="px-4"><Badge cls={PSTAT[p.status]?.cls}>{PSTAT[p.status]?.label}</Badge></td>
+                      <td className="px-4"><Badge cls={PSTAT[p.status]?.cls}>{PSTAT[p.status]?.label}</Badge>{p.archived && <Badge cls="ml-2 bg-amber-50 text-amber-700 border-amber-200">Archived</Badge>}</td>
                       <td className="px-4 text-right whitespace-nowrap">
-                        {PSTAT[p.status]?.next && <button onClick={() => advancePart(p)} className="inline-flex items-center gap-1 text-emerald-600 hover:underline text-xs font-semibold mr-3" data-testid={`advance-part-${p.id}`}>Mark {PSTAT[PSTAT[p.status].next].label} <ArrowRight size={12} /></button>}
-                        <button onClick={() => setPModal({ ...p })} className="text-slate-400 hover:text-primary mr-3" data-testid={`edit-part-${p.id}`}><Pencil size={15} /></button>
-                        {p.status === "to_buy" && <button onClick={() => delPart(p)} className="text-slate-400 hover:text-red-600" data-testid={`delete-part-${p.id}`}><Trash2 size={15} /></button>}
+                        {p.archived ? <button onClick={() => restorePart(p)} className="text-emerald-700" aria-label={`Restore ${p.name}`} data-testid={`restore-part-${p.id}`}><RotateCcw size={15} /></button> : <>
+                          {PSTAT[p.status]?.next && <button onClick={() => advancePart(p)} className="inline-flex items-center gap-1 text-emerald-600 hover:underline text-xs font-semibold mr-3" data-testid={`advance-part-${p.id}`}>Mark {PSTAT[PSTAT[p.status].next].label} <ArrowRight size={12} /></button>}
+                          <button onClick={() => setPModal({ ...p })} className="text-slate-400 hover:text-primary mr-3" data-testid={`edit-part-${p.id}`}><Pencil size={15} /></button>
+                          {p.status === "to_buy" && <button onClick={() => delPart(p)} className="text-slate-400 hover:text-red-600" data-testid={`delete-part-${p.id}`}><Trash2 size={15} /></button>}
+                        </>}
                       </td>
                     </tr>))}</tbody>
                 </table>

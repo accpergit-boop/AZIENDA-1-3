@@ -676,18 +676,11 @@ async def delete_customer(cid: str, user=Depends(get_current_user)):
     customer = await db.customers.find_one({"id": cid}, {"_id": 0})
     if not customer:
         raise HTTPException(404, "Customer not found")
-    linked = {
-        "invoices": await db.invoices.count_documents({"customer_id": cid}),
-        "orders": await db.orders.count_documents({"customer_id": cid}),
-        "deliveries": await db.deliveries.count_documents({"customer_id": cid}),
-        "payments": await db.payments.count_documents({"customer_id": cid}),
-    }
-    references = [f"{count} {name}" for name, count in linked.items() if count]
-    if references:
-        raise HTTPException(409, f"Customer cannot be deleted while linked records exist: {', '.join(references)}")
-    await db.customers.delete_one({"id": cid})
-    await log_audit("customer", cid, "deleted", user, before=customer)
-    return {"ok": True}
+    updated = await update_doc("customers", cid, {
+        "active": False, "archived_at": now_iso(), "archived_by": user.get("id"),
+    })
+    await log_audit("customer", cid, "archived", user, before=customer, after=updated)
+    return {"ok": True, "archived": True}
 
 @api.get("/customers/{cid}/summary")
 async def customer_summary(cid: str, user=Depends(get_current_user)):
@@ -722,7 +715,7 @@ async def get_prices(user=Depends(get_current_user)):
 
 @api.post("/prices")
 async def add_price(body: PriceIn, user=Depends(get_current_user)):
-    d = body.model_dump()
+    d = {**body.model_dump(), "archived": False, "archived_at": None, "archived_by": None}
     if d["category"] == "Simple/Mix color":
         d["category"] = "Simple" if uses_unified_price_list(active_company_id.get()) else "Standard"
     if uses_unified_price_list(active_company_id.get()):
@@ -753,9 +746,11 @@ async def delete_price(pid: str, user=Depends(get_current_user)):
     before = await db.prices.find_one({"id": pid}, {"_id": 0})
     if not before:
         raise HTTPException(404, "Product price not found")
-    await db.prices.delete_one({"id": pid})
-    await log_audit("price", pid, "deleted", user, before=before)
-    return {"ok": True}
+    updated = await update_doc("prices", pid, {
+        "active": False, "archived_at": now_iso(), "archived_by": user.get("id"),
+    })
+    await log_audit("price", pid, "archived", user, before=before, after=updated)
+    return {"ok": True, "archived": True}
 
 RIBBON_FAMILY = {"Ribbon", "Ribbon Black & Pink", "Ribbon Black", "Ribbon Pink", "Candy"}
 MANUAL_ONLY_SIZES = {"1370x150"}
@@ -932,8 +927,9 @@ async def get_next_number(year: Optional[int] = None, user=Depends(get_current_u
     return {"number": f"{(await current_invoice_sequence(year)) + 1:02d}"}
 
 @api.get("/invoices")
-async def get_invoices(user=Depends(get_current_user)):
-    invs = await listall("invoices", sort=("created_at", -1))
+async def get_invoices(include_archived: bool = False, user=Depends(get_current_user)):
+    query = {} if include_archived else {"archived": {"$ne": True}}
+    invs = await listall("invoices", query, ("created_at", -1))
     for i in invs:
         i["status"] = derive_status(i)
     return invs
@@ -947,23 +943,42 @@ async def get_invoice(iid: str, user=Depends(get_current_user)):
     inv["payment_records"] = await listall("payments", {"invoice_id": iid}, ("created_at", -1))
     return inv
 
-async def _delete_invoice(iid, user, reason=""):
+async def _archive_invoice(iid, user, reason=""):
     inv = await db.invoices.find_one({"id": iid}, {"_id": 0})
     if not inv:
         return False
-    pays = await listall("payments", {"invoice_id": iid})
-    await db.payments.delete_many({"invoice_id": iid})
-    await db.invoices.delete_one({"id": iid})
-    await log_audit("invoice", iid, "deleted", user, reason=reason,
-                    before={"number": inv.get("number"), "customer": inv.get("customer_name"), "total": inv.get("total"),
-                            "payments_deleted": [{"amount": p.get("amount"), "date": p.get("date")} for p in pays]})
+    if derive_status(inv) != "draft":
+        raise HTTPException(400, "Only draft invoices can be archived. Void issued invoices instead.")
+    if inv.get("archived"):
+        return True
+    await update_doc("invoices", iid, {
+        "archived": True,
+        "archived_at": now_iso(),
+        "archived_by": user.get("id"),
+    })
+    await log_audit("invoice", iid, "archived", user, reason=reason, before=inv)
     return True
 
 @api.delete("/invoices/{iid}")
 async def delete_invoice(iid: str, user=Depends(get_current_user)):
-    if not await _delete_invoice(iid, user):
+    if not await _archive_invoice(iid, user):
         raise HTTPException(404, "Invoice not found")
-    return {"ok": True}
+    return {"ok": True, "archived": True}
+
+@api.post("/invoices/{iid}/restore")
+async def restore_invoice(iid: str, user=Depends(get_current_user)):
+    inv = await db.invoices.find_one({"id": iid}, {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    if not inv.get("archived"):
+        return {"ok": True, "archived": False}
+    restored = await update_doc("invoices", iid, {
+        "archived": False,
+        "archived_at": None,
+        "archived_by": None,
+    })
+    await log_audit("invoice", iid, "restored", user, before=inv, after=restored)
+    return {"ok": True, "archived": False}
 
 class BulkDeleteIn(BaseModel):
     ids: List[str]
@@ -971,10 +986,13 @@ class BulkDeleteIn(BaseModel):
 
 @api.post("/invoices/bulk-delete")
 async def bulk_delete_invoices(body: BulkDeleteIn, user=Depends(get_current_user)):
+    invoices = await db.invoices.find({"id": {"$in": body.ids}}, {"_id": 0}).to_list(len(body.ids))
+    if any(derive_status(inv) != "draft" for inv in invoices):
+        raise HTTPException(400, "Only draft invoices can be archived. Void issued invoices instead.")
     n = 0
     for iid in body.ids:
-        n += await _delete_invoice(iid, user, body.reason or "")
-    return {"deleted": n}
+        n += await _archive_invoice(iid, user, body.reason or "")
+    return {"archived": n}
 
 async def _prepare_invoice(body: InvoiceIn):
     customer_id = (body.customer_id or "").strip()
@@ -1379,8 +1397,21 @@ async def delete_block_cutting(record_id: str, user=Depends(get_current_user)):
     before = await db.block_cuttings.find_one({"id": record_id}, {"_id": 0})
     if not before:
         raise HTTPException(404, "Block cutting record not found")
-    await db.block_cuttings.delete_one({"id": record_id})
-    await log_audit("block_cutting", record_id, "deleted", user, before=before)
+    updated = await update_doc("block_cuttings", record_id, {
+        "archived": True, "archived_at": now_iso(), "archived_by": user.get("id"),
+    })
+    await log_audit("block_cutting", record_id, "archived", user, before=before, after=updated)
+    return {"ok": True, "archived": True}
+
+@api.post("/production/block-cutting/{record_id}/restore")
+async def restore_block_cutting(record_id: str, user=Depends(get_current_user)):
+    before = await db.block_cuttings.find_one({"id": record_id}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Block cutting record not found")
+    updated = await update_doc("block_cuttings", record_id, {
+        "archived": False, "archived_at": None, "archived_by": None,
+    })
+    await log_audit("block_cutting", record_id, "restored", user, before=before, after=updated)
     return {"ok": True}
 
 @api.post("/production")
@@ -1525,8 +1556,8 @@ async def salary_report(start_date, end_date):
     salary_period_dates(start_date, end_date)
     employees = await listall("employees", sort=("name", 1))
     attendance = await listall("attendance", {"date": {"$gte": start_date, "$lte": end_date}}, ("date", 1))
-    advances = await listall("salary_advances")
-    cuts = await listall("salary_cuts")
+    advances = await listall("salary_advances", {"voided": {"$ne": True}})
+    cuts = await listall("salary_cuts", {"voided": {"$ne": True}})
     result = []
     for employee in employees:
         hourly_rate = float(employee.get("hourly_rate") or 20)
@@ -1649,14 +1680,20 @@ async def clear_salary_history(eid: str, user=Depends(get_current_user)):
         raise HTTPException(404, "Employee not found")
     advances = await listall("salary_advances", {"employee_id": eid})
     cuts = await listall("salary_cuts", {"employee_id": eid})
-    await db.salary_advances.delete_many({"employee_id": eid})
-    await db.salary_cuts.delete_many({"employee_id": eid})
+    await db.salary_advances.update_many(
+        {"employee_id": eid, "voided": {"$ne": True}},
+        {"$set": {"voided": True, "voided_at": now_iso(), "voided_by": user.get("id")}},
+    )
+    await db.salary_cuts.update_many(
+        {"employee_id": eid, "voided": {"$ne": True}},
+        {"$set": {"voided": True, "voided_at": now_iso(), "voided_by": user.get("id")}},
+    )
     await log_audit(
         "salary_balance_history", eid, "cleared", user,
         before={"employee_name": employee.get("name", ""), "advances": advances, "cuts": cuts},
-        after={"employee_name": employee.get("name", ""), "outstanding_balance": 0},
+        after={"employee_name": employee.get("name", ""), "outstanding_balance": 0, "voided": True},
     )
-    return {"ok": True, "deleted_advances": len(advances), "deleted_cuts": len(cuts)}
+    return {"ok": True, "archived_advances": len(advances), "archived_cuts": len(cuts)}
 
 @api.post("/salaries/cuts")
 async def save_salary_cut(body: SalaryCutIn, user=Depends(get_current_user)):
@@ -1676,10 +1713,15 @@ async def save_salary_cut(body: SalaryCutIn, user=Depends(get_current_user)):
         raise HTTPException(400, f"Cut exceeds this period's gross salary of R {employee['gross_salary']:.2f}")
     if body.amount == 0:
         if before:
-            await db.salary_cuts.delete_one({"id": before["id"]})
-            await log_audit("salary_cut", before["id"], "deleted", user, before=before)
+            await update_doc("salary_cuts", before["id"], {
+                "voided": True, "voided_at": now_iso(), "voided_by": user.get("id"),
+            })
+            await log_audit("salary_cut", before["id"], "voided", user, before=before)
         return {"ok": True, "amount": 0}
     data = body.model_dump()
+    data["voided"] = False
+    data["voided_at"] = None
+    data["voided_by"] = None
     record = await update_doc("salary_cuts", before["id"], data) if before else await insert("salary_cuts", data)
     await log_audit("salary_cut", record["id"], "saved", user, before=before, after=record)
     return record
@@ -1766,17 +1808,18 @@ async def add_delivery(body: DeliveryIn, user=Depends(get_current_user)):
 
 @api.delete("/deliveries/{did}")
 async def delete_delivery(did: str, user=Depends(get_current_user)):
-    deleted = await db.deliveries.find_one_and_delete(
-        {"id": did, "dispatched": {"$ne": True}, "dispatching": {"$ne": True}},
-        projection={"_id": 0},
-    )
-    if not deleted:
-        existing = await db.deliveries.find_one({"id": did}, {"_id": 0})
-        if not existing:
-            raise HTTPException(404, "Delivery not found")
-        raise HTTPException(409, "A dispatched delivery cannot be deleted because stock was deducted")
-    await log_audit("delivery", did, "deleted", user, before=deleted)
-    return {"ok": True}
+    existing = await db.deliveries.find_one({"id": did}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Delivery not found")
+    if existing.get("dispatching"):
+        raise HTTPException(409, "Delivery is being dispatched; try again after the operation completes")
+    if existing.get("dispatched"):
+        raise HTTPException(409, "A dispatched delivery cannot be cancelled because stock was deducted")
+    updated = await update_doc("deliveries", did, {
+        "status": "Cancelled",
+    })
+    await log_audit("delivery", did, "cancelled", user, before=existing, after=updated)
+    return {"ok": True, "cancelled": True}
 
 @api.put("/deliveries/{did}")
 async def edit_delivery(did: str, body: DeliveryIn, user=Depends(get_current_user)):
@@ -2301,13 +2344,11 @@ async def del_vehicle_record(rid: str, user=Depends(get_current_user)):
     before = await db.vehicle_records.find_one({"id": rid}, {"_id": 0})
     if not before:
         raise HTTPException(404, "Record not found")
-    if before.get("status") in VEHICLE_COST_DONE and (before.get("amount") or 0) > 0:
-        rec = await update_doc("vehicle_records", rid, {"status": "Cancelled"})
-        await log_audit("vehicle_record", rid, "cancelled", user, before=before)
-        return rec
-    await db.vehicle_records.delete_one({"id": rid})
-    await log_audit("vehicle_record", rid, "deleted", user, before=before)
-    return {"ok": True}
+    rec = await update_doc("vehicle_records", rid, {
+        "status": "Cancelled",
+    })
+    await log_audit("vehicle_record", rid, "cancelled", user, before=before, after=rec)
+    return {"ok": True, "cancelled": True}
 
 # ---------------- Spare parts ----------------
 PART_FLOW = {"to_buy": 0, "bought": 1, "installed": 2}
@@ -2386,8 +2427,21 @@ async def del_sparepart(pid: str, user=Depends(get_current_user)):
         raise HTTPException(404, "Part not found")
     if p.get("status") != "to_buy":
         raise HTTPException(400, "Bought or installed parts are kept for history and cannot be deleted")
-    await db.spareparts.delete_one({"id": pid})
-    await log_audit("spare_part", pid, "deleted", user, before=p)
+    updated = await update_doc("spareparts", pid, {
+        "archived": True, "archived_at": now_iso(), "archived_by": user.get("id"),
+    })
+    await log_audit("spare_part", pid, "archived", user, before=p, after=updated)
+    return {"ok": True, "archived": True}
+
+@api.post("/spareparts/{pid}/restore")
+async def restore_sparepart(pid: str, user=Depends(get_current_user)):
+    before = await db.spareparts.find_one({"id": pid}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Part not found")
+    updated = await update_doc("spareparts", pid, {
+        "archived": False, "archived_at": None, "archived_by": None,
+    })
+    await log_audit("spare_part", pid, "restored", user, before=before, after=updated)
     return {"ok": True}
 
 # ---------------- Customer import with opening balances ----------------
@@ -2667,8 +2721,14 @@ async def edit_order(oid: str, body: OrderIn, user=Depends(get_current_user)):
 
 @api.delete("/orders/{oid}")
 async def del_order(oid: str, user=Depends(get_current_user)):
-    await db.orders.delete_one({"id": oid})
-    return {"ok": True}
+    order = await db.orders.find_one({"id": oid}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "Order not found")
+    updated = await update_doc("orders", oid, {
+        "status": "Cancelled",
+    })
+    await log_audit("order", oid, "cancelled", user, before=order, after=updated)
+    return {"ok": True, "cancelled": True}
 
 # ---------------- Attendance summary ----------------
 # ---------------- Simple daily production (white / blue blocks) ----------------
@@ -2681,8 +2741,9 @@ class DailyProdIn(BaseModel):
 @api.get("/production/daily")
 async def get_daily_prod(user=Depends(get_current_user)):
     rows = await listall("production_daily", sort=("date", -1))
+    active_rows = [r for r in rows if not r.get("archived")]
     week, month = period_starts()
-    tot = lambda since: {c: sum(r.get(c, 0) for r in rows if r["date"] >= since) for c in ("white_blocks", "blue_blocks")}
+    tot = lambda since: {c: sum(r.get(c, 0) for r in active_rows if r["date"] >= since) for c in ("white_blocks", "blue_blocks")}
     return {"rows": rows, "today": tot(today_str()), "week": tot(week), "month": tot(month)}
 
 @api.post("/production/daily")
@@ -2697,8 +2758,24 @@ async def save_daily_prod(body: DailyProdIn, user=Depends(get_current_user)):
 
 @api.delete("/production/daily/{pid}")
 async def del_daily_prod(pid: str, user=Depends(get_current_user)):
-    await db.production_daily.delete_one({"id": pid})
-    await log_audit("production_daily", pid, "deleted", user)
+    before = await db.production_daily.find_one({"id": pid}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Production record not found")
+    updated = await update_doc("production_daily", pid, {
+        "archived": True, "archived_at": now_iso(), "archived_by": user.get("id"),
+    })
+    await log_audit("production_daily", pid, "archived", user, before=before, after=updated)
+    return {"ok": True, "archived": True}
+
+@api.post("/production/daily/{pid}/restore")
+async def restore_daily_prod(pid: str, user=Depends(get_current_user)):
+    before = await db.production_daily.find_one({"id": pid}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Production record not found")
+    updated = await update_doc("production_daily", pid, {
+        "archived": False, "archived_at": None, "archived_by": None,
+    })
+    await log_audit("production_daily", pid, "restored", user, before=before, after=updated)
     return {"ok": True}
 
 class BulkAttendanceIn(BaseModel):
@@ -2868,7 +2945,7 @@ async def seed():
         if v:
             used = sum([await db[c].count_documents({"vehicle_id": v["id"]}) for c in ("vehicle_records", "spareparts", "orders", "deliveries", "expenses")])
             if used == 0:
-                await db.vehicles.delete_one({"id": v["id"]})
+                await db.vehicles.update_one({"id": v["id"]}, {"$set": {"active": False}})
     for v in seed_data.FLEET:
         if not await db.vehicles.find_one({"name": v["name"]}):
             await db.vehicles.insert_one({"id": new_id(), **v, "created_at": now_iso()})
@@ -2877,8 +2954,13 @@ async def seed():
         await db.settings.insert_one({**seed_data.DEFAULT_SETTINGS, "created_at": now_iso()})
     await db.vehicle_records.update_many({"status": "done"}, {"$set": {"status": "Done"}})
     # split generic Ribbon into Ribbon Black / Ribbon Pink
-    if await db.prices.count_documents({"category": {"$in": ["Ribbon", "Ribbon Black & Pink"]}}):
-        await db.prices.delete_many({"category": {"$in": ["Ribbon", "Ribbon Black & Pink"]}})
+    if await db.prices.count_documents({
+        "category": {"$in": ["Ribbon", "Ribbon Black & Pink"]}, "active": {"$ne": False},
+    }):
+        await db.prices.update_many(
+            {"category": {"$in": ["Ribbon", "Ribbon Black & Pink"]}, "active": {"$ne": False}},
+            {"$set": {"active": False, "migration_note": "Replaced by Ribbon Black / Ribbon Pink"}},
+        )
         for p in seed_data.PRICES:
             if p["category"] in ("Ribbon Black", "Ribbon Pink") and not await db.prices.find_one({"zone": p["zone"], "category": p["category"], "size": p["size"]}):
                 await db.prices.insert_one({"id": new_id(), **p, "updated_at": now_iso(), "created_at": now_iso()})
@@ -2991,13 +3073,14 @@ async def initialize_empty_company(company_id):
     if uses_unified_price_list(company_id):
         settings = await company_db.settings.find_one({"id": "singleton"}, {"_id": 0}) or {}
         if settings.get("unified_price_list_version") != 2:
-            await company_db.prices.delete_many({})
             for price in seed_data.IQFOAM_UNIFIED_PRICES:
-                await company_db.prices.insert_one({
-                    "id": new_id(), "zone": 1, **price, "active": True,
-                    "confirmed": price["price"] is not None, "company_id": company_id,
-                    "created_at": now_iso(), "updated_at": now_iso(),
-                })
+                key = {"zone": 1, "category": price["category"], "size": price["size"]}
+                if not await company_db.prices.find_one(key, {"_id": 1}):
+                    await company_db.prices.insert_one({
+                        "id": new_id(), **key, **price, "active": True,
+                        "confirmed": price["price"] is not None, "company_id": company_id,
+                        "created_at": now_iso(), "updated_at": now_iso(),
+                    })
             await company_db.customers.update_many({}, {"$set": {"default_zone": 1}})
             await company_db.settings.update_one(
                 {"id": "singleton"}, {"$set": {"unified_price_list_version": 2}}

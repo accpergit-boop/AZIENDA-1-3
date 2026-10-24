@@ -136,8 +136,8 @@ export default function Orders() {
   };
 
   const remove = async (o) => {
-    if (!window.confirm(`Delete order ${o.reference}?`)) return;
-    try { await api.del(`/orders/${o.id}`); toast.success("Order deleted"); load(); } catch (e) { toast.error(apiError(e)); }
+    if (!window.confirm(`Cancel order ${o.reference}? The order record will be retained.`)) return;
+    try { await api.del(`/orders/${o.id}`); toast.success("Order cancelled"); load(); } catch (e) { toast.error(apiError(e)); }
   };
 
   const tabs = ["open", ...STATUSES, "all"];

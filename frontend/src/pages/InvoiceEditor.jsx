@@ -289,12 +289,6 @@ export default function InvoiceEditor() {
     catch (e) { toast.error(apiError(e)); }
   };
 
-  const deleteDraft = async () => {
-    if (!window.confirm("Delete this draft invoice permanently?")) return;
-    try { await api.del(`/invoices/${id}`); toast.success("Draft deleted"); nav("/invoices"); }
-    catch (e) { toast.error(apiError(e)); }
-  };
-
   const reloadInv = async () => { const d = await api.get(`/invoices/${id}`); setInv(d); setPayRecords(d.payment_records || []); };
 
   const recordPayment = async () => {
@@ -563,7 +557,6 @@ export default function InvoiceEditor() {
                     <Btn variant="success" onClick={() => setPayModal({ amount: totals.outstanding.toFixed(2), method: "Cash", date: today(), reference: "", notes: "", idempotency_key: newKey() })} data-testid="record-payment-btn"><CreditCard size={15} /> Pay</Btn>
                   )}
                   {id && inv.status === "draft" && !editing && <Btn variant="subtle" onClick={issueExisting} data-testid="issue-existing-btn"><Send size={15} /> Issue</Btn>}
-                  {id && inv.status === "draft" && !inv.number && <Btn variant="ghost" className="col-span-2 text-red-600" onClick={deleteDraft} data-testid="delete-draft-btn"><Trash2 size={15} /> Delete Draft</Btn>}
                   {id && inv.number && <Btn variant="ghost" className="col-span-2 text-red-600" onClick={voidInvoice} data-testid="void-invoice-btn"><Ban size={15} /> Void Invoice</Btn>}
                 </div>
               )}

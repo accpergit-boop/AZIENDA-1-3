@@ -219,11 +219,11 @@ export default function Settings() {
   };
 
   const deletePrice = async (price) => {
-    if (!window.confirm(`Remove ${priceProductName(price.category)} — ${price.size} from this price list? Existing invoices will not change.`)) return;
+    if (!window.confirm(`Deactivate ${priceProductName(price.category)} — ${price.size}? The price record will be retained and can be reactivated later.`)) return;
     try {
       await api.del(`/prices/${price.id}`);
-      setPrices((current) => current.filter((item) => item.id !== price.id));
-      toast.success("Product removed from the price list");
+      setPrices((current) => current.map((item) => item.id === price.id ? { ...item, active: false } : item));
+      toast.success("Price deactivated");
     } catch (e) { toast.error(apiError(e)); }
   };
 

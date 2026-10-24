@@ -230,9 +230,15 @@ class TestVoidDelete:
         assert s.get(f"{API}/invoices/{inv['id']}").json()["status"] == "void"
         assert s.post(f"{API}/invoices/{inv['id']}/payments", json={"amount": 1}).status_code == 400
 
-    def test_delete_draft(self, s, customer):
+    def test_archive_restore_draft(self, s, customer):
         d = s.post(f"{API}/invoices", json={"customer_id": customer["id"], "status": "draft", "items": []}).json()
-        assert s.delete(f"{API}/invoices/{d['id']}").status_code == 200
+        archived = s.delete(f"{API}/invoices/{d['id']}")
+        assert archived.status_code == 200 and archived.json()["archived"] is True
+        assert all(i["id"] != d["id"] for i in s.get(f"{API}/invoices").json())
+        retained = s.get(f"{API}/invoices", params={"include_archived": "true"}).json()
+        assert next(i for i in retained if i["id"] == d["id"])["archived"] is True
+        assert s.get(f"{API}/invoices/{d['id']}").json()["id"] == d["id"]
+        assert s.post(f"{API}/invoices/{d['id']}/restore").status_code == 200
         assert s.get(f"{API}/invoices/{d['id']}").status_code == 404
 
 

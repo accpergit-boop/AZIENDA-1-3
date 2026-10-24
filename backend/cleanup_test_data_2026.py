@@ -1,4 +1,4 @@
-"""One-off clean start: remove all automated-test data, keep real customers/opening balances/stock/fleet. Usage: python cleanup_test_data_2026.py [--dry]"""
+"""One-off cleanup. Defaults to a dry run; destructive cleanup requires --confirm-destructive."""
 import asyncio, os, sys, uuid
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -51,4 +51,7 @@ async def main(dry):
     print("DRY RUN" if dry else "DONE", report, "opening balances kept:", len(ob))
 
 if __name__ == "__main__":
-    asyncio.run(main("--dry" in sys.argv))
+    dry = "--dry" in sys.argv or "--confirm-destructive" not in sys.argv
+    if dry and "--confirm-destructive" not in sys.argv:
+        print("No changes made. Review the dry-run report, then pass --confirm-destructive to execute.")
+    asyncio.run(main(dry))
