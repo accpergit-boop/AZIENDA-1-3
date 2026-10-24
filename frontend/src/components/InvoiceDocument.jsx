@@ -2,7 +2,6 @@ import { forwardRef } from "react";
 import { fmtMoney, fmtDate } from "@/lib/format";
 
 export const COMPANY = { name: "SUPER IQ-FOAM", address: ["ROCKY RIDGE LODGE", "ROCKY RIDGE FARM", "KOKSTAD, 4700"], phones: "0659279036 - 0634029112" };
-export const thickness = (size) => (size || "").split(/[xX×]/)[1] || "";
 
 const Logo = () => (
   <svg width="58" height="58" viewBox="0 0 64 64" aria-hidden="true">
@@ -47,10 +46,10 @@ export const InvoiceDocument = forwardRef(function InvoiceDocument({ inv, totals
         </div>
       </div>
       {rows.length > 0 && <table className="w-full mt-6 border border-slate-200">
-        <thead><tr className="bg-slate-100 text-left">{["#", "Category", "Size", "Thickness", "Qty", "Unit Price", "Total"].map((h, i) => <th key={h} className={`px-3 py-2.5 font-semibold ${i >= 4 ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
+        <thead><tr className="bg-slate-100 text-left">{["#", "Category", "Size", "Qty", "Unit Price", "Total"].map((h, i) => <th key={h} className={`px-3 py-2.5 font-semibold ${i >= 3 ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
         <tbody>{rows.map((it, i) => (
           <tr key={i} className="border-t border-slate-200">
-            <td className="px-3 py-3">{i + 1}</td><td className="px-3">{it.category || it.description}</td><td className="px-3">{it.size}</td><td className="px-3">{thickness(it.size)}</td>
+            <td className="px-3 py-3">{i + 1}</td><td className="px-3">{it.category || it.description}</td><td className="px-3">{it.size}</td>
             <td className="px-3 text-right">{it.qty}</td><td className="px-3 text-right">{fmtMoney(it.unit_price)}</td><td className="px-3 text-right">{fmtMoney((Number(it.qty) || 0) * (Number(it.unit_price) || 0))}</td>
           </tr>))}</tbody>
       </table>}

@@ -109,7 +109,7 @@ class TestInvoiceCalc:
         assert inv["subtotal"] == 691.50
         assert inv["total"] == 701.50
         assert inv["outstanding"] == 701.50
-        assert inv["number"].isdigit() and len(inv["number"]) >= 3
+        assert inv["number"].isdigit() and len(inv["number"]) == 2
         inv2 = issued_invoice(s, customer)
         assert inv2["number"] != inv["number"]
         g = s.get(f"{API}/invoices/{inv['id']}").json()

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, useReducedMotion } from "framer-motion";
-import { api } from "@/lib/api";
-import { fmtMoney, fmtDate, STATUS_META } from "@/lib/format";
-import { Card, Badge } from "@/components/common";
+import { api, apiError } from "@/lib/api";
+import { fmtMoney, fmtDate, today, STATUS_META } from "@/lib/format";
+import { Card, Badge, Modal } from "@/components/common";
 import { useAuth } from "@/context/AuthContext";
 import {
   Receipt, Wallet, AlertTriangle, Boxes, Plus, UserPlus, CreditCard,
@@ -22,7 +22,15 @@ const QUICK = [
   { label: "Record Expense", icon: Banknote, to: "/expenses" },
 ];
 
-function KPI({ title, value, icon: Icon, tint, onClick }) {
+const currentMonth = today().slice(0, 7);
+const previousMonth = (month) => {
+  const [year, value] = month.split("-").map(Number);
+  const date = new Date(Date.UTC(year, value - 2, 1));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+};
+const monthLabel = (value) => new Date(`${value}-01T00:00:00`).toLocaleDateString("en", { month: "long", year: "numeric", timeZone: "UTC" });
+
+function KPI({ title, value, icon: Icon, tint, onClick, comparison }) {
   const reduceMotion = useReducedMotion();
   return (
     <motion.div whileHover={reduceMotion ? undefined : { y: -2, scale: 1.01 }} whileTap={reduceMotion ? undefined : { scale: 0.995 }} transition={{ type: "spring", stiffness: 460, damping: 24, mass: 0.6 }}>
@@ -31,6 +39,7 @@ function KPI({ title, value, icon: Icon, tint, onClick }) {
           <div>
             <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.13em]">{title}</p>
             <p className="text-2xl font-semibold text-slate-900 mt-2 font-mono tabular-nums">{value}</p>
+            {comparison && <p className="mt-1 text-[11px] text-slate-500">{comparison}</p>}
           </div>
           <div className={`h-10 w-10 rounded-md flex items-center justify-center transition-transform group-hover:translate-y-[-2px] ${tint}`}>
             <Icon size={19} strokeWidth={1.8} />
@@ -76,7 +85,8 @@ function DashboardSkeleton() {
         <SkeletonBlock className="h-9 w-64 max-w-full" />
         <SkeletonBlock className="h-3 w-72 max-w-full" />
       </div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards(7)}</div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">{cards(5)}</div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards(4)}</div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">{cards(5, "!p-3")}</div>
       <div className="luxury-card rounded-lg border border-border bg-white p-5">
         <SkeletonBlock className="mb-5 h-4 w-32" />
@@ -96,14 +106,79 @@ function DashboardSkeleton() {
 
 export default function Dashboard() {
   const [d, setD] = useState(null);
+  const [period, setPeriod] = useState("month");
+  const [loadingError, setLoadingError] = useState("");
+  const [reload, setReload] = useState(0);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [compareKind, setCompareKind] = useState("month");
+  const [firstMonth, setFirstMonth] = useState(previousMonth(currentMonth));
+  const [secondMonth, setSecondMonth] = useState(currentMonth);
+  const [firstYear, setFirstYear] = useState(String(Number(currentMonth.slice(0, 4)) - 1));
+  const [secondYear, setSecondYear] = useState(currentMonth.slice(0, 4));
+  const [comparisonResult, setComparisonResult] = useState(null);
+  const [comparisonLoading, setComparisonLoading] = useState(false);
+  const [comparisonError, setComparisonError] = useState("");
   const nav = useNavigate();
   const { user } = useAuth();
 
-  useEffect(() => { api.get("/dashboard").then(setD).catch(() => {}); }, []);
+  useEffect(() => {
+    let active = true;
+    setD(null);
+    setLoadingError("");
+    api.get("/dashboard", { period })
+      .then((data) => { if (active) setD(data); })
+      .catch((error) => { if (active) setLoadingError(apiError(error)); });
+    return () => { active = false; };
+  }, [period, reload]);
 
+  if (!d && loadingError) return (
+    <div className="rounded-xl border border-red-200 bg-red-50 p-5" role="alert">
+      <p className="font-semibold text-red-800">Dashboard could not be loaded.</p>
+      <p className="mt-1 text-sm text-red-700">{loadingError}</p>
+      <button onClick={() => setReload((value) => value + 1)} className="mt-3 rounded-lg border border-red-300 bg-white px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-100">
+        Try again
+      </button>
+    </div>
+  );
   if (!d) return <DashboardSkeleton />;
 
+  const periodProfit = d.period_profit || {};
+  const previousProfit = d.previous_period_profit || {};
+  const comparison = (value, previous) => {
+    const difference = (Number(value) || 0) - (Number(previous) || 0);
+    if (difference === 0) return "No change vs previous period";
+    return `${fmtMoney(Math.abs(difference))} ${difference > 0 ? "higher" : "lower"} vs previous period`;
+  };
+  const periodLabels = { today: "Today", week: "This Week", month: "This Month", year: "This Year" };
+  const periodLabel = periodLabels[period];
+  const periodRange = `${fmtDate(d.period_start)} – ${fmtDate(d.period_end)}`;
+  const previousRange = `${fmtDate(d.previous_period_start)} – ${fmtDate(d.previous_period_end)}`;
   const empty = (t) => <p className="text-sm text-slate-400 py-3">{t}</p>;
+  const runCustomComparison = async () => {
+    const first = compareKind === "month" ? firstMonth : firstYear;
+    const second = compareKind === "month" ? secondMonth : secondYear;
+    if (first === second) {
+      setComparisonError("Choose two different periods to compare.");
+      setComparisonResult(null);
+      return;
+    }
+    setComparisonLoading(true);
+    setComparisonError("");
+    try {
+      setComparisonResult(await api.get("/dashboard/compare", { kind: compareKind, first, second }));
+    } catch (error) {
+      setComparisonError(apiError(error));
+      setComparisonResult(null);
+    } finally {
+      setComparisonLoading(false);
+    }
+  };
+  const compareLabel = (entry, kind) => kind === "month" ? monthLabel(entry.value) : entry.value;
+  const comparisonDifference = (a, b) => {
+    const delta = (Number(a) || 0) - (Number(b) || 0);
+    if (delta === 0) return "No difference";
+    return `${delta > 0 ? "+" : "−"}${fmtMoney(Math.abs(delta))}`;
+  };
 
   return (
     <div className="dashboard-stagger space-y-6">
@@ -114,27 +189,55 @@ export default function Dashboard() {
       </div>
 
       <section data-testid="dashboard-monthly-summary">
-        <h2 className="mb-3 text-xs font-bold uppercase tracking-[0.16em] text-primary">This Month &amp; Business Balances</h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <KPI title="This Month Final Profit" value={fmtMoney(d.month_profit?.profit)} icon={Wallet} tint={d.month_profit?.profit < 0 ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-600"} onClick={() => nav("/expenses")} />
-          <KPI title="Payments Received" value={fmtMoney(d.payments_received)} icon={Wallet} tint="bg-emerald-50 text-emerald-600" onClick={() => nav("/invoices")} />
-          <KPI title="This Month Buyings" value={fmtMoney(d.month_profit?.buyings)} icon={Boxes} tint="bg-violet-50 text-violet-600" onClick={() => nav("/buyings")} />
-          <KPI title="This Month Expenses" value={fmtMoney(d.month_profit?.expenses)} icon={Banknote} tint="bg-orange-50 text-orange-600" onClick={() => nav("/expenses")} />
-          <KPI title="Total Invoiced" value={fmtMoney(d.total_invoiced)} icon={Receipt} tint="bg-blue-50 text-blue-600" onClick={() => nav("/invoices")} />
-          <KPI title="Total Stock" value={d.finished_stock} icon={Boxes} tint="bg-amber-50 text-amber-600" onClick={() => nav("/stock")} />
-          <KPI title="Outstanding Balances" value={fmtMoney(d.outstanding)} icon={AlertTriangle} tint="bg-red-50 text-red-600" onClick={() => nav("/client-payments")} />
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xs font-bold uppercase tracking-[0.16em] text-primary">Financial Overview · {periodLabel}</h2>
+            <p className="mt-1 text-xs text-slate-500">{periodRange} <span className="text-slate-400">· Previous: {previousRange}</span></p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+              Period
+              <select value={period} onChange={(event) => setPeriod(event.target.value)} data-testid="dashboard-period-select"
+                className="rounded-lg border border-border bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15">
+                {Object.entries(periodLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+            <button onClick={() => setCompareOpen(true)} data-testid="dashboard-compare-open"
+              className="rounded-lg border border-primary/30 bg-white px-3 py-2 text-sm font-semibold text-primary hover:bg-primary/5">
+              Compare periods
+            </button>
+          </div>
         </div>
-        <p className="mt-2 text-xs text-slate-400">Final profit = payments received − expenses − buyings. Based on recorded transactions for this month.</p>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KPI title="Revenue" value={fmtMoney(periodProfit.revenue)} comparison={comparison(periodProfit.revenue, previousProfit.revenue)} icon={TrendingUp} tint="bg-emerald-50 text-emerald-600" onClick={() => nav("/invoices")} />
+          <KPI title="Buyings" value={fmtMoney(periodProfit.buyings)} comparison={comparison(periodProfit.buyings, previousProfit.buyings)} icon={Boxes} tint="bg-violet-50 text-violet-600" onClick={() => nav("/buyings")} />
+          <KPI title="Expenses" value={fmtMoney(periodProfit.expenses)} comparison={comparison(periodProfit.expenses, previousProfit.expenses)} icon={Banknote} tint="bg-orange-50 text-orange-600" onClick={() => nav("/expenses")} />
+          <KPI title="Final Profit of the Company" value={fmtMoney(periodProfit.profit)} comparison={comparison(periodProfit.profit, previousProfit.profit)} icon={Wallet} tint={periodProfit.profit < 0 ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-700"} onClick={() => nav("/expenses")} />
+        </div>
+        <p className="mt-2 text-xs text-slate-400">Revenue is payments received. Final profit = revenue − buyings − recorded expenses. Estimated cash result, not accounting profit.</p>
       </section>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
-        {[["Done Today", d.completed_today, "/production"],
-          ["Orders to Send", d.orders_open_count, "/orders"], ["Urgent Orders", d.urgent_orders, "/orders"], ["Vehicles Free", `${d.vehicles_available}/${d.vehicles_total}`, "/fleet"],
-          ["Maintenance Due", d.maintenance_due, "/fleet"]].map(([l, v, to]) => (
-          <motion.button key={l} whileHover={{ y: -2, scale: 1.01 }} whileTap={{ scale: 0.99 }} transition={{ type: "spring", stiffness: 420, damping: 24, mass: 0.5 }} onClick={() => nav(to)} className="premium-button rounded-lg border border-border bg-white/85 p-3 text-left hover:border-primary/50 hover:bg-white transition-colors" data-testid={`op-kpi-${l.toLowerCase().replace(/\s/g, "-")}`}>
-            <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-slate-500">{l}</p><p className="text-xl font-semibold font-mono tabular-nums text-slate-800 mt-1">{v}</p>
-          </motion.button>))}
-      </div>
+      <section data-testid="dashboard-business-balances">
+        <h2 className="mb-3 text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Business Balances &amp; Stock</h2>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KPI title="Total Invoiced" value={fmtMoney(d.total_invoiced)} icon={Receipt} tint="bg-blue-50 text-blue-600" onClick={() => nav("/invoices")} />
+          <KPI title="Payments Received · All Time" value={fmtMoney(d.payments_received)} icon={Wallet} tint="bg-emerald-50 text-emerald-600" onClick={() => nav("/invoices")} />
+          <KPI title="Outstanding Balances" value={fmtMoney(d.outstanding)} icon={AlertTriangle} tint="bg-red-50 text-red-600" onClick={() => nav("/client-payments")} />
+          <KPI title="Total Stock" value={d.finished_stock} icon={Boxes} tint="bg-amber-50 text-amber-600" onClick={() => nav("/stock")} />
+        </div>
+      </section>
+
+      <section aria-labelledby="dashboard-operations-heading">
+        <h2 id="dashboard-operations-heading" className="mb-3 text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Operations at a Glance</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+          {[["Done Today", d.completed_today, "/production"],
+            ["Orders to Send", d.orders_open_count, "/orders"], ["Urgent Orders", d.urgent_orders, "/orders"], ["Vehicles Free", `${d.vehicles_available}/${d.vehicles_total}`, "/fleet"],
+            ["Maintenance Due", d.maintenance_due, "/fleet"]].map(([l, v, to]) => (
+            <motion.button key={l} whileHover={{ y: -2, scale: 1.01 }} whileTap={{ scale: 0.99 }} transition={{ type: "spring", stiffness: 420, damping: 24, mass: 0.5 }} onClick={() => nav(to)} className="premium-button rounded-lg border border-border bg-white/85 p-3 text-left hover:border-primary/50 hover:bg-white transition-colors" data-testid={`op-kpi-${l.toLowerCase().replace(/\s/g, "-")}`}>
+              <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-slate-500">{l}</p><p className="text-xl font-semibold font-mono tabular-nums text-slate-800 mt-1">{v}</p>
+            </motion.button>))}
+        </div>
+      </section>
 
       {/* Quick actions */}
       <Card className="premium-card p-5">
@@ -234,6 +337,81 @@ export default function Dashboard() {
           </div>
         )}
       </Section>
+
+      <Modal open={compareOpen} onClose={() => setCompareOpen(false)} title="Compare months or years" wide>
+        <div className="space-y-5">
+          <label className="flex items-center gap-3 text-sm font-semibold text-slate-700">
+            Compare by
+            <select value={compareKind} onChange={(event) => { setCompareKind(event.target.value); setComparisonResult(null); setComparisonError(""); }}
+              data-testid="dashboard-compare-kind"
+              className="rounded-lg border border-border bg-white px-3 py-2 text-sm">
+              <option value="month">Month vs month</option>
+              <option value="year">Year vs year</option>
+            </select>
+          </label>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {[0, 1].map((index) => (
+              <label key={index} className="space-y-1.5 text-xs font-semibold text-slate-600">
+                {index === 0 ? "First period" : "Second period"}
+                {compareKind === "month" ? (
+                  <input type="month" value={index === 0 ? firstMonth : secondMonth}
+                    onChange={(event) => {
+                      index === 0 ? setFirstMonth(event.target.value) : setSecondMonth(event.target.value);
+                      setComparisonResult(null);
+                      setComparisonError("");
+                    }}
+                    data-testid={`dashboard-compare-month-${index + 1}`}
+                    className="block w-full rounded-lg border border-border bg-white px-3 py-2 text-sm font-normal text-slate-700" />
+                ) : (
+                  <select value={index === 0 ? firstYear : secondYear}
+                    onChange={(event) => {
+                      index === 0 ? setFirstYear(event.target.value) : setSecondYear(event.target.value);
+                      setComparisonResult(null);
+                      setComparisonError("");
+                    }}
+                    data-testid={`dashboard-compare-year-${index + 1}`}
+                    className="block w-full rounded-lg border border-border bg-white px-3 py-2 text-sm font-normal text-slate-700">
+                    {Array.from({ length: Math.max(1, Number(currentMonth.slice(0, 4)) - 1999) }, (_, offset) => String(Number(currentMonth.slice(0, 4)) - offset))
+                      .map((year) => <option key={year} value={year}>{year}</option>)}
+                  </select>
+                )}
+              </label>
+            ))}
+          </div>
+          <div className="flex justify-end">
+            <button onClick={runCustomComparison} disabled={comparisonLoading} data-testid="dashboard-compare-run"
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
+              {comparisonLoading ? "Comparing..." : "Compare"}
+            </button>
+          </div>
+          {comparisonError && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{comparisonError}</p>}
+          {comparisonResult && (
+            <div className="space-y-3" data-testid="dashboard-compare-results">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {[comparisonResult.first, comparisonResult.second].map((entry) => (
+                  <div key={entry.value} className="rounded-xl border border-border bg-slate-50/70 p-4">
+                    <h3 className="font-bold text-slate-800">{compareLabel(entry, comparisonResult.kind)}</h3>
+                    <p className="mt-1 text-xs text-slate-500">{fmtDate(entry.start)} – {fmtDate(entry.end)}</p>
+                    <dl className="mt-3 space-y-2 text-sm">
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">Revenue</dt><dd className="font-mono font-semibold">{fmtMoney(entry.revenue)}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">Buyings</dt><dd className="font-mono">{fmtMoney(entry.buyings)}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">Expenses</dt><dd className="font-mono">{fmtMoney(entry.expenses)}</dd></div>
+                      <div className="flex justify-between gap-2 border-t border-border pt-2"><dt className="font-semibold text-slate-700">Final Profit</dt><dd className="font-mono font-bold">{fmtMoney(entry.profit)}</dd></div>
+                    </dl>
+                  </div>
+                ))}
+              </div>
+              <div className="rounded-lg border border-primary/15 bg-primary/5 px-4 py-3 text-sm">
+                <span className="font-semibold text-slate-700">Difference (second − first): </span>
+                Revenue {comparisonDifference(comparisonResult.second.revenue, comparisonResult.first.revenue)} ·
+                Buyings {comparisonDifference(comparisonResult.second.buyings, comparisonResult.first.buyings)} ·
+                Expenses {comparisonDifference(comparisonResult.second.expenses, comparisonResult.first.expenses)} ·
+                Final Profit {comparisonDifference(comparisonResult.second.profit, comparisonResult.first.profit)}
+              </div>
+            </div>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }

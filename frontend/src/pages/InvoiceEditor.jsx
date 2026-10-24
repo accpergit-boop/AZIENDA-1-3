@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from "react";
-import { InvoiceDocument, thickness } from "@/components/InvoiceDocument";
+import { InvoiceDocument } from "@/components/InvoiceDocument";
 import { DeliveryNote } from "@/components/DeliveryNote";
 import { elementToPdf, printElement } from "@/lib/pdf";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
@@ -78,9 +78,16 @@ export default function InvoiceEditor() {
         setSp({}, { replace: true });
       }
     });
-    else api.get("/invoices/next-number").then((d) => setNextNum(d.number));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  useEffect(() => {
+    if (!id && /^\d{4}-/.test(inv.date)) {
+      api.get(`/invoices/next-number?year=${encodeURIComponent(inv.date.slice(0, 4))}`)
+        .then((d) => setNextNum(d.number))
+        .catch((error) => toast.error(apiError(error)));
+    }
+  }, [id, inv.date]);
 
   const startEdit = () => { setSnapshot(inv); setInv(prepareForEdit(inv)); setEditing(true); };
   const cancelEdit = () => { setInv(snapshot); setEditing(false); };
@@ -200,7 +207,7 @@ export default function InvoiceEditor() {
     return true;
   };
 
-  const save = async (status, saveNewEntries = null) => {
+  const save = async (status, saveNewEntries = null, downloadAfterSave = false) => {
     if (!validate(status) || busy || saveLockRef.current) return;
     if (!id && saveNewEntries === null) {
       const knownCustomer = customers.some((customer) => customer.active && customer.name.trim().toLowerCase() === inv.customer_name.trim().toLowerCase());
@@ -210,7 +217,7 @@ export default function InvoiceEditor() {
           price.category === priceCat(inv.zone, item.category, unifiedPriceList) && price.size === item.size))
         .map((item) => [`${priceCat(inv.zone, item.category, unifiedPriceList)}|${item.size}`, item])).values()];
       if (!knownCustomer || newProducts.length) {
-        setPendingSave({ status, newCustomer: !knownCustomer, newProducts });
+        setPendingSave({ status, newCustomer: !knownCustomer, newProducts, downloadAfterSave });
         return;
       }
     }
@@ -248,9 +255,10 @@ export default function InvoiceEditor() {
       }
       const payload = { ...buildPayload(status), customer_id: customerId, customer_name: inv.customer_name.trim() };
       const res = id ? await api.put(`/invoices/${id}`, payload) : await api.post("/invoices", payload);
-      toast.success(status === "draft" ? "Saved as draft" : "Invoice saved");
+      const submitted = !id && status !== "draft";
+      toast.success(submitted ? "INVOICE SUBMITTED" : status === "draft" ? "Saved as draft" : "Invoice saved");
       setPendingSave(null);
-      nav(`/invoices/${res.id}`);
+      nav(submitted && !downloadAfterSave ? "/invoices" : `/invoices/${res.id}`);
       if (id) { setInv(res); }
     } catch (e) { toast.error(apiError(e)); } finally { saveLockRef.current = false; setBusy(false); }
   };
@@ -412,7 +420,7 @@ export default function InvoiceEditor() {
   );
   const createAndDownload = async () => {
     if (id) return downloadPDF();
-    sessionStorage.setItem("iq-dl", "1"); await save("issued");
+    sessionStorage.setItem("iq-dl", "1"); await save("issued", null, true);
   };
   useEffect(() => {
     if (id && inv.id === id && customers.length && sessionStorage.getItem("iq-dl")) { sessionStorage.removeItem("iq-dl"); setTimeout(downloadPDF, 400); }
@@ -496,7 +504,7 @@ export default function InvoiceEditor() {
               <div className="overflow-x-auto -mx-5 px-5">
                 <table className="w-full text-sm min-w-[720px]">
                   <thead><tr className="text-left text-xs text-slate-400 border-b border-border">
-                    <th className="pb-2 font-semibold w-16">Qty</th>                    <th className="pb-2 font-semibold">Product / Category</th><th className="pb-2 font-semibold">Size / Unit</th><th className="pb-2 font-semibold w-20">Thickness</th><th className="pb-2 font-semibold w-32">Unit Price (R)</th><th className="pb-2 font-semibold text-right w-28">Line Total</th><th className="w-10"></th>
+                    <th className="pb-2 font-semibold w-16">Qty</th><th className="pb-2 font-semibold">Product / Category</th><th className="pb-2 font-semibold">Size / Unit</th><th className="pb-2 font-semibold w-32">Unit Price (R)</th><th className="pb-2 font-semibold text-right w-28">Line Total</th><th className="w-10"></th>
                   </tr></thead>
                   <tbody>{invoiceItems.map((it, idx) => (
                     <tr key={idx} className="border-b border-border/50" data-testid={`item-row-${idx}`}>
@@ -520,7 +528,6 @@ export default function InvoiceEditor() {
                           className="w-full rounded border border-input px-2 py-1.5 text-sm min-w-[110px]" />
                         <datalist id={`invoice-size-options-${idx}`}>{sizesFor(inv.zone, it.category).map((size) => <option key={size} value={size} />)}</datalist>
                       </td>}
-                      <td className="pr-2 text-slate-500 font-mono" data-testid={`item-thickness-${idx}`}>{thickness(it.size) || "-"}</td>
                       <td className="pr-2">
                         <div className="flex items-center gap-1">
                           <input type="number" step="0.01" value={it.unit_price}
@@ -661,8 +668,8 @@ export default function InvoiceEditor() {
           </ul>}
           <p className="text-xs text-slate-500">If you choose not to save, the customer name and product details will still appear on this invoice only.</p>
           <div className="flex flex-wrap justify-end gap-2">
-            <Btn variant="outline" disabled={busy} onClick={() => { const status = pendingSave.status; setPendingSave(null); save(status, false); }} data-testid="invoice-dont-save-new-entry">Don't save it</Btn>
-            <Btn disabled={busy} onClick={() => save(pendingSave.status, true)} data-testid="invoice-save-new-entry">Save it</Btn>
+            <Btn variant="outline" disabled={busy} onClick={() => { const { status, downloadAfterSave } = pendingSave; setPendingSave(null); save(status, false, downloadAfterSave); }} data-testid="invoice-dont-save-new-entry">Don't save it</Btn>
+            <Btn disabled={busy} onClick={() => save(pendingSave.status, true, pendingSave.downloadAfterSave)} data-testid="invoice-save-new-entry">Save it</Btn>
           </div>
         </div>}
       </Modal>

@@ -887,44 +887,49 @@ def invoice_changes(old, new):
         ch.append({"field": "items", "old": "; ".join(ol), "new": "; ".join(nl)})
     return ch
 
-async def invoice_sequence_start():
-    legacy_counters = await listall("counters")
-    legacy_seq = max(
-        (int(counter.get("seq", 0)) for counter in legacy_counters
-         if re.fullmatch(r"inv-\d{4}", str(counter.get("id", "")))),
-        default=0,
-    )
-    invoices = await db.invoices.find({}, {"_id": 0, "number": 1}).to_list(None)
+def invoice_numbering_year(invoice_date=None):
+    year_match = re.match(r"^(\d{4})", str(invoice_date or ""))
+    return int(year_match.group(1)) if year_match else local_now().year
+
+async def invoice_sequence_start(year):
+    invoices = await db.invoices.find(
+        {"numbering_year": year},
+        {"_id": 0, "number": 1},
+    ).to_list(None)
     legacy_numbers = [
         int(match.group(1))
         for invoice in invoices
         if (match := re.search(r"(\d+)$", str(invoice.get("number") or "")))
     ]
-    return max([legacy_seq, *legacy_numbers], default=0)
+    return max(legacy_numbers, default=0)
 
-async def current_invoice_sequence():
-    counter = await db.counters.find_one({"_id": "invoice-sequence"})
+async def current_invoice_sequence(year=None):
+    year = year or local_now().year
+    counter_id = f"invoice-sequence-{year}"
+    counter = await db.counters.find_one({"_id": counter_id})
     if counter:
         return int(counter["seq"])
-    return await invoice_sequence_start()
+    return await invoice_sequence_start(year)
 
-async def next_invoice_number():
-    counter = await db.counters.find_one({"_id": "invoice-sequence"})
+async def next_invoice_number(invoice_date=None):
+    year = invoice_numbering_year(invoice_date)
+    counter_id = f"invoice-sequence-{year}"
+    counter = await db.counters.find_one({"_id": counter_id})
     if not counter:
-        initial_seq = await invoice_sequence_start()
+        initial_seq = await invoice_sequence_start(year)
         try:
-            await db.counters.insert_one({"_id": "invoice-sequence", "seq": initial_seq + 1})
-            return f"{initial_seq + 1:03d}"
+            await db.counters.insert_one({"_id": counter_id, "seq": initial_seq + 1})
+            return f"{initial_seq + 1:02d}"
         except DuplicateKeyError:
             pass
     counter = await db.counters.find_one_and_update(
-        {"_id": "invoice-sequence"}, {"$inc": {"seq": 1}},
+        {"_id": counter_id}, {"$inc": {"seq": 1}},
         return_document=ReturnDocument.AFTER)
-    return f"{counter['seq']:03d}"
+    return f"{counter['seq']:02d}"
 
 @api.get("/invoices/next-number")
-async def get_next_number(user=Depends(get_current_user)):
-    return {"number": f"{(await current_invoice_sequence()) + 1:03d}"}
+async def get_next_number(year: Optional[int] = None, user=Depends(get_current_user)):
+    return {"number": f"{(await current_invoice_sequence(year)) + 1:02d}"}
 
 @api.get("/invoices")
 async def get_invoices(user=Depends(get_current_user)):
@@ -1001,7 +1006,8 @@ async def create_invoice(body: InvoiceIn, user=Depends(get_current_user)):
     if inv["status"] != "draft":
         inv["status"] = "issued"
         await validate_for_issue(inv)
-        inv["number"] = await next_invoice_number()
+        inv["number"] = await next_invoice_number(inv.get("date"))
+        inv["numbering_year"] = invoice_numbering_year(inv.get("date"))
         inv["issued_at"] = now_iso()
         inv["audit"] = [{"action": "issued", "at": now_iso(), "by": user["email"]}]
     else:
@@ -1023,7 +1029,7 @@ async def update_invoice(iid: str, body: InvoiceIn, user=Depends(get_current_use
     compute_invoice(inv)
     inv["number"] = existing.get("number")
     inv["audit"] = existing.get("audit", [])
-    for keep in ("issued_at", "void_reason"):
+    for keep in ("issued_at", "void_reason", "numbering_year"):
         if keep in existing:
             inv[keep] = existing[keep]
     if "opening_balance" in existing and body.opening_balance is not False:
@@ -1037,7 +1043,8 @@ async def update_invoice(iid: str, body: InvoiceIn, user=Depends(get_current_use
             raise HTTPException(400, f"Invoice total cannot be lower than payments already received (R {inv['amount_paid']:.2f})")
     if existing.get("status") == "draft" and inv["status"] != "draft" and not inv["number"]:
         inv["status"] = "issued"
-        inv["number"] = await next_invoice_number()
+        inv["number"] = await next_invoice_number(inv.get("date"))
+        inv["numbering_year"] = invoice_numbering_year(inv.get("date"))
         inv["issued_at"] = now_iso()
         inv["audit"].append({"action": "issued", "at": now_iso(), "by": user["email"]})
     else:
@@ -1062,7 +1069,8 @@ async def issue_invoice(iid: str, user=Depends(get_current_user)):
     await validate_for_issue(inv)
     upd = {"items": inv["items"]}
     if not inv.get("number"):
-        upd["number"] = await next_invoice_number()
+        upd["number"] = await next_invoice_number(inv.get("date"))
+        upd["numbering_year"] = invoice_numbering_year(inv.get("date"))
         upd["issued_at"] = now_iso()
     upd["status"] = "issued"
     audit = inv.get("audit", [])
@@ -1897,7 +1905,7 @@ async def update_diesel_price(body: DieselPriceUpdate, user=Depends(get_current_
 
 # ---------------- Dashboard ----------------
 @api.get("/dashboard")
-async def dashboard(user=Depends(get_current_user)):
+async def dashboard(period: str = "month", user=Depends(get_current_user)):
     invs = await listall("invoices")
     for i in invs:
         i["status"] = derive_status(i)
@@ -1934,6 +1942,9 @@ async def dashboard(user=Depends(get_current_user)):
     week, month = period_starts()
     week_profit = await profit_for(week)
     month_profit = await profit_for(month)
+    (period_start, period_end), (previous_start, previous_end) = dashboard_period_ranges(period)
+    selected_profit = await profit_for(period_start, period_end)
+    previous_profit = await profit_for(previous_start, previous_end)
     parts_to_buy = await listall("spareparts", {"status": "to_buy"})
     vehicles = await listall("vehicles")
     vrecs = await listall("vehicle_records")
@@ -1976,6 +1987,13 @@ async def dashboard(user=Depends(get_current_user)):
         "urgent_orders": len([o for o in open_orders if o.get("priority") == "Urgent"]),
         "week_profit": week_profit,
         "month_profit": month_profit,
+        "selected_period": period,
+        "period_profit": selected_profit,
+        "previous_period_profit": previous_profit,
+        "period_start": period_start,
+        "period_end": period_end,
+        "previous_period_start": previous_start,
+        "previous_period_end": previous_end,
         "parts_to_buy_count": len(parts_to_buy),
         "vehicles_available": len([v for v in vehicles if v.get("available") and v.get("vtype") != "Trailer"]),
         "vehicles_total": len([v for v in vehicles if v.get("vtype") != "Trailer"]),
@@ -2127,6 +2145,23 @@ def period_starts():
     month = t.replace(day=1).isoformat()
     return week, month
 
+def dashboard_period_ranges(period):
+    end = local_today()
+    if period == "today":
+        start = end
+    elif period == "week":
+        start = end - timedelta(days=end.weekday())
+    elif period == "month":
+        start = end.replace(day=1)
+    elif period == "year":
+        start = end.replace(month=1, day=1)
+    else:
+        raise HTTPException(400, "Period must be today, week, month or year")
+    duration = end - start
+    previous_end = start - timedelta(days=1)
+    previous_start = previous_end - duration
+    return (start.isoformat(), end.isoformat()), (previous_start.isoformat(), previous_end.isoformat())
+
 VEHICLE_COST_DONE = ("Done", "done")
 
 async def cost_ledger(since=None, until=None):
@@ -2154,6 +2189,37 @@ async def profit_for(since, until=None):
             "profit": r2(D(revenue) - D(expense) - D(buyings)),
             "label": "Estimated result — payments received minus recorded expenses and buyings",
             "basis": "payment dates, expense dates & buying dates"}
+
+@api.get("/dashboard/compare")
+async def compare_dashboard_periods(kind: str, first: str, second: str, user=Depends(get_current_user)):
+    if kind == "month":
+        values = []
+        for value in (first, second):
+            if not re.fullmatch(r"\d{4}-\d{2}", value):
+                raise HTTPException(400, "Months must use YYYY-MM format")
+            try:
+                month_start = date.fromisoformat(f"{value}-01")
+            except ValueError:
+                raise HTTPException(400, f"Invalid month: {value}")
+            next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+            values.append((month_start.isoformat(), (next_month - timedelta(days=1)).isoformat()))
+    elif kind == "year":
+        values = []
+        for value in (first, second):
+            if not re.fullmatch(r"\d{4}", value):
+                raise HTTPException(400, "Years must use YYYY format")
+            year = int(value)
+            try:
+                values.append((date(year, 1, 1).isoformat(), date(year, 12, 31).isoformat()))
+            except ValueError:
+                raise HTTPException(400, f"Invalid year: {value}")
+    else:
+        raise HTTPException(400, "Comparison kind must be month or year")
+    return {
+        "kind": kind,
+        "first": {"value": first, "start": values[0][0], "end": values[0][1], **(await profit_for(*values[0]))},
+        "second": {"value": second, "start": values[1][0], "end": values[1][1], **(await profit_for(*values[1]))},
+    }
 
 @api.get("/reports/profit")
 async def profit_report(user=Depends(get_current_user)):
@@ -2368,7 +2434,8 @@ async def import_customers(body: ImportIn, user=Depends(get_current_user)):
                           "price_override": True, "tax": False, "order_id": ""}],
                "audit": [{"action": "opening_balance_imported", "at": now_iso(), "by": user["email"]}]}
         compute_invoice(inv)
-        inv["number"] = await next_invoice_number()
+        inv["number"] = await next_invoice_number(inv.get("date"))
+        inv["numbering_year"] = invoice_numbering_year(inv.get("date"))
         inv["issued_at"] = now_iso()
         rec = await insert("invoices", inv)
         await log_audit("invoice", rec["id"], "opening_balance_imported", user, after={"customer": name, "amount": amt})

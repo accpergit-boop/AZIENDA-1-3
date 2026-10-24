@@ -1,10 +1,10 @@
 import { forwardRef } from "react";
-import { COMPANY, thickness } from "@/components/InvoiceDocument";
+import { COMPANY } from "@/components/InvoiceDocument";
 
 const T = {
-  en: { title: "DELIVERY NOTE", date: "Date", no: "Note No.", deliverTo: "Deliver To", details: "Details", qty: "Quantity", product: "Product", description: "Description", size: "Size / Measurements", thickness: "Thickness", total: "Total pieces", phone: "Phone", email: "Email",
+  en: { title: "DELIVERY NOTE", date: "Date", no: "Note No.", deliverTo: "Deliver To", details: "Details", qty: "Quantity", product: "Product", size: "Size / Measurements", total: "Total pieces", phone: "Phone", email: "Email",
     priority: "Priority", ship: "Ship date", vehicle: "Vehicle", notes: "Notes", received: "Received in good order by", sign: "Signature", name: "Name", driver: "Driver" },
-  ur: { title: "ڈلیوری نوٹ", date: "تاریخ", no: "نوٹ نمبر", deliverTo: "ترسیل برائے", details: "تفصیلات", qty: "مقدار", product: "پروڈکٹ", description: "تفصیل", size: "سائز / پیمائش", thickness: "موٹائی", total: "کل تعداد", phone: "فون", email: "ای میل",
+  ur: { title: "ڈلیوری نوٹ", date: "تاریخ", no: "نوٹ نمبر", deliverTo: "ترسیل برائے", details: "تفصیلات", qty: "مقدار", product: "پروڈکٹ", size: "سائز / پیمائش", total: "کل تعداد", phone: "فون", email: "ای میل",
     priority: "ترجیح", ship: "روانگی کی تاریخ", vehicle: "گاڑی", notes: "نوٹس", received: "سامان درست حالت میں وصول کیا", sign: "دستخط", name: "نام", driver: "ڈرائیور" },
 };
 const UR_PRODUCTS = { Simple: "سادہ", Standard: "سادہ", "Simple/Mix color": "سادہ / مکس رنگ", "Ribbon Black": "ربن کالا", "Ribbon Pink": "ربن گلابی", "Strong Boy": "سٹرانگ بوائے", Uncovered: "بغیر کور", Candy: "کینڈی", "Uncovered Blue 16 Density": "بغیر کور نیلا 16 ڈینسٹی" };
@@ -59,19 +59,15 @@ export const DeliveryNote = forwardRef(function DeliveryNote({ order, lang = "en
         <thead><tr className="bg-slate-100">
           <th className={`${cell} w-20`}>{t.qty}</th>
           <th className={`${cell} w-40`}>{t.product}</th>
-          <th className={cell}>{t.description}</th>
           <th className={`${cell} w-32`}>{t.size}</th>
-          <th className={`${cell} w-24`}>{t.thickness}</th>
         </tr></thead>
         <tbody>
           {lines.map((l, i) => <tr key={i}>
             <td className={`${cell} text-center font-bold`}>{l.qty}</td>
-            <td className={cell}>{prod(l.category) || "-"}</td>
-            <td className={cell}>{l.description || "-"}</td>
+            <td className={cell}>{prod(l.category || l.description) || "-"}</td>
             <td className={`${cell} text-center`} dir="ltr">{l.size || "-"}</td>
-            <td className={`${cell} text-center`} dir="ltr">{thickness(l.size) || "-"}</td>
           </tr>)}
-          <tr className="bg-slate-100"><td className={`${cell} text-center font-bold`}>{total}</td><td className={`${cell} font-bold`} colSpan={4}>{t.total}</td></tr>
+          <tr className="bg-slate-100"><td className={`${cell} text-center font-bold`}>{total}</td><td className={`${cell} font-bold`} colSpan={2}>{t.total}</td></tr>
         </tbody>
       </table>
       {order.notes && <p className="mt-4"><b>{t.notes}:</b> {order.notes}</p>}

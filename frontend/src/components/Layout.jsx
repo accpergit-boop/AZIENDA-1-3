@@ -12,20 +12,32 @@ import { api, apiError } from "@/lib/api";
 import { preloadPage } from "@/lib/pageLoaders";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 
-const NAV = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
-  { to: "/customers", label: "Customers", icon: Users },
-  { to: "/expenses", label: "Expenses", icon: Banknote },
-  { to: "/buyings", label: "Buying", icon: ShoppingCart },
-  { to: "/client-payments", label: "Clients payment and balances", icon: Wallet },
-  { to: "/invoices", label: "Invoice", icon: FileText },
-  { to: "/orders", label: "Orders", icon: ClipboardList },
-  { to: "/stock", label: "Stock", icon: Boxes },
-  { to: "/production", label: "Production", icon: Factory },
-  { to: "/deliveries", label: "Deliveries", icon: Truck },
-  { to: "/fleet", label: "Fleet", icon: Wrench },
-  { to: "/attendance", label: "Attendance", icon: CalendarCheck },
-  { to: "/settings", label: "Settings", icon: Cog },
+const NAV_GROUPS = [
+  { label: "Overview", items: [
+    { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
+  ] },
+  { label: "Sales", items: [
+    { to: "/customers", label: "Customers", icon: Users },
+    { to: "/orders", label: "Orders", icon: ClipboardList },
+    { to: "/invoices", label: "Invoice", icon: FileText },
+    { to: "/client-payments", label: "Clients payment and balances", icon: Wallet },
+  ] },
+  { label: "Fulfilment", items: [
+    { to: "/deliveries", label: "Deliveries", icon: Truck },
+  ] },
+  { label: "Operations", items: [
+    { to: "/buyings", label: "Buying", icon: ShoppingCart },
+    { to: "/stock", label: "Stock", icon: Boxes },
+    { to: "/production", label: "Production", icon: Factory },
+    { to: "/fleet", label: "Fleet", icon: Wrench },
+  ] },
+  { label: "Finance & team", items: [
+    { to: "/expenses", label: "Expenses", icon: Banknote },
+    { to: "/attendance", label: "Attendance", icon: CalendarCheck },
+  ] },
+  { label: "Administration", items: [
+    { to: "/settings", label: "Settings", icon: Cog },
+  ] },
 ];
 
 function SidebarContent({ onNav, companyName }) {
@@ -42,15 +54,20 @@ function SidebarContent({ onNav, companyName }) {
         </div>
       </div>
       <nav className="flex-1 px-2 py-2 space-y-0.5 overflow-y-auto">
-        {NAV.map((n) => (
-          <NavLink key={n.to} to={n.to} end={n.end} onClick={onNav} onMouseEnter={() => preloadPage(n.to)} onFocus={() => preloadPage(n.to)} onPointerDown={() => preloadPage(n.to)} data-testid={`nav-${n.label.toLowerCase()}`}
-            className={({ isActive }) => `relative isolate flex min-h-9 items-center gap-2.5 px-2.5 py-1.5 rounded-md text-xs leading-tight font-medium transition-colors ${isActive ? "text-white" : "text-emerald-50/65 hover:bg-white/5 hover:text-white"}`}>
-            {({ isActive }) => <>
-              {isActive && <motion.span layoutId={`active-nav-${onNav ? "mobile" : "desktop"}`} className="pointer-events-none absolute inset-0 z-0 rounded-md bg-white/10 shadow-[inset_2px_0_0_hsl(72_42%_65%)]" transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 480, damping: 38, mass: 0.5 }} />}
-              <n.icon className="relative z-10" size={18} />
-              <span className="relative z-10">{n.label}</span>
-            </>}
-          </NavLink>
+        {NAV_GROUPS.map((group) => (
+          <div key={group.label} className="mb-2">
+            <p className="px-3 pt-3 pb-1 text-[9px] font-bold uppercase tracking-[0.14em] text-emerald-100/40">{group.label}</p>
+            {group.items.map((n) => (
+              <NavLink key={n.to} to={n.to} end={n.end} onClick={onNav} onMouseEnter={() => preloadPage(n.to)} onFocus={() => preloadPage(n.to)} onPointerDown={() => preloadPage(n.to)} data-testid={`nav-${n.label.toLowerCase()}`}
+                className={({ isActive }) => `relative isolate flex min-h-9 items-center gap-2.5 px-2.5 py-1.5 rounded-md text-xs leading-tight font-medium transition-colors ${isActive ? "text-white" : "text-emerald-50/65 hover:bg-white/5 hover:text-white"}`}>
+                {({ isActive }) => <>
+                  {isActive && <motion.span layoutId={`active-nav-${onNav ? "mobile" : "desktop"}`} className="pointer-events-none absolute inset-0 z-0 rounded-md bg-white/10 shadow-[inset_2px_0_0_hsl(72_42%_65%)]" transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 480, damping: 38, mass: 0.5 }} />}
+                  <n.icon className="relative z-10" size={18} />
+                  <span className="relative z-10">{n.label}</span>
+                </>}
+              </NavLink>
+            ))}
+          </div>
         ))}
       </nav>
     </>
