@@ -947,8 +947,6 @@ async def _archive_invoice(iid, user, reason=""):
     inv = await db.invoices.find_one({"id": iid}, {"_id": 0})
     if not inv:
         return False
-    if derive_status(inv) != "draft":
-        raise HTTPException(400, "Only draft invoices can be archived. Void issued invoices instead.")
     if inv.get("archived"):
         return True
     await update_doc("invoices", iid, {
@@ -986,9 +984,6 @@ class BulkDeleteIn(BaseModel):
 
 @api.post("/invoices/bulk-delete")
 async def bulk_delete_invoices(body: BulkDeleteIn, user=Depends(get_current_user)):
-    invoices = await db.invoices.find({"id": {"$in": body.ids}}, {"_id": 0}).to_list(len(body.ids))
-    if any(derive_status(inv) != "draft" for inv in invoices):
-        raise HTTPException(400, "Only draft invoices can be archived. Void issued invoices instead.")
     n = 0
     for iid in body.ids:
         n += await _archive_invoice(iid, user, body.reason or "")

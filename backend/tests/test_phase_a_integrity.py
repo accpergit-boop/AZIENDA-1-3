@@ -221,7 +221,11 @@ class TestVoidDelete:
         inv = issued_invoice(s, customer)
         assert s.post(f"{API}/invoices/{inv['id']}/void", json={}).status_code in (400, 422)
         assert s.post(f"{API}/invoices/{inv['id']}/void", json={"reason": "  "}).status_code == 400
-        assert s.delete(f"{API}/invoices/{inv['id']}").status_code == 400
+        assert s.delete(f"{API}/invoices/{inv['id']}").status_code == 200
+        assert all(item["id"] != inv["id"] for item in s.get(f"{API}/invoices").json())
+        archived = s.get(f"{API}/invoices", params={"include_archived": "true"}).json()
+        assert next(item for item in archived if item["id"] == inv["id"])["archived"] is True
+        assert s.post(f"{API}/invoices/{inv['id']}/restore").status_code == 200
         p = s.post(f"{API}/invoices/{inv['id']}/payments", json={"amount": 10}).json()
         assert s.post(f"{API}/invoices/{inv['id']}/void", json={"reason": "TEST"}).status_code == 400
         s.post(f"{API}/payments/{p['id']}/reverse", json={"reason": "TEST"})

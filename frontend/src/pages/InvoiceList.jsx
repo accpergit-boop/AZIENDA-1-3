@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { fmtMoney, fmtDate, fmtDateTime, STATUS_META } from "@/lib/format";
 import { Card, Btn, Input, Badge, PageHeader, Empty, Modal } from "@/components/common";
-import { Eye, FileText, Search, Plus, Pencil, Trash2, Download, Archive, RotateCcw } from "lucide-react";
+import { Eye, FileText, Search, Plus, Pencil, Trash2, Download, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
@@ -66,8 +66,8 @@ export default function InvoiceList() {
 
   const toggle = (id) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const removeMany = async (ids) => {
-    if (!window.confirm(`Archive ${ids.length} invoice(s)? They and their payment records will be retained and can be restored.`)) return;
-    try { const r = await api.post("/invoices/bulk-delete", { ids }); toast.success(`${r.archived} invoice(s) archived`); load(); } catch (e) { toast.error(apiError(e)); }
+    if (!window.confirm(`Delete ${ids.length} invoice(s)? They will be moved to Archived, not permanently erased. Invoice data and payments are retained and can be restored.`)) return;
+    try { const r = await api.post("/invoices/bulk-delete", { ids }); toast.success(`${r.archived} invoice(s) moved to Archived`); load(); } catch (e) { toast.error(apiError(e)); }
   };
   const restore = async (id) => {
     try {
@@ -114,7 +114,7 @@ export default function InvoiceList() {
 
       {sel.length > 0 && <div className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-4 py-2" data-testid="bulk-bar">
         <span className="text-sm font-semibold text-amber-800">{sel.length} selected</span>
-        <Btn onClick={() => removeMany(sel)} data-testid="bulk-delete-btn"><Archive size={15} /> Archive selected</Btn>
+        <Btn variant="danger" onClick={() => removeMany(sel)} data-testid="bulk-delete-btn"><Trash2 size={15} /> Delete selected</Btn>
       </div>}
 
       <Card className="overflow-hidden">
@@ -153,7 +153,7 @@ export default function InvoiceList() {
                       </button>
                     </>
                   )}
-                    {!i.archived && i.status === "draft" && <button onClick={(e) => { e.stopPropagation(); removeMany([i.id]); }} data-testid={`delete-invoice-row-${i.id}`} title="Archive draft invoice" aria-label={`Archive invoice ${i.number || "draft"}`} className="ml-2 inline-flex items-center rounded-lg border border-amber-200 px-2 py-1 text-amber-700 hover:bg-amber-50"><Archive size={12} /></button>}</td>
+                    {!i.archived && <button onClick={(e) => { e.stopPropagation(); removeMany([i.id]); }} data-testid={`delete-invoice-row-${i.id}`} title="Delete invoice (move to archive)" aria-label={`Delete invoice ${i.number || "draft"} (move to archive)`} className="ml-2 inline-flex items-center gap-1 rounded-lg border border-red-200 px-2 py-1 text-red-600 hover:bg-red-50"><Trash2 size={12} /><span>Delete</span></button>}</td>
                 </tr>))}</tbody>
             </table>
           </div>
