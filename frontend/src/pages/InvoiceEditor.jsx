@@ -9,7 +9,7 @@ import { fmtMoney, fmtDate, fmtDateTime, today, newKey, STATUS_META, documentFil
 import { usesUnifiedPriceList } from "@/lib/company";
 import { useAuth } from "@/context/AuthContext";
 import { Card, Btn, Input, Select, Textarea, Badge, Modal } from "@/components/common";
-import { Copy, Download, Save, Send, CreditCard, Plus, Trash2, ArrowLeft, Ban, Printer, AlertTriangle, Pencil, X, History, Eye, EyeOff } from "lucide-react";
+import { Copy, Download, Save, Send, CreditCard, Plus, Trash2, ArrowLeft, Ban, Printer, AlertTriangle, Pencil, X, History, Eye, EyeOff, Archive } from "lucide-react";
 
 const CATS = {
   1: ["Simple/Mix color", "Ribbon Black", "Ribbon Pink", "Candy", "Strong Boy", "Uncovered"],
@@ -289,6 +289,15 @@ export default function InvoiceEditor() {
     catch (e) { toast.error(apiError(e)); }
   };
 
+  const archiveDraft = async () => {
+    if (!window.confirm("Archive this draft invoice? It will be retained and can be restored from the invoice list.")) return;
+    try {
+      await api.del(`/invoices/${id}`);
+      toast.success("Draft archived");
+      nav("/invoices");
+    } catch (e) { toast.error(apiError(e)); }
+  };
+
   const reloadInv = async () => { const d = await api.get(`/invoices/${id}`); setInv(d); setPayRecords(d.payment_records || []); };
 
   const recordPayment = async () => {
@@ -557,6 +566,7 @@ export default function InvoiceEditor() {
                     <Btn variant="success" onClick={() => setPayModal({ amount: totals.outstanding.toFixed(2), method: "Cash", date: today(), reference: "", notes: "", idempotency_key: newKey() })} data-testid="record-payment-btn"><CreditCard size={15} /> Pay</Btn>
                   )}
                   {id && inv.status === "draft" && !editing && <Btn variant="subtle" onClick={issueExisting} data-testid="issue-existing-btn"><Send size={15} /> Issue</Btn>}
+                  {id && inv.status === "draft" && !inv.number && !editing && <Btn variant="ghost" className="col-span-2 text-amber-700" onClick={archiveDraft} data-testid="archive-draft-btn"><Archive size={15} /> Archive Draft</Btn>}
                   {id && inv.number && <Btn variant="ghost" className="col-span-2 text-red-600" onClick={voidInvoice} data-testid="void-invoice-btn"><Ban size={15} /> Void Invoice</Btn>}
                 </div>
               )}
