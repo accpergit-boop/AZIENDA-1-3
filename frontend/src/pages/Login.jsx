@@ -3,6 +3,7 @@ import { useAuth } from "@/context/AuthContext";
 import { Building2, Factory, Store, Layers, ArrowLeft, LockKeyhole } from "lucide-react";
 import { Navigate, useLocation } from "react-router-dom";
 import { api } from "@/lib/api";
+import { companyProfileName } from "@/lib/company";
 
 const PROFILE_ICONS = [Building2, Factory, Store];
 const PROFILE_TONES = [
@@ -81,7 +82,7 @@ export default function Login() {
                     <Icon size={36} strokeWidth={1.4} className="hidden sm:block" />
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-sm font-semibold tracking-wide text-white sm:mt-1">{profile.name}</span>
+                    <span className="block text-sm font-semibold tracking-wide text-white sm:mt-1">{companyProfileName(profile.id)}</span>
                     <span className="mt-1 block text-xs text-emerald-50/50 sm:hidden">Select workspace</span>
                   </span>
                 </button>;
@@ -94,7 +95,7 @@ export default function Login() {
             <button type="button" onClick={() => { setSelected(null); setErr(""); setPassword(""); }} className="mb-1 inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline" data-testid="back-to-company-profiles"><ArrowLeft size={14} /> Change company</button>
             <div className="pb-1">
               <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-primary">Selected workspace</p>
-              <h1 className="mt-1 text-2xl font-normal text-slate-900 font-display">{selected.name}</h1>
+              <h1 className="mt-1 text-2xl font-normal text-slate-900 font-display">{companyProfileName(selected.id)}</h1>
             </div>
             {err && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" data-testid="login-error">{err}</div>}
             <div>

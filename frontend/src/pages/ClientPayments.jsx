@@ -38,7 +38,20 @@ export default function ClientPayments() {
 
   const loadCustomers = () => Promise.all([api.get("/customers"), api.get("/invoices")])
     .then(([customerData, invoiceData]) => {
-      setCustomers(customerData);
+      const customerIds = new Set(customerData.map((customer) => customer.id));
+      const deletedCustomers = new Map();
+      invoiceData.forEach((invoice) => {
+        if (invoice.customer_deleted && invoice.customer_id && !customerIds.has(invoice.customer_id) && !deletedCustomers.has(invoice.customer_id)) {
+          deletedCustomers.set(invoice.customer_id, {
+            id: invoice.customer_id,
+            name: invoice.deleted_customer_name || invoice.customer_name || "Deleted customer",
+            default_zone: invoice.zone || 1,
+            active: false,
+            customer_deleted: true,
+          });
+        }
+      });
+      setCustomers([...customerData, ...deletedCustomers.values()]);
       setInvoices(invoiceData);
     })
     .catch((error) => toast.error(apiError(error)))
@@ -199,7 +212,7 @@ export default function ClientPayments() {
               <tbody>
                 {visibleCustomers.map((customer) => (
                   <tr key={customer.id} className="border-b border-border/60 hover:bg-slate-50" data-testid={`client-balance-row-${customer.id}`}>
-                    <td className="px-4 py-3 font-semibold text-slate-800">{customer.name}</td>
+                    <td className="px-4 py-3 font-semibold text-slate-800">{customer.name}{customer.customer_deleted && <Badge cls="ml-2 border-red-200 bg-red-50 text-red-700">Deleted customer</Badge>}</td>
                     <td className="px-4 py-3 text-slate-500">{customer.phone || "—"}</td>
                     {!unifiedPriceList && <td className="px-4 py-3"><Badge cls="bg-blue-50 text-blue-700 border-blue-200">Zone {customer.default_zone}</Badge></td>}
                     <td className="px-4 py-3 text-slate-500">{customer.payment_terms || "—"}</td>
@@ -239,6 +252,10 @@ export default function ClientPayments() {
                 <p className="text-xs text-slate-400">Zone</p>
                 <p className="font-bold text-slate-800">{unifiedPriceList ? "Zone 1" : `Zone ${profile.customer.default_zone || 1}`}</p>
               </div>
+              {profile.customer.customer_deleted && <div className="rounded-lg border border-red-200 bg-red-50 p-3 sm:col-span-3">
+                <p className="text-sm font-semibold text-red-700">Deleted customer</p>
+                <p className="mt-1 text-xs text-red-600">Invoices and payments are retained as financial history.</p>
+              </div>}
               <div className="rounded-lg bg-violet-50 p-3">
                 <p className="text-xs text-slate-400">Most Used Zone</p>
                 <p className="font-bold text-slate-800">{mostUsedZone(profile.summary.invoices, profile.customer.default_zone)}</p>
@@ -275,7 +292,7 @@ export default function ClientPayments() {
                     <tbody>
                       {profile.summary.invoices.map((invoice) => (
                         <tr key={invoice.id} className="border-t border-border/60">
-                          <td className="px-3 py-2 font-mono font-semibold">{invoice.number || "DRAFT"}</td>
+                          <td className="px-3 py-2 font-mono font-semibold">{invoice.number || "DRAFT"}{invoice.customer_deleted && <Badge cls="ml-2 border-red-200 bg-red-50 text-red-700">Deleted customer</Badge>}</td>
                           <td className="px-3 py-2 text-slate-500">{fmtDate(invoice.date)}</td>
                           <td className="px-3 py-2 text-right font-mono">{fmtMoney(invoice.total)}</td>
                           <td className="px-3 py-2 text-right font-mono text-red-600">{fmtMoney(invoice.outstanding)}</td>
@@ -308,6 +325,7 @@ export default function ClientPayments() {
                     <div key={record.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-sm">
                       <span className="text-slate-500">
                         {fmtDate(record.date)} · {record.method} · {record.invoice_number || "Invoice"}
+                        {record.customer_deleted && <Badge cls="ml-2 border-red-200 bg-red-50 text-red-700">Deleted customer</Badge>}
                       </span>
                       <span className="font-mono font-semibold text-emerald-600">{fmtMoney(record.amount)}</span>
                     </div>

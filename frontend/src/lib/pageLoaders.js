@@ -16,6 +16,7 @@ export const pageLoaders = {
   "/deliveries": () => import("@/pages/Deliveries"),
   "/fleet": () => import("@/pages/Fleet"),
   "/expenses": () => import("@/pages/Expenses"),
+  "/daily-report": () => import("@/pages/DailyReport"),
   "/settings": () => import("@/pages/Settings"),
 };
 

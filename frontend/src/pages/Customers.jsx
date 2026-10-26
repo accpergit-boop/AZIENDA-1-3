@@ -37,11 +37,19 @@ export default function Customers() {
   };
 
   const removeCustomer = async (customer) => {
-    if (!window.confirm(`Deactivate customer "${customer.name}"? The customer record will be retained and can be reactivated later.`)) return;
+    const message = user?.is_admin
+      ? `Permanently delete "${customer.name}" from this profile? Invoices and payments will be kept and marked as belonging to a deleted customer.`
+      : `Deactivate customer "${customer.name}"? The customer record will be retained and can be reactivated later.`;
+    if (!window.confirm(message)) return;
     try {
       await api.del(`/customers/${customer.id}`);
-      toast.success("Customer deactivated");
-      setList((current) => current.map((item) => item.id === customer.id ? { ...item, active: false } : item));
+      if (user?.is_admin) {
+        toast.success("Customer deleted; invoices and payments retained");
+        setList((current) => current.filter((item) => item.id !== customer.id));
+      } else {
+        toast.success("Customer deactivated");
+        setList((current) => current.map((item) => item.id === customer.id ? { ...item, active: false } : item));
+      }
     } catch (error) {
       toast.error(apiError(error));
     }
@@ -91,7 +99,7 @@ export default function Customers() {
                   <td className="px-4 text-right whitespace-nowrap">
                     <button onClick={() => openProfile(c)} className="text-slate-400 hover:text-primary p-1.5" data-testid={`view-customer-${c.id}`}><Eye size={16} /></button>
                     <button onClick={() => setModal({ ...c })} className="text-slate-400 hover:text-primary p-1.5" data-testid={`edit-customer-${c.id}`}><Pencil size={16} /></button>
-                    {c.active && <button onClick={() => removeCustomer(c)} className="text-slate-400 hover:text-red-600 p-1.5" aria-label={`Deactivate ${c.name}`} title="Deactivate customer" data-testid={`delete-customer-${c.id}`}><Trash2 size={16} /></button>}
+                    {(user?.is_admin || c.active) && <button onClick={() => removeCustomer(c)} className="text-slate-400 hover:text-red-600 p-1.5" aria-label={`${user?.is_admin ? "Permanently delete" : "Deactivate"} ${c.name}`} title={user?.is_admin ? "Permanently delete customer" : "Deactivate customer"} data-testid={`delete-customer-${c.id}`}><Trash2 size={16} /></button>}
                   </td>
                 </tr>))}</tbody>
             </table>

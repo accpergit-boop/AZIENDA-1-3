@@ -22,6 +22,28 @@ const P_META = {
 const P_RANK = { Urgent: 0, High: 1, Normal: 2, Low: 3 };
 const OPEN = ["To Send", "Preparing", "Assigned"];
 const blank = () => ({ customer_id: "", customer_name: "", customer_address: "", customer_phone: "", customer_email: "", invoice_id: "", invoice_number: "", destination: "", products: "", items: [{ qty: "", category: "", size: "" }], priority: "Normal", status: "To Send", expected_ship_date: "", vehicle_id: "", notes: "" });
+const WIDTHS = ["760", "910", "1070", "1370"];
+const STANDARD_SIZES = WIDTHS.flatMap((width) => ["50", "75", "100", "120", "150"].map((height) => `${width}x${height}`));
+const RIBBON_SIZES = WIDTHS.flatMap((width) => ["100", "120", "150"].map((height) => `${width}x${height}`));
+const SIZE_CATALOG = {
+  simple: STANDARD_SIZES,
+  standard: STANDARD_SIZES,
+  "simple/mix color": STANDARD_SIZES,
+  "ribbon black": RIBBON_SIZES,
+  "ribbon pink": RIBBON_SIZES,
+  ribbon: RIBBON_SIZES,
+  candy: ["760x100", ...RIBBON_SIZES.filter((size) => size !== "760x120" && size !== "760x150"), "910x125"],
+  "strong boy": WIDTHS.map((width) => `${width}x125`),
+  uncovered: ["910x100", "1070x100", "1370x100"],
+  "uncovered blue 16 density": ["910x100", "1070x100"],
+};
+const priceCategoriesForProduct = (product) => {
+  const normalized = String(product || "").trim().toLowerCase();
+  if (["simple", "standard", "simple/mix color"].includes(normalized)) return ["Simple", "Standard"];
+  if (normalized === "candy" || normalized === "black") return ["Candy", "Ribbon Black"];
+  if (normalized === "ribbon") return ["Ribbon", "Ribbon Black", "Ribbon Pink"];
+  return [product];
+};
 
 function NoteModal({ order, vehicleName, settings, onClose }) {
   const ref = useRef(null);
@@ -34,7 +56,7 @@ function NoteModal({ order, vehicleName, settings, onClose }) {
         <div className="flex flex-wrap items-end gap-3">
           <div className="w-44"><Select label="Language" value={lang} onChange={(e) => setLang(e.target.value)} data-testid="note-lang-select"><option value="en">English</option><option value="ur">Urdu (اردو)</option></Select></div>
           <Btn variant="outline" onClick={() => printElement(ref.current, order.reference) || toast.error("Allow pop-ups to print")} data-testid="note-print-btn"><Printer size={15} /> Print</Btn>
-          <Btn disabled={busy} onClick={pdf} data-testid="note-pdf-btn"><Download size={15} /> {busy ? "Generating..." : "Download PDF"}</Btn>
+          <Btn disabled={busy} onClick={pdf} data-testid="note-pdf-btn"><Download size={15} /> {busy ? "Generating PDF..." : "Download PDF"}</Btn>
         </div>
         <div className="overflow-x-auto bg-slate-100 p-4 rounded-lg"><div className="shadow-md w-fit mx-auto"><DeliveryNote ref={ref} order={order} lang={lang} vehicleName={vehicleName} settings={settings} /></div></div>
       </div>}
@@ -55,8 +77,19 @@ export default function Orders() {
   const [viewOrder, setViewOrder] = useState(null);
   const [visibleInvoiceItems, setVisibleInvoiceItems] = useState(50);
   const [stock, setStock] = useState([]);
+  const [prices, setPrices] = useState([]);
   const [settings, setSettings] = useState({});
   const products = [...new Set(stock.map((s) => s.product))];
+  const sizesForProduct = (product) => {
+    const normalized = String(product || "").trim().toLowerCase();
+    const matchingPriceCategories = priceCategoriesForProduct(product).map((category) => String(category || "").toLowerCase());
+    const catalogSizes = SIZE_CATALOG[normalized] || STANDARD_SIZES;
+    return [...new Set([
+      ...catalogSizes,
+      ...stock.filter((item) => String(item.product || "").trim().toLowerCase() === normalized).map((item) => item.size),
+      ...prices.filter((price) => price.active !== false && matchingPriceCategories.includes(String(price.category || "").trim().toLowerCase())).map((price) => price.size),
+    ].filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  };
   const viewInvoice = viewOrder && invoices.find((invoice) => invoice.id === viewOrder.invoice_id);
   const viewOrderLines = useMemo(() => viewOrder ? orderLines(viewOrder) : [], [viewOrder]);
   const viewInvoiceItems = Array.isArray(viewInvoice?.items) ? viewInvoice.items.filter((item) => item && typeof item === "object") : [];
@@ -68,6 +101,7 @@ export default function Orders() {
     api.get("/invoices").then(setInvoices).catch((e) => toast.error(apiError(e)));
     api.get("/vehicles").then(setVehicles).catch((e) => toast.error(apiError(e)));
     api.get("/stock").then(setStock).catch((e) => toast.error(apiError(e)));
+    api.get("/prices").then(setPrices).catch((e) => toast.error(apiError(e)));
     api.get("/settings").then(setSettings).catch((e) => toast.error(apiError(e)));
   }, []);
 
@@ -278,7 +312,7 @@ export default function Orders() {
                   <select value={it.category} onChange={(e) => set({ category: e.target.value, size: "" })} className="flex-1 rounded border border-input px-2 py-1.5 text-sm" data-testid={`order-item-cat-${i}`}>
                     <option value="">Product...</option>{it.category && !products.includes(it.category) && <option>{it.category}</option>}{products.map((p) => <option key={p}>{p}</option>)}</select>
                   <select value={it.size} onChange={(e) => set({ size: e.target.value })} className="w-32 rounded border border-input px-2 py-1.5 text-sm" data-testid={`order-item-size-${i}`}>
-                    <option value="">Size...</option>{it.size && !stock.some((s) => s.product === it.category && s.size === it.size) && <option>{it.size}</option>}{stock.filter((s) => s.product === it.category).map((s) => <option key={s.id}>{s.size}</option>)}</select>
+                    <option value="">Size...</option>{it.size && !sizesForProduct(it.category).includes(it.size) && <option>{it.size}</option>}{sizesForProduct(it.category).map((size) => <option key={size}>{size}</option>)}</select>
                   <button onClick={() => setModal({ ...modal, items: modal.items.filter((_, k) => k !== i) })} className="text-slate-300 hover:text-red-600"><Trash2 size={15} /></button>
                 </div>);
             })}</div>

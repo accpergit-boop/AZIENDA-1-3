@@ -7,10 +7,10 @@ import {
   ClipboardList, Banknote, Wrench, Wallet, ShoppingCart, ChevronDown, Building2, Settings as Cog,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import { Input, Btn } from "@/components/common";
 import { api, apiError } from "@/lib/api";
 import { preloadPage } from "@/lib/pageLoaders";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { companyBrandName, companyProfileName } from "@/lib/company";
 
 const NAV_GROUPS = [
   { label: "Overview", items: [
@@ -33,6 +33,7 @@ const NAV_GROUPS = [
   ] },
   { label: "Finance & team", items: [
     { to: "/expenses", label: "Expenses", icon: Banknote },
+    { to: "/daily-report", label: "Daily Report", icon: FileText, companyId: "superiqfoam" },
     { to: "/attendance", label: "Attendance", icon: CalendarCheck },
   ] },
   { label: "Administration", items: [
@@ -40,8 +41,12 @@ const NAV_GROUPS = [
   ] },
 ];
 
-function SidebarContent({ onNav, companyName }) {
+function SidebarContent({ onNav, companyName, companyId }) {
   const reduceMotion = useReducedMotion();
+  const navGroups = NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !item.companyId || item.companyId === companyId),
+  })).filter((group) => group.items.length);
   return (
     <>
       <div className="flex items-center gap-3 px-5 h-16 border-b border-white/10">
@@ -54,7 +59,7 @@ function SidebarContent({ onNav, companyName }) {
         </div>
       </div>
       <nav className="flex-1 px-2 py-2 space-y-0.5 overflow-y-auto">
-        {NAV_GROUPS.map((group) => (
+        {navGroups.map((group) => (
           <div key={group.label} className="mb-2">
             <p className="px-3 pt-3 pb-1 text-[9px] font-bold uppercase tracking-[0.14em] text-emerald-100/40">{group.label}</p>
             {group.items.map((n) => (
@@ -80,13 +85,10 @@ function AnimatedOutlet() {
 }
 
 export default function Layout() {
-  const { user, logout, switchCompany, login } = useAuth();
+  const { user, logout, switchCompany } = useAuth();
   const reduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
-  const [selectedProfile, setSelectedProfile] = useState(null);
-  const [profilePassword, setProfilePassword] = useState("");
-  const [profileLoginBusy, setProfileLoginBusy] = useState(false);
   const [profiles, setProfiles] = useState([]);
   const [switching, setSwitching] = useState(false);
   const nav = useNavigate();
@@ -94,31 +96,19 @@ export default function Layout() {
   useEffect(() => { api.get("/companies/profiles").then(setProfiles).catch(() => {}); }, []);
   const availableProfiles = profiles.filter((profile) => user?.company_ids?.includes(profile.id));
   const activeProfile = availableProfiles.find((profile) => profile.id === user?.company_id);
+  const activeBrandName = companyBrandName(activeProfile?.id);
   const changeCompany = async (companyId) => {
     if (!companyId || companyId === user?.company_id) return;
     setSwitching(true);
     try { await switchCompany(companyId); }
     catch (e) { toast.error(apiError(e)); setSwitching(false); }
   };
-  const loginToProfile = async (event) => {
-    event.preventDefault();
-    if (!selectedProfile || profileLoginBusy) return;
-    setProfileLoginBusy(true);
-    try {
-      await login(user.username || user.email, profilePassword, selectedProfile.id);
-      window.location.assign("/");
-    } catch (error) {
-      toast.error(apiError(error));
-    } finally {
-      setProfileLoginBusy(false);
-    }
-  };
 
   return (
     <div className="min-h-screen bg-background">
       {/* Desktop sidebar */}
       <aside className="no-print hidden lg:flex fixed inset-y-0 left-0 w-64 flex-col bg-[hsl(222_47%_11%)] z-30">
-        <SidebarContent companyName={activeProfile?.name} />
+        <SidebarContent companyName={activeBrandName} companyId={user?.company_id} />
       </aside>
 
       {/* Mobile drawer */}
@@ -130,7 +120,7 @@ export default function Layout() {
             <button className="absolute top-5 right-4 text-slate-500" onClick={() => setOpen(false)} aria-label="Close navigation">
               <X size={22} />
             </button>
-            <SidebarContent onNav={() => setOpen(false)} companyName={activeProfile?.name} />
+            <SidebarContent onNav={() => setOpen(false)} companyName={activeBrandName} companyId={user?.company_id} />
           </motion.aside>
         </motion.div>
         )}
@@ -154,27 +144,20 @@ export default function Layout() {
             </div>
           </div>
           <div className="flex-1 sm:hidden" />
-          {availableProfiles.length > 1 && user?.is_owner && <>
-            <label className="sr-only" htmlFor="active-company-select">Active company</label>
-            <select id="active-company-select" aria-label="Switch company" value={user.company_id || ""} disabled={switching}
-              onChange={(e) => changeCompany(e.target.value)} data-testid="company-switcher"
-              className="max-w-40 sm:max-w-56 rounded-md border border-border bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60">
-              {availableProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
-            </select>
-          </>}
-          {availableProfiles.length > 1 && !user?.is_owner && (
+          {user?.is_owner && availableProfiles.length > 1 && (
             <div className="relative" onMouseEnter={() => setProfileMenuOpen(true)} onMouseLeave={() => setProfileMenuOpen(false)}>
               <button
                 type="button"
                 onClick={() => setProfileMenuOpen((current) => !current)}
                 onFocus={() => setProfileMenuOpen(true)}
+                disabled={switching}
                 aria-expanded={profileMenuOpen}
                 aria-haspopup="menu"
                 data-testid="company-profile-menu"
-                className="flex max-w-36 sm:max-w-56 items-center gap-2 rounded-md border border-border bg-white px-2 py-2 text-left text-xs font-semibold text-slate-700 hover:border-primary/50"
+                className="flex max-w-36 sm:max-w-56 items-center gap-2 rounded-md border border-border bg-white px-2 py-2 text-left text-xs font-semibold text-slate-700 hover:border-primary/50 disabled:opacity-60"
               >
                 <Building2 size={15} className="shrink-0 text-primary" />
-                <span className="truncate">{activeProfile?.name || "Company"}</span>
+                <span className="truncate">{companyProfileName(activeProfile?.id) || "Company"}</span>
                 <ChevronDown size={14} className={`shrink-0 transition-transform ${profileMenuOpen ? "rotate-180" : ""}`} />
               </button>
               <AnimatePresence>
@@ -192,14 +175,15 @@ export default function Layout() {
                         key={profile.id}
                         type="button"
                         role="menuitem"
+                        disabled={switching}
                         onClick={() => {
-                          setSelectedProfile(profile);
-                          setProfilePassword("");
                           setProfileMenuOpen(false);
+                          changeCompany(profile.id);
                         }}
-                        className="block w-full px-3 py-2.5 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50 hover:text-primary"
+                        data-testid={`company-profile-option-${profile.id}`}
+                        className="block w-full px-3 py-2.5 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50 hover:text-primary disabled:opacity-60"
                       >
-                        {profile.name}
+                        {companyProfileName(profile.id)}
                       </button>
                     ))}
                   </motion.div>
@@ -230,43 +214,6 @@ export default function Layout() {
           </Suspense>
         </main>
       </div>
-      {selectedProfile && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4" onMouseDown={(event) => {
-          if (event.target === event.currentTarget && !profileLoginBusy) setSelectedProfile(null);
-        }}>
-          <motion.form
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="profile-login-title"
-            onSubmit={loginToProfile}
-            initial={reduceMotion ? false : { opacity: 0, y: 12, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            className="w-full max-w-md space-y-4 rounded-xl border border-white/70 bg-white p-6 shadow-2xl"
-          >
-            <div>
-              <h2 id="profile-login-title" className="text-lg font-bold text-slate-900">Sign in to {selectedProfile.name}</h2>
-              <p className="mt-1 text-sm text-slate-500">Enter the password for this company profile.</p>
-              <p className="mt-2 text-xs text-slate-500">Username: {user?.username || user?.email}</p>
-            </div>
-            <Input
-              label="Password"
-              type="password"
-              autoComplete="current-password"
-              value={profilePassword}
-              onChange={(event) => setProfilePassword(event.target.value)}
-              required
-              autoFocus
-              data-testid="company-profile-password"
-            />
-            <div className="flex justify-end gap-2">
-              <Btn type="button" variant="outline" onClick={() => setSelectedProfile(null)} disabled={profileLoginBusy}>Cancel</Btn>
-              <Btn type="submit" disabled={profileLoginBusy} data-testid="company-profile-login">
-                {profileLoginBusy ? "Signing in..." : "Sign in"}
-              </Btn>
-            </div>
-          </motion.form>
-        </div>
-      )}
       {(user?.is_admin || user?.role === "admin") && <a href="https://web.whatsapp.com/" target="_blank" rel="noreferrer"
         aria-label="Open WhatsApp Web" title="WhatsApp Web" data-testid="whatsapp-floating-button"
         className="fixed right-5 bottom-5 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[#25D366] text-white shadow-lg transition-transform hover:scale-105 hover:bg-[#20bd5a] focus:outline-none focus:ring-4 focus:ring-[#25D366]/30">

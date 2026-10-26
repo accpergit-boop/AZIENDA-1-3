@@ -21,12 +21,19 @@ const Attendance = lazy(pageLoaders["/attendance"]);
 const Deliveries = lazy(pageLoaders["/deliveries"]);
 const Fleet = lazy(pageLoaders["/fleet"]);
 const Expenses = lazy(pageLoaders["/expenses"]);
+const DailyReport = lazy(pageLoaders["/daily-report"]);
 const Settings = lazy(pageLoaders["/settings"]);
 
 function Protected({ children }) {
   const { user, booting } = useAuth();
   if (booting || user === null) return <RouteLoading />;
   if (!user) return <Navigate to="/login" replace />;
+  return children;
+}
+
+function SuperIqoamOnly({ children }) {
+  const { user } = useAuth();
+  if (user?.company_id !== "superiqfoam") return <Navigate to="/" replace />;
   return children;
 }
 
@@ -51,6 +58,7 @@ function AppRouter() {
             <Route path="/deliveries" element={<Deliveries />} />
             <Route path="/fleet" element={<Fleet />} />
             <Route path="/expenses" element={<Expenses />} />
+            <Route path="/daily-report" element={<SuperIqoamOnly><DailyReport /></SuperIqoamOnly>} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

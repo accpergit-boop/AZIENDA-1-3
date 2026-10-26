@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { fmtMoney, fmtDateTime } from "@/lib/format";
 import { Card, Btn, Input, Select, Badge, Modal, PageHeader } from "@/components/common";
-import { Building2, Receipt, Tag, Truck, Save, Pencil, Plus, ShieldCheck, Fuel, MapPin, Smartphone, Trash2, UserPlus, CirclePause, CirclePlay } from "lucide-react";
+import { Building2, Receipt, Tag, Truck, Save, Pencil, Plus, ShieldCheck, Fuel, MapPin, Smartphone, Trash2, UserPlus, CirclePause, CirclePlay, KeyRound } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { usesUnifiedPriceList } from "@/lib/company";
 
@@ -14,6 +14,7 @@ const TABS = [
   { k: "drivers", l: "Drivers", icon: Truck },
   { k: "diesel", l: "Diesel", icon: Fuel },
   { k: "access", l: "Access", icon: ShieldCheck },
+  { k: "profiles", l: "Profile Credentials", icon: KeyRound },
 ];
 
 function AccessTab({ users, companies, loading, currentUserId, onRoleChange, onStatusChange, onRemove, onCreate }) {
@@ -119,6 +120,10 @@ export default function Settings() {
   const [accessUsers, setAccessUsers] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [accessLoading, setAccessLoading] = useState(false);
+  const [profileAccounts, setProfileAccounts] = useState([]);
+  const [profileDrafts, setProfileDrafts] = useState({});
+  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [profileSavingId, setProfileSavingId] = useState("");
   const [removeUser, setRemoveUser] = useState(null);
   const [removingUser, setRemovingUser] = useState(false);
   const [pModal, setPModal] = useState(null);
@@ -137,6 +142,50 @@ export default function Settings() {
       .then(([accounts, profiles]) => { setAccessUsers(accounts); setCompanies(profiles); })
       .catch((e) => toast.error(apiError(e))).finally(() => setAccessLoading(false));
   }, [tab, user?.is_owner]);
+  useEffect(() => {
+    if (tab !== "profiles" || !user?.is_owner) return;
+    setProfilesLoading(true);
+    api.get("/access/profiles")
+      .then((profiles) => {
+        setProfileAccounts(profiles);
+        setProfileDrafts(Object.fromEntries(profiles.map((profile) => [
+          profile.id, { username: profile.username, password: "", userPassword: "", ownerPassword: "" },
+        ])));
+      })
+      .catch((e) => toast.error(apiError(e)))
+      .finally(() => setProfilesLoading(false));
+  }, [tab, user?.is_owner]);
+
+  const saveProfileCredentials = async (profile, accountType = "") => {
+    const draft = profileDrafts[profile.id];
+    if (!draft) return;
+    const savingId = accountType ? `${profile.id}-${accountType}` : profile.id;
+    setProfileSavingId(savingId);
+    try {
+      if (accountType) {
+        await api.put(`/access/profiles/${profile.id}/password/${accountType}`, {
+          password: accountType === "user" ? draft.userPassword : draft.ownerPassword,
+        });
+        setProfileAccounts((current) => current.map((item) => item.id === profile.id
+          ? { ...item, [`${accountType}_configured`]: true }
+          : item));
+        setProfileDrafts((current) => ({
+          ...current,
+          [profile.id]: { ...current[profile.id], [`${accountType}Password`]: "" },
+        }));
+        toast.success(`${accountType === "owner" ? "Owner" : "User"} password updated`);
+      } else {
+        const updated = await api.put(`/access/profiles/${profile.id}`, {
+          username: draft.username,
+          ...(draft.password ? { password: draft.password } : {}),
+        });
+        setProfileAccounts((current) => current.map((item) => item.id === profile.id ? updated : item));
+        setProfileDrafts((current) => ({ ...current, [profile.id]: { ...current[profile.id], username: updated.username, password: "" } }));
+        toast.success(`${updated.name} credentials updated`);
+      }
+    } catch (e) { toast.error(apiError(e)); }
+    finally { setProfileSavingId(""); }
+  };
 
   const changeRole = async (account, companyId, role) => {
     try {
@@ -243,7 +292,7 @@ export default function Settings() {
     <div>
       <PageHeader title="Settings" subtitle="Configure your business" />
       <div className="flex gap-2 mb-6 overflow-x-auto no-print">
-        {TABS.filter((t) => (t.k !== "diesel" || user?.is_admin) && (t.k !== "access" || user?.is_owner)).map((t) => (
+        {TABS.filter((t) => (t.k !== "diesel" || user?.is_admin) && (!["access", "profiles"].includes(t.k) || user?.is_owner)).map((t) => (
           <button key={t.k} onClick={() => setTab(t.k)} data-testid={`settings-tab-${t.k}`}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold whitespace-nowrap ${tab === t.k ? "bg-primary text-white" : "bg-white border border-border text-slate-600"}`}>
             <t.icon size={16} /> {t.l}
@@ -348,6 +397,66 @@ export default function Settings() {
       )}
 
       {tab === "access" && user?.is_owner && <AccessTab users={accessUsers} companies={companies} loading={accessLoading} currentUserId={user.id} onRoleChange={changeRole} onStatusChange={changeStatus} onRemove={setRemoveUser} onCreate={createAccessUser} />}
+
+      {tab === "profiles" && user?.is_owner && (
+        <div className="space-y-4 max-w-3xl" data-testid="profile-credentials-tab">
+          <p className="text-sm text-slate-500">View each profile username and set a new password. Existing passwords are never displayed; changes are saved directly to the account.</p>
+          {profilesLoading ? <p className="text-sm text-slate-400 py-4">Loading profiles...</p> : profileAccounts.map((profile) => {
+            const draft = profileDrafts[profile.id] || { username: profile.username, password: "", userPassword: "", ownerPassword: "" };
+            if (profile.id === "superiqfoam") return (
+              <Card key={profile.id} className="p-5 space-y-5" data-testid={`profile-credentials-${profile.id}`}>
+                <div>
+                  <h3 className="font-bold text-slate-800 font-display">{profile.name}</h3>
+                  <p className="text-sm text-slate-500 mt-1">Both accounts use username <b>{profile.username}</b>. The User account can access only SUPERIQFOAM; the Owner account can access all three profiles.</p>
+                </div>
+                {[
+                  { type: "user", label: "User password", configured: profile.user_configured, password: draft.userPassword },
+                  { type: "owner", label: "Owner password", configured: profile.owner_configured, password: draft.ownerPassword },
+                ].map(({ type, label, configured, password }) => {
+                  const savingId = `${profile.id}-${type}`;
+                  return <div key={type} className="space-y-3 rounded-lg border border-border p-4">
+                    <div>
+                      <h4 className="font-semibold text-slate-800">{label}</h4>
+                      <p className="text-xs text-slate-500">{configured ? "Set a new password to replace the current one." : "No user account yet; saving creates it."}</p>
+                    </div>
+                    <Input label="New password (at least 8 characters)" type="password" minLength={8}
+                      value={password}
+                      onChange={(event) => setProfileDrafts((current) => ({
+                        ...current, [profile.id]: { ...draft, [`${type}Password`]: event.target.value },
+                      }))}
+                      data-testid={`profile-${type}-password-${profile.id}`} />
+                    <Btn onClick={() => saveProfileCredentials(profile, type)}
+                      disabled={profileSavingId === savingId || password.length < 8}
+                      data-testid={`save-profile-${type}-${profile.id}`}>
+                      <Save size={16} /> {profileSavingId === savingId ? "Saving..." : `Save ${type} password`}
+                    </Btn>
+                  </div>;
+                })}
+              </Card>
+            );
+            const changed = draft.username !== profile.username || Boolean(draft.password);
+            return (
+              <Card key={profile.id} className="p-5 space-y-4" data-testid={`profile-credentials-${profile.id}`}>
+                <div>
+                  <h3 className="font-bold text-slate-800 font-display">{profile.name}</h3>
+                  {!profile.configured && <p className="text-xs text-amber-700 mt-1">Account not configured yet. Enter a username and password to create it.</p>}
+                </div>
+                <Input label="Username" value={draft.username} onChange={(event) => setProfileDrafts((current) => ({
+                  ...current, [profile.id]: { ...draft, username: event.target.value },
+                }))} required data-testid={`profile-username-${profile.id}`} />
+                <Input label="New password (leave empty to keep current password)" type="password" minLength={8}
+                  value={draft.password} onChange={(event) => setProfileDrafts((current) => ({
+                    ...current, [profile.id]: { ...draft, password: event.target.value },
+                  }))} data-testid={`profile-password-${profile.id}`} />
+                <Btn onClick={() => saveProfileCredentials(profile)} disabled={profileSavingId === profile.id || (!changed && profile.configured) || (!profile.configured && !draft.password)}
+                  data-testid={`save-profile-${profile.id}`}>
+                  <Save size={16} /> {profileSavingId === profile.id ? "Saving..." : "Save credentials"}
+                </Btn>
+              </Card>
+            );
+          })}
+        </div>
+      )}
 
       <Modal open={!!removeUser} onClose={() => !removingUser && setRemoveUser(null)} title="Remove Account">
         {removeUser && <div className="space-y-4">

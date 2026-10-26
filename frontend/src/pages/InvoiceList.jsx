@@ -80,6 +80,16 @@ export default function InvoiceList() {
       load();
     } catch (e) { toast.error(apiError(e)); }
   };
+  const permanentlyDelete = async (invoice) => {
+    if (!showArchived || !invoice.archived) return;
+    if (!window.confirm(`Permanently delete invoice ${invoice.number || "DRAFT"} for ${invoice.customer_name}? This cannot be undone and its payment records will also be deleted.`)) return;
+    try {
+      await api.del(`/invoices/${invoice.id}/permanent`);
+      toast.success("Invoice permanently deleted");
+      if (viewInvoice?.id === invoice.id) setViewOpen(false);
+      load();
+    } catch (e) { toast.error(apiError(e)); }
+  };
 
   const filtered = list.filter((i) => {
     if (showArchived && !i.archived) return false;
@@ -132,7 +142,7 @@ export default function InvoiceList() {
                 <tr key={i.id} className="border-b border-border/60 hover:bg-slate-50 cursor-pointer" onClick={() => i.archived ? view(i.id) : nav(`/invoices/${i.id}`)} data-testid={`invoice-row-${i.id}`}>
                   <td className="px-3" onClick={(e) => e.stopPropagation()}>{!i.archived && i.status === "draft" && <input type="checkbox" checked={sel.includes(i.id)} onChange={() => toggle(i.id)} data-testid={`select-invoice-${i.id}`} />}</td>
                   <td className="px-4 py-3 font-mono font-semibold text-slate-700">{i.number || "DRAFT"}{i.archived && <span className="ml-2 inline-block rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 font-sans">Archived</span>}{i.opening_balance && <span className="ml-2 inline-block rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-700 font-sans" data-testid={`opening-badge-${i.id}`}>Opening Balance</span>}</td>
-                  <td className="px-4 text-slate-600">{i.customer_name}</td>
+                  <td className="px-4 text-slate-600">{i.customer_name}{i.customer_deleted && <Badge cls="ml-2 border-red-200 bg-red-50 text-red-700">Deleted customer</Badge>}</td>
                   <td className="px-4 text-slate-500">{fmtDate(i.date)}</td>
                   <td className="px-4 text-slate-500">{fmtDate(i.due_date)}</td>
                   {!unifiedPriceList && <td className="px-4"><Badge cls="bg-blue-50 text-blue-700 border-blue-200">Z{i.zone}</Badge></td>}
@@ -145,7 +155,10 @@ export default function InvoiceList() {
                       <Eye size={12} />
                     </button>
                     {i.archived ? (
-                      <button onClick={(e) => { e.stopPropagation(); restore(i.id); }} data-testid={`restore-invoice-row-${i.id}`} title="Restore invoice" aria-label={`Restore invoice ${i.number || "draft"}`} className="ml-2 inline-flex items-center rounded-lg border border-emerald-200 px-2 py-1 text-emerald-700 hover:bg-emerald-50"><RotateCcw size={12} /></button>
+                      <>
+                        <button onClick={(e) => { e.stopPropagation(); restore(i.id); }} data-testid={`restore-invoice-row-${i.id}`} title="Restore invoice" aria-label={`Restore invoice ${i.number || "draft"}`} className="ml-2 inline-flex items-center rounded-lg border border-emerald-200 px-2 py-1 text-emerald-700 hover:bg-emerald-50"><RotateCcw size={12} /></button>
+                        {showArchived && <button onClick={(e) => { e.stopPropagation(); permanentlyDelete(i); }} data-testid={`permanently-delete-invoice-row-${i.id}`} title="Permanently delete invoice" aria-label={`Permanently delete invoice ${i.number || "draft"}`} className="ml-2 inline-flex items-center gap-1 rounded-lg border border-red-200 px-2 py-1 text-red-600 hover:bg-red-50"><Trash2 size={12} /><span>Delete permanently</span></button>}
+                      </>
                     ) : i.status !== "void" && (
                       <>
                       <button onClick={(e) => { e.stopPropagation(); nav(`/invoices/${i.id}?pdf=1`); }} data-testid={`pdf-invoice-row-${i.id}`} title="Download PDF" className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:border-primary hover:text-primary transition-colors">
@@ -172,7 +185,7 @@ export default function InvoiceList() {
           <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
             {[
               ["Invoice Number", viewInvoice.number || "DRAFT"],
-              ["Customer", viewInvoice.customer_name],
+              ["Customer", `${viewInvoice.customer_name || ""}${viewInvoice.customer_deleted ? " (Deleted customer)" : ""}`],
               ["Address", viewCustomer?.address],
               ["City", viewCustomer?.city],
               ["Phone", viewCustomer?.phone],

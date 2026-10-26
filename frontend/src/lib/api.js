@@ -8,6 +8,9 @@ const GET_CACHE_MS = 30_000;
 
 export function invalidateGetCache() {
   cachedGets.clear();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("erp:data-changed"));
+  }
 }
 
 client.interceptors.request.use((cfg) => {

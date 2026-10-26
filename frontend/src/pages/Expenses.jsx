@@ -5,7 +5,7 @@ import { fmtMoney, fmtDate, fmtDateTime, today } from "@/lib/format";
 import { Card, Btn, Input, Select, Badge, Modal, PageHeader, Empty } from "@/components/common";
 import { Banknote, Eye, Plus, TrendingUp, TrendingDown, Wallet, Trash2, Pencil } from "lucide-react";
 
-const CATS = ["General", "Materials", "Fuel", "Salaries", "Rent", "Utilities", "Vehicle", "Maintenance", "Other"];
+const CATS = ["General", "Materials", "Fuel", "Diesel", "Salaries", "Rent", "Utilities", "Vehicle", "Maintenance", "Other"];
 const blank = () => ({ description: "", amount: "", date: today(), category: "General", payment_method: "Cash", reference: "", vehicle_id: "", notes: "" });
 
 function Stat({ label, value, icon: Icon, tone, testid }) {
@@ -119,7 +119,7 @@ export default function Expenses() {
               <tbody>{filtered.map((e) => (
                 <tr key={e.id} className="border-b border-border/60 hover:bg-slate-50" data-testid={`expense-row-${e.id}`}>
                   <td className="px-4 py-3 text-slate-500">{fmtDate(e.date)}</td>
-                  <td className="px-4 font-semibold text-slate-800">{e.description}{e.source_key && <span className="ml-2 text-[10px] text-blue-600 font-semibold">FLEET PART</span>}</td>
+                  <td className="px-4 font-semibold text-slate-800">{e.description}{e.source_key && <span className="ml-2 text-[10px] text-blue-600 font-semibold">{e.source_key.startsWith("monthly_business_purchase:") ? "MONTHLY PURCHASE" : "FLEET PART"}</span>}</td>
                   <td className="px-4"><Badge>{e.category}</Badge></td>
                   <td className="px-4 text-right font-mono text-slate-800">{fmtMoney(e.amount)}</td>
                   <td className="px-4 text-right whitespace-nowrap">
@@ -141,12 +141,15 @@ export default function Expenses() {
             ["Description", viewExpense.description],
             ["Category", viewExpense.category],
             ["Amount", fmtMoney(viewExpense.amount)],
+            ["Quantity", viewExpense.quantity],
+            ["Quantity unit", viewExpense.quantity_unit],
+            ["Unit price", viewExpense.unit_price ? fmtMoney(viewExpense.unit_price) : ""],
             ["Date", fmtDate(viewExpense.date)],
             ["Payment Method", viewExpense.payment_method],
             ["Reference", viewExpense.reference],
             ["Vehicle", vehicles.find((vehicle) => vehicle.id === viewExpense.vehicle_id)?.name],
             ["Notes", viewExpense.notes],
-            ["Source", viewExpense.source_key ? "Fleet part purchase" : ""],
+            ["Source", viewExpense.source_key?.startsWith("monthly_business_purchase:") ? "Automatic monthly purchase" : viewExpense.source_key ? "Fleet part purchase" : ""],
             ["Source Reference", viewExpense.source_key],
             ["Created", viewExpense.created_at ? fmtDateTime(viewExpense.created_at) : ""],
             ["Voided", viewExpense.voided ? "Yes" : ""],

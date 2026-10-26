@@ -11,8 +11,8 @@ const MOVE_TYPES = [
   { v: "adjustment_out", l: "Manual Adjustment Out (-)" },
   { v: "damage", l: "Damage / Waste (-)" },
 ];
-const TYPE_LABEL = { production: "Production Received", dispatch: "Delivery Dispatched", adjustment_in: "Adjustment In", adjustment_out: "Adjustment Out", return: "Return", damage: "Damage/Waste", reversal: "Reversal" };
-const sign = (m) => (m.direction ? m.direction : ["production", "adjustment_in", "return"].includes(m.type) ? 1 : -1);
+const TYPE_LABEL = { production: "Production Received", production_consumption: "Production Material Used", purchase: "Purchase Received", dispatch: "Delivery Dispatched", adjustment_in: "Adjustment In", adjustment_out: "Adjustment Out", return: "Return", damage: "Damage/Waste", reversal: "Reversal" };
+const sign = (m) => (m.direction ? m.direction : ["production", "purchase", "adjustment_in", "return"].includes(m.type) ? 1 : -1);
 const CATEGORIES = ["Simple", "Ribbon Balck", "Ribbon Pink", "Candy", "Uncovered", "Strong Boy"];
 const STOCK_CATEGORY = {
   "Ribbon Balck": ["Ribbon Black", "Black"],
@@ -80,7 +80,7 @@ export default function Stock() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm min-w-[800px]">
               <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
-                <th className="px-4 py-3 font-semibold">Product</th><th className="px-4 font-semibold">Size</th><th className="px-4 font-semibold text-right">Opening</th><th className="px-4 font-semibold text-right">Production</th><th className="px-4 font-semibold text-right">Dispatched</th><th className="px-4 font-semibold text-right">Other</th><th className="px-4 font-semibold text-right">Current</th><th className="px-4 font-semibold text-right">Min</th><th className="px-4 font-semibold text-right">Action</th>
+                <th className="px-4 py-3 font-semibold">Product</th><th className="px-4 font-semibold">Size</th><th className="px-4 font-semibold text-right">Opening</th><th className="px-4 font-semibold text-right">Production</th><th className="px-4 font-semibold text-right">Purchased</th><th className="px-4 font-semibold text-right">Used</th><th className="px-4 font-semibold text-right">Dispatched</th><th className="px-4 font-semibold text-right">Other</th><th className="px-4 font-semibold text-right">Current</th><th className="px-4 font-semibold text-right">Min</th><th className="px-4 font-semibold text-right">Action</th>
               </tr></thead>
               <tbody>{filteredList.map((s) => (
                 <tr key={s.id} className="border-b border-border/60 hover:bg-slate-50" data-testid={`stock-row-${s.id}`}>
@@ -88,6 +88,8 @@ export default function Stock() {
                   <td className="px-4 text-slate-500 font-mono">{s.size}</td>
                   <td className="px-4 text-right font-mono text-slate-500">{s.opening}</td>
                   <td className="px-4 text-right font-mono text-emerald-600">+{s.production_received || 0}</td>
+                  <td className="px-4 text-right font-mono text-emerald-600">+{s.purchased || 0}</td>
+                  <td className="px-4 text-right font-mono text-red-500">{s.production_used ? `-${s.production_used}` : 0}</td>
                   <td className="px-4 text-right font-mono text-red-500">{s.dispatched ? `-${s.dispatched}` : 0}</td>
                   <td className="px-4 text-right font-mono text-slate-500">{s.adjustments || 0}</td>
                   <td className="px-4 text-right"><span className={`font-mono font-bold ${s.current < s.threshold ? "text-red-600" : "text-slate-800"}`} data-testid={`stock-current-${s.id}`}>{s.current}</span>{s.current < s.threshold && <Badge cls="bg-red-50 text-red-700 border-red-200 ml-2">Low</Badge>}</td>
@@ -98,7 +100,7 @@ export default function Stock() {
           </div>
         )}
       </Card>
-      <p className="text-xs text-slate-400 mt-3">Production receipts are posted from Production; dispatches from Deliveries. Posted movements are never deleted — use Reverse in the ledger.</p>
+      <p className="text-xs text-slate-400 mt-3">Purchases and production material use are posted from their source workflows. Correct discrepancies with a documented stock adjustment; manual movements can be reversed in the ledger.</p>
 
       <Modal open={!!addModal} onClose={() => setAddModal(null)} title="Add Stock Product">
         {addModal && <div className="space-y-4">

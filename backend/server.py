@@ -50,8 +50,8 @@ def today_str():
 
 COMPANY_PROFILES = [
     {"id": "superiqfoam", "name": "SUPERIQFOAM", "username": "SUPERIQFOAM"},
-    {"id": "iqfoam-manufactoring", "name": "IQFOAM MANUFACTORING", "username": "IQFOAM MANUFACTORING"},
-    {"id": "iqfoam-whole-sallers", "name": "IQFOAM WHOLE SALLERS", "username": "IQFOAM WHOLE SALLERS"},
+    {"id": "iqfoam-manufactoring", "name": "IQFOAM MANUFACTURING", "username": "IQFOAM MANUFACTORING"},
+    {"id": "iqfoam-whole-sallers", "name": "IQFOAM WHOLESALERS", "username": "IQFOAM WHOLESALERS"},
 ]
 
 COMPANY_INVOICE_DETAILS = {
@@ -256,6 +256,13 @@ class CreateAccessUserIn(BaseModel):
 class UserStatusIn(BaseModel):
     active: bool
 
+class ProfileCredentialsIn(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+class ProfilePasswordIn(BaseModel):
+    password: str
+
 class SwitchCompanyIn(BaseModel):
     company_id: str
 
@@ -270,6 +277,9 @@ def public_user(u):
 def require_owner(user):
     if user.get("role") != "owner":
         raise HTTPException(403, "Owner access required")
+
+def is_company_admin(user):
+    return user.get("role") in ("owner", "admin") or user.get("_active_role") in ("owner", "admin")
 
 @api.post("/auth/register")
 async def register(body: RegisterIn, user=Depends(get_current_user)):
@@ -300,13 +310,17 @@ async def register(body: RegisterIn, user=Depends(get_current_user)):
                                  "_active_role": "user"})}
 
 @api.post("/auth/login")
-async def login(body: LoginIn):
+async def login(body: LoginIn, response: Response):
     identifier = canonical_email(body.email or body.username)
     if not identifier:
         raise HTTPException(400, "Username or email is required")
     username_pattern = {"$regex": f"^{re.escape(identifier)}$", "$options": "i"}
-    user = await base_db.users.find_one({"$or": [{"email": identifier}, {"username": username_pattern}]}, {"_id": 0})
-    if not user or not verify_pw(body.password, user.get("password_hash", "")):
+    candidates = await base_db.users.find(
+        {"$or": [{"email": identifier}, {"username": username_pattern}]}, {"_id": 0},
+    ).to_list(20)
+    user = next((candidate for candidate in candidates
+                 if verify_pw(body.password, candidate.get("password_hash", ""))), None)
+    if not user:
         raise HTTPException(401, "Invalid email or password")
     if user.get("active") is False or user.get("disabled") is True:
         raise HTTPException(403, "Account is disabled")
@@ -320,6 +334,7 @@ async def login(body: LoginIn):
         "expires_at": datetime.now(timezone.utc) + timedelta(days=7), "created_at": now, "last_seen": now})
     user["_active_company_id"] = company_id
     user["_active_role"] = role
+    response.delete_cookie("session_token", path="/", secure=True, samesite="none")
     return {"token": make_token(user["id"], user.get("email") or identifier, company_id, session_id),
             "user": public_user(user)}
 
@@ -332,8 +347,160 @@ async def company_profiles():
     return [{"id": company["id"], "name": company["name"], "username": company["username"]}
             for company in COMPANY_PROFILES]
 
+@api.get("/access/profiles")
+async def access_profiles(user=Depends(get_current_user)):
+    require_owner(user)
+    result = []
+    for profile in COMPANY_PROFILES:
+        if profile["id"] == "superiqfoam":
+            owner_account = await base_db.users.find_one({"role": "owner"}, {"_id": 0})
+            user_account = await base_db.users.find_one(
+                {"profile_id": "superiqfoam", "profile_login": "user"}, {"_id": 0},
+            )
+            result.append({
+                "id": profile["id"],
+                "name": profile["name"],
+                "username": profile["username"],
+                "configured": owner_account is not None,
+                "owner_configured": owner_account is not None,
+                "user_configured": user_account is not None,
+            })
+            continue
+        else:
+            account = await base_db.users.find_one({"profile_id": profile["id"]}, {"_id": 0})
+            if not account:
+                account = await base_db.users.find_one({"username": profile["username"]}, {"_id": 0})
+            if not account and profile["id"] == "iqfoam-whole-sallers":
+                account = await base_db.users.find_one({"username": "IQFOAM WHOLE SALLERS"}, {"_id": 0})
+        result.append({
+            "id": profile["id"],
+            "name": profile["name"],
+            "username": (account or {}).get("username", profile["username"]),
+            "configured": account is not None,
+        })
+    return result
+
+@api.put("/access/profiles/superiqfoam/password/{account_type}")
+async def update_superiqfoam_profile_password(
+    account_type: str, body: ProfilePasswordIn, user=Depends(get_current_user),
+):
+    require_owner(user)
+    if account_type not in ("user", "owner"):
+        raise HTTPException(404, "Profile account type not found")
+    if len(body.password) < 8:
+        raise HTTPException(400, "Password must contain at least 8 characters")
+
+    if account_type == "owner":
+        account = await base_db.users.find_one({"role": "owner"}, {"_id": 0})
+        if not account:
+            raise HTTPException(404, "Owner account is not configured")
+        account_id = account["id"]
+    else:
+        account = await base_db.users.find_one(
+            {"profile_id": "superiqfoam", "profile_login": "user"}, {"_id": 0},
+        )
+        if not account:
+            account_id = new_id()
+            username = COMPANY_PROFILES[0]["username"]
+            await base_db.users.insert_one({
+                "id": account_id,
+                "username": username,
+                "name": username,
+                "email": "",
+                "password_hash": hash_pw(body.password),
+                "role": "user",
+                "company_roles": {"superiqfoam": "user"},
+                "company_ids": ["superiqfoam"],
+                "active": True,
+                "auth_provider": "password",
+                "profile_id": "superiqfoam",
+                "profile_login": "user",
+                "created_at": now_iso(),
+            })
+        else:
+            account_id = account["id"]
+            await base_db.users.update_one(
+                {"id": account_id}, {"$set": {"password_hash": hash_pw(body.password)}},
+            )
+
+    if account_type == "owner":
+        await base_db.users.update_one(
+            {"id": account_id}, {"$set": {"password_hash": hash_pw(body.password)}},
+        )
+    await log_audit("user", account_id, "profile_password_updated", user,
+                    after={"profile_id": "superiqfoam", "account_type": account_type})
+    return {"profile_id": "superiqfoam", "account_type": account_type, "configured": True}
+
+@api.put("/access/profiles/{profile_id}")
+async def update_access_profile(profile_id: str, body: ProfileCredentialsIn, user=Depends(get_current_user)):
+    require_owner(user)
+    profile = next((item for item in COMPANY_PROFILES if item["id"] == profile_id), None)
+    if not profile:
+        raise HTTPException(404, "Profile not found")
+
+    username = body.username.strip() if body.username is not None else None
+    password = body.password
+    if username is not None and not username:
+        raise HTTPException(400, "Username is required")
+    if password is not None and password and len(password) < 8:
+        raise HTTPException(400, "Password must contain at least 8 characters")
+    if not username and not password:
+        raise HTTPException(400, "Enter a username or a new password")
+
+    if profile_id == "superiqfoam":
+        account = await base_db.users.find_one({"role": "owner"}, {"_id": 0})
+    else:
+        account = await base_db.users.find_one({"profile_id": profile_id}, {"_id": 0})
+        if not account:
+            account = await base_db.users.find_one({"username": profile["username"]}, {"_id": 0})
+        if not account and profile_id == "iqfoam-whole-sallers":
+            account = await base_db.users.find_one({"username": "IQFOAM WHOLE SALLERS"}, {"_id": 0})
+
+    if not account and (not username or not password):
+        raise HTTPException(404, "Profile account is not configured; provide a username and password to create it")
+
+    updates = {}
+    if username is not None:
+        duplicate_query = {
+            "username": {"$regex": f"^{re.escape(username)}$", "$options": "i"},
+        }
+        if account:
+            duplicate_query["id"] = {"$ne": account["id"]}
+        duplicate = await base_db.users.find_one(duplicate_query, {"_id": 0})
+        if duplicate:
+            allowed_profile_pair = profile_id == "superiqfoam" and (
+                (account and account.get("role") == "owner" and duplicate.get("profile_login") == "user") or
+                (account and account.get("profile_login") == "user" and duplicate.get("role") == "owner")
+            )
+            if not allowed_profile_pair:
+                raise HTTPException(409, "Username already exists")
+        updates["username"] = username
+    if password:
+        updates["password_hash"] = hash_pw(password)
+    if profile_id != "superiqfoam":
+        updates["profile_id"] = profile_id
+    if account:
+        await base_db.users.update_one({"id": account["id"]}, {"$set": updates})
+        account_id = account["id"]
+        before_username = account.get("username", "")
+    else:
+        account_id = new_id()
+        before_username = ""
+        await base_db.users.insert_one({
+            "id": account_id, "name": username, "email": "", "created_at": now_iso(),
+            "role": "user", "company_roles": {profile_id: "user"}, "company_ids": [profile_id],
+            "active": True, "auth_provider": "password", **updates,
+        })
+
+    await log_audit("user", account_id, "profile_credentials_updated", user,
+                    before={"username": before_username},
+                    after={"username": updates.get("username", before_username)})
+    return {"id": profile_id, "name": profile["name"],
+            "username": updates.get("username", before_username), "configured": True}
+
 @api.post("/auth/switch-company")
 async def switch_company(body: SwitchCompanyIn, user=Depends(get_current_user)):
+    require_owner(user)
     selected = await authorize_company(user, body.company_id, user.get("_session_id"))
     session_id = user.get("_session_id") or new_id()
     await base_db.user_sessions.update_one({"id": session_id}, {"$set": {
@@ -422,8 +589,21 @@ async def create_access_user(body: CreateAccessUserIn, user=Depends(get_current_
         raise HTTPException(400, "Password must contain at least 8 characters")
     if not body.company_ids or any(cid not in {profile["id"] for profile in COMPANY_PROFILES} for cid in body.company_ids):
         raise HTTPException(400, "Assign the user to at least one valid company")
-    if await base_db.users.find_one({"username": username}, {"_id": 0}):
-        raise HTTPException(409, "Username already exists")
+    existing_username = await base_db.users.find_one({
+        "username": {"$regex": f"^{re.escape(username)}$", "$options": "i"},
+    }, {"_id": 0})
+    profile_login = False
+    if existing_username:
+        is_owner_profile_username = (
+            username.casefold() == COMPANY_PROFILES[0]["username"].casefold() and
+            existing_username.get("role") == "owner" and
+            len(body.company_ids) == 1 and body.company_ids[0] == COMPANY_PROFILES[0]["id"]
+        )
+        if not is_owner_profile_username:
+            raise HTTPException(409, "Username already exists")
+        if await base_db.users.find_one({"profile_login": "user"}, {"_id": 0}):
+            raise HTTPException(409, "A user login for this profile already exists")
+        profile_login = True
     email = (body.email or "").strip().lower()
     if email and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
         raise HTTPException(400, "Enter a valid email address")
@@ -432,6 +612,9 @@ async def create_access_user(body: CreateAccessUserIn, user=Depends(get_current_
         "company_roles": {cid: "user" for cid in dict.fromkeys(body.company_ids)},
         "company_ids": list(dict.fromkeys(body.company_ids)), "active": True,
         "auth_provider": "password", "created_at": now_iso()}
+    if profile_login:
+        account["profile_id"] = COMPANY_PROFILES[0]["id"]
+        account["profile_login"] = "user"
     await base_db.users.insert_one(dict(account))
     await log_audit("user", account["id"], "account_created", user,
         after={"username": username, "company_roles": account["company_roles"]})
@@ -676,6 +859,24 @@ async def delete_customer(cid: str, user=Depends(get_current_user)):
     customer = await db.customers.find_one({"id": cid}, {"_id": 0})
     if not customer:
         raise HTTPException(404, "Customer not found")
+    if is_company_admin(user):
+        await db.invoices.update_many(
+            {"customer_id": cid},
+            {"$set": {"customer_deleted": True, "deleted_customer_name": customer.get("name", "")}},
+        )
+        await db.payments.update_many(
+            {"customer_id": cid},
+            {"$set": {"customer_deleted": True, "deleted_customer_name": customer.get("name", "")}},
+        )
+        await db.deleted_customers.delete_many({"id": cid})
+        await db.customers.delete_one({"id": cid})
+        await db.audit_log.update_many(
+            {"entity": "customer", "entity_id": cid},
+            {"$set": {"before": None, "after": None}},
+        )
+        await log_audit("customer", cid, "permanently_deleted", user,
+                        before={"id": cid}, after={"permanently_deleted": True})
+        return {"ok": True, "deleted": True}
     updated = await update_doc("customers", cid, {
         "active": False, "archived_at": now_iso(), "archived_by": user.get("id"),
     })
@@ -684,13 +885,13 @@ async def delete_customer(cid: str, user=Depends(get_current_user)):
 
 @api.get("/customers/{cid}/summary")
 async def customer_summary(cid: str, user=Depends(get_current_user)):
-    invs = await listall("invoices", {"customer_id": cid}, ("created_at", -1))
+    invs = await listall("invoices", {"customer_id": cid, "archived": {"$ne": True}}, ("created_at", -1))
     for i in invs:
         i["status"] = derive_status(i)
     valid = [i for i in invs if i["status"] not in ("void", "draft")]
-    pays = [p for p in await listall("payments", {"customer_id": cid}, ("created_at", -1)) if not p.get("reversed")]
-    orders = await listall("orders", {"customer_id": cid}, ("created_at", -1))
-    dels = await listall("deliveries", {"customer_id": cid}, ("created_at", -1))
+    pays = [p for p in await listall("payments", {"customer_id": cid}, ("created_at", -1)) if not p.get("reversed") and not p.get("archived")]
+    orders = await listall("orders", {"customer_id": cid, "archived": {"$ne": True}}, ("created_at", -1))
+    dels = await listall("deliveries", {"customer_id": cid, "archived": {"$ne": True}}, ("created_at", -1))
     return {"invoices": invs, "payments": pays,
             "outstanding": dsum(i.get("outstanding", 0) for i in valid),
             "overdue": dsum(i.get("outstanding", 0) for i in valid if i["status"] == "overdue"),
@@ -954,6 +1155,10 @@ async def _archive_invoice(iid, user, reason=""):
         "archived_at": now_iso(),
         "archived_by": user.get("id"),
     })
+    await db.payments.update_many(
+        {"invoice_id": iid, "archived": {"$ne": True}},
+        {"$set": {"archived": True, "archived_at": now_iso(), "archived_by": user.get("id")}},
+    )
     await log_audit("invoice", iid, "archived", user, reason=reason, before=inv)
     return True
 
@@ -962,6 +1167,20 @@ async def delete_invoice(iid: str, user=Depends(get_current_user)):
     if not await _archive_invoice(iid, user):
         raise HTTPException(404, "Invoice not found")
     return {"ok": True, "archived": True}
+
+@api.delete("/invoices/{iid}/permanent")
+async def permanently_delete_invoice(iid: str, user=Depends(get_current_user)):
+    inv = await db.invoices.find_one({"id": iid}, {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    if not inv.get("archived"):
+        raise HTTPException(409, "Archive the invoice before permanently deleting it")
+    await log_audit("invoice", iid, "permanently_deleted", user,
+                    before={"number": inv.get("number"), "customer_name": inv.get("customer_name"),
+                            "total": inv.get("total"), "status": derive_status(inv)})
+    await db.payments.delete_many({"invoice_id": iid})
+    await db.invoices.delete_one({"id": iid, "archived": True})
+    return {"ok": True, "deleted": True}
 
 @api.post("/invoices/{iid}/restore")
 async def restore_invoice(iid: str, user=Depends(get_current_user)):
@@ -975,6 +1194,10 @@ async def restore_invoice(iid: str, user=Depends(get_current_user)):
         "archived_at": None,
         "archived_by": None,
     })
+    await db.payments.update_many(
+        {"invoice_id": iid, "archived": True},
+        {"$set": {"archived": False, "archived_at": None, "archived_by": None}},
+    )
     await log_audit("invoice", iid, "restored", user, before=inv, after=restored)
     return {"ok": True, "archived": False}
 
@@ -1077,6 +1300,8 @@ async def issue_invoice(iid: str, user=Depends(get_current_user)):
     inv = await db.invoices.find_one({"id": iid})
     if not inv:
         raise HTTPException(404, "Invoice not found")
+    if inv.get("archived"):
+        raise HTTPException(409, "Restore this invoice before issuing it")
     if inv.get("status") == "void":
         raise HTTPException(400, "Cannot issue a voided invoice")
     await validate_for_issue(inv)
@@ -1122,7 +1347,7 @@ class PaymentIn(BaseModel):
 
 async def recalc_invoice_payments(iid):
     inv = await db.invoices.find_one({"id": iid}, {"_id": 0})
-    pays = await listall("payments", {"invoice_id": iid, "reversed": {"$ne": True}})
+    pays = await listall("payments", {"invoice_id": iid, "reversed": {"$ne": True}, "archived": {"$ne": True}})
     inv["amount_paid"] = dsum(p.get("amount", 0) for p in pays)
     compute_invoice(inv)
     await db.invoices.update_one({"id": iid}, {"$set": {"amount_paid": inv["amount_paid"], "outstanding": inv["outstanding"], "updated_at": now_iso()}})
@@ -1139,6 +1364,8 @@ async def record_payment(iid: str, body: PaymentIn, user=Depends(get_current_use
     inv = await db.invoices.find_one({"id": iid})
     if not inv:
         raise HTTPException(404, "Invoice not found")
+    if inv.get("archived"):
+        raise HTTPException(409, "Restore this invoice before recording a payment")
     if inv.get("status") == "void":
         raise HTTPException(400, "Cannot pay a voided invoice")
     if inv.get("status") == "draft" or not inv.get("number"):
@@ -1188,8 +1415,9 @@ async def reverse_payment(pid: str, body: ReasonIn, user=Depends(get_current_use
     return p
 
 @api.get("/payments")
-async def get_payments(user=Depends(get_current_user)):
-    return await listall("payments", sort=("created_at", -1))
+async def get_payments(include_archived: bool = False, user=Depends(get_current_user)):
+    flt = {} if include_archived else {"archived": {"$ne": True}}
+    return await listall("payments", flt, sort=("created_at", -1))
 
 # ---------------- Stock ----------------
 class StockIn(BaseModel):
@@ -1198,8 +1426,8 @@ class StockIn(BaseModel):
     opening: float = 0
     threshold: float = 5
 
-INC_TYPES = ("production", "adjustment_in", "return")
-DEC_TYPES = ("dispatch", "adjustment_out", "damage")
+INC_TYPES = ("production", "purchase", "adjustment_in", "return")
+DEC_TYPES = ("dispatch", "production_consumption", "adjustment_out", "damage")
 OPEN_ORDER_STATUSES = ("To Send", "Preparing", "Assigned", "Partially Delivered")
 
 def mov_sign(m):
@@ -1211,8 +1439,10 @@ async def stock_current(s):
     movs = await listall("stock_movements", {"stock_id": s["id"]})
     s["current"] = r2(D(s.get("opening", 0)) + sum((D(m["quantity"]) * mov_sign(m) for m in movs), Decimal("0")))
     s["production_received"] = dsum(m["quantity"] for m in movs if m["type"] == "production")
+    s["purchased"] = dsum(m["quantity"] for m in movs if m["type"] == "purchase")
+    s["production_used"] = dsum(m["quantity"] for m in movs if m["type"] == "production_consumption")
     s["dispatched"] = dsum(m["quantity"] for m in movs if m["type"] == "dispatch")
-    s["adjustments"] = r2(sum((D(m["quantity"]) * mov_sign(m) for m in movs if m["type"] not in ("production", "dispatch")), Decimal("0")))
+    s["adjustments"] = r2(sum((D(m["quantity"]) * mov_sign(m) for m in movs if m["type"] not in ("production", "purchase", "production_consumption", "dispatch")), Decimal("0")))
     s["last_movement"] = max([m["created_at"] for m in movs], default=None)
     return s
 
@@ -1348,28 +1578,39 @@ async def check_production_rules(d, existing, hours):
             raise HTTPException(400, f"Block is still resting. It can be cut after {fmt_local(d['ready_at'])} ({hours:g}h resting period)")
 
 @api.get("/production")
-async def get_production(user=Depends(get_current_user)):
+async def get_production(include_archived: bool = False, user=Depends(get_current_user)):
     hours = await resting_hours()
-    return [enrich_production(p, hours) for p in await listall("production", sort=("created_at", -1))]
+    flt = {} if include_archived else {"archived": {"$ne": True}}
+    return [enrich_production(p, hours) for p in await listall("production", flt, sort=("created_at", -1))]
 
 class BlockCuttingIn(BaseModel):
     block: str
     size: str
 
+def normalize_block_name(block):
+    value = str(block or "").strip()
+    standard_names = {"black": "Black", "white": "White", "blue": "Blue", "bianco": "White"}
+    return standard_names.get(value.casefold(), value)
+
 @api.get("/production/block-cutting")
-async def get_block_cuttings(user=Depends(get_current_user)):
-    return await listall("block_cuttings", sort=("created_at", -1))
+async def get_block_cuttings(include_archived: bool = False, user=Depends(get_current_user)):
+    flt = {} if include_archived else {"archived": {"$ne": True}}
+    records = await listall("block_cuttings", flt, sort=("created_at", -1))
+    for record in records:
+        record["block"] = normalize_block_name(record.get("block"))
+    return records
 
 @api.post("/production/block-cutting")
 async def add_block_cutting(body: BlockCuttingIn, user=Depends(get_current_user)):
-    if body.block not in ("Blue", "Bianco"):
-        raise HTTPException(400, "Block must be Blue or Bianco")
+    block = normalize_block_name(body.block)
+    if not block:
+        raise HTTPException(400, "A block name is required")
     size = body.size.strip()
     if not size:
         raise HTTPException(400, "A size is required")
     if not await db.stock.find_one({"size": size}):
         raise HTTPException(400, "Select a size currently available in Stock")
-    record = await insert("block_cuttings", {"block": body.block, "size": size})
+    record = await insert("block_cuttings", {"block": block, "size": size})
     await log_audit("block_cutting", record["id"], "created", user, after=record)
     return record
 
@@ -1378,12 +1619,13 @@ async def edit_block_cutting(record_id: str, body: BlockCuttingIn, user=Depends(
     before = await db.block_cuttings.find_one({"id": record_id}, {"_id": 0})
     if not before:
         raise HTTPException(404, "Block cutting record not found")
-    if body.block not in ("Blue", "Bianco"):
-        raise HTTPException(400, "Block must be Blue or Bianco")
+    block = normalize_block_name(body.block)
+    if not block:
+        raise HTTPException(400, "A block name is required")
     size = body.size.strip()
     if not size or not await db.stock.find_one({"size": size}):
         raise HTTPException(400, "Select a size currently available in Stock")
-    record = await update_doc("block_cuttings", record_id, {"block": body.block, "size": size})
+    record = await update_doc("block_cuttings", record_id, {"block": block, "size": size})
     await log_audit("block_cutting", record_id, "updated", user, before=before, after=record)
     return record
 
@@ -1485,6 +1727,11 @@ class EmployeeIn(BaseModel):
 async def get_employees(user=Depends(get_current_user)):
     return await listall("employees", sort=("name", 1))
 
+@api.get("/employees/deleted")
+async def get_deleted_employees(user=Depends(get_current_user)):
+    require_owner(user)
+    return await listall("deleted_employees", sort=("deleted_at", -1))
+
 @api.post("/employees")
 async def add_employee(body: EmployeeIn, user=Depends(get_current_user)):
     return await insert("employees", body.model_dump())
@@ -1492,6 +1739,21 @@ async def add_employee(body: EmployeeIn, user=Depends(get_current_user)):
 @api.put("/employees/{eid}")
 async def edit_employee(eid: str, body: EmployeeIn, user=Depends(get_current_user)):
     return await update_doc("employees", eid, body.model_dump())
+
+@api.delete("/employees/{eid}")
+async def delete_employee(eid: str, user=Depends(get_current_user)):
+    require_owner(user)
+    employee = await db.employees.find_one({"id": eid}, {"_id": 0})
+    if not employee:
+        raise HTTPException(404, "Employee not found")
+    deleted_at = now_iso()
+    await db.deleted_employees.insert_one({
+        **employee, "deleted_at": deleted_at, "deleted_by": user.get("id"),
+    })
+    await db.employees.delete_one({"id": eid})
+    await log_audit("employee", eid, "permanently_deleted", user,
+                    before=employee, after={"deleted_at": deleted_at})
+    return {"ok": True, "deleted": True}
 
 class AttendanceIn(BaseModel):
     employee_id: str
@@ -1786,8 +2048,9 @@ class DeliveryIn(BaseModel):
     items: List[dict] = []  # [{stock_id, product, size, qty}]
 
 @api.get("/deliveries")
-async def get_deliveries(user=Depends(get_current_user)):
-    return await listall("deliveries", sort=("created_at", -1))
+async def get_deliveries(include_archived: bool = False, user=Depends(get_current_user)):
+    flt = {} if include_archived else {"archived": {"$ne": True}}
+    return await listall("deliveries", flt, sort=("created_at", -1))
 
 @api.post("/deliveries")
 async def add_delivery(body: DeliveryIn, user=Depends(get_current_user)):
@@ -1944,12 +2207,12 @@ async def update_diesel_price(body: DieselPriceUpdate, user=Depends(get_current_
 # ---------------- Dashboard ----------------
 @api.get("/dashboard")
 async def dashboard(period: str = "month", user=Depends(get_current_user)):
-    invs = await listall("invoices")
+    invs = await listall("invoices", {"archived": {"$ne": True}})
     for i in invs:
         i["status"] = derive_status(i)
     valid = [i for i in invs if i["status"] not in ("void", "draft")]
     total_invoiced = dsum(i.get("total", 0) for i in valid if not i.get("opening_balance"))
-    pays = [p for p in await listall("payments") if not p.get("reversed")]
+    pays = [p for p in await listall("payments", {"archived": {"$ne": True}}) if not p.get("reversed")]
     payments_received = dsum(p.get("amount", 0) for p in pays)
     outstanding = dsum(i.get("outstanding", 0) for i in valid)
     overdue = dsum(i.get("outstanding", 0) for i in valid if i["status"] == "overdue")
@@ -1960,7 +2223,7 @@ async def dashboard(period: str = "month", user=Depends(get_current_user)):
     finished_stock = r2(sum(s.get("current", 0) for s in stock))
     low_stock = [s for s in stock if s.get("current", 0) <= s.get("threshold", 0)]
 
-    prod = await listall("production")
+    prod = await listall("production", {"archived": {"$ne": True}})
     hours = await resting_hours()
     for p in prod:
         enrich_production(p, hours)
@@ -1969,12 +2232,12 @@ async def dashboard(period: str = "month", user=Depends(get_current_user)):
     completed_today = [p for p in prod if p.get("status") == "Completed" and (p.get("updated_at") or "")[:10] == today_str()]
 
     att_today = await listall("attendance", {"date": today_str()})
-    deliveries = await listall("deliveries")
+    deliveries = await listall("deliveries", {"archived": {"$ne": True}})
     upcoming = [d for d in deliveries if d.get("status") in ("Planned", "Assigned", "Ready", "Dispatched")][:8]
 
     recent_invoices = sorted(invs, key=lambda x: x.get("created_at", ""), reverse=True)[:8]
 
-    orders = await listall("orders", sort=("created_at", -1))
+    orders = await listall("orders", {"archived": {"$ne": True}}, sort=("created_at", -1))
     open_orders = [o for o in orders if o.get("status") in OPEN_ORDER_STATUSES]
     orders_to_send = open_orders[:8]
     week, month = period_starts()
@@ -2069,8 +2332,11 @@ def buying_amount(quantity, unit_price):
     return amount
 
 @api.get("/buyings")
-async def get_buyings(user=Depends(get_current_user)):
-    return await listall("buyings", {"voided": {"$ne": True}}, sort=("date", -1))
+async def get_buyings(include_archived: bool = False, user=Depends(get_current_user)):
+    flt = {"voided": {"$ne": True}}
+    if not include_archived:
+        flt["archived"] = {"$ne": True}
+    return await listall("buyings", flt, sort=("date", -1))
 
 @api.post("/buyings")
 async def add_buying(body: BuyingIn, user=Depends(get_current_user)):
@@ -2117,6 +2383,408 @@ async def void_buying(bid: str, body: ReasonIn, user=Depends(get_current_user)):
     await log_audit("buying", bid, "voided", user, reason=body.reason)
     return rec
 
+# ---------------- Suppliers and purchase orders ----------------
+class SupplierIn(BaseModel):
+    name: str
+    contact: Optional[str] = ""
+    phone: Optional[str] = ""
+    email: Optional[str] = ""
+    notes: Optional[str] = ""
+
+@api.get("/suppliers")
+async def get_suppliers(user=Depends(get_current_user)):
+    return await listall("suppliers", sort=("name", 1))
+
+@api.post("/suppliers")
+async def add_supplier(body: SupplierIn, user=Depends(get_current_user)):
+    if not body.name.strip():
+        raise HTTPException(400, "Supplier name is required")
+    name = body.name.strip()
+    if await db.suppliers.find_one({"name_key": name.casefold()}):
+        raise HTTPException(409, "A supplier with this name already exists")
+    data = body.model_dump()
+    data.update({"name": name, "name_key": name.casefold()})
+    rec = await insert("suppliers", data)
+    await log_audit("supplier", rec["id"], "created", user, after=rec)
+    return rec
+
+@api.put("/suppliers/{supplier_id}")
+async def edit_supplier(supplier_id: str, body: SupplierIn, user=Depends(get_current_user)):
+    if not body.name.strip():
+        raise HTTPException(400, "Supplier name is required")
+    before = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Supplier not found")
+    name = body.name.strip()
+    if await db.suppliers.find_one({"name_key": name.casefold(), "id": {"$ne": supplier_id}}):
+        raise HTTPException(409, "A supplier with this name already exists")
+    data = body.model_dump()
+    data.update({"name": name, "name_key": name.casefold()})
+    rec = await update_doc("suppliers", supplier_id, data)
+    await log_audit("supplier", supplier_id, "updated", user, before=before, after=rec)
+    return rec
+
+class PurchaseOrderLineIn(BaseModel):
+    stock_id: Optional[str] = ""
+    product: Optional[str] = ""
+    size: Optional[str] = ""
+    quantity: float
+    unit_price: float
+
+class PurchaseOrderIn(BaseModel):
+    supplier_id: Optional[str] = ""
+    supplier_name: Optional[str] = ""
+    expected_date: Optional[str] = ""
+    notes: Optional[str] = ""
+    items: List[PurchaseOrderLineIn]
+
+class PurchaseReceiptIn(BaseModel):
+    quantities: List[float]
+
+class MonthlyBusinessPurchaseIn(BaseModel):
+    name: str
+    supplier_name: Optional[str] = ""
+    category: str = "Materials"
+    monthly_quantity: float = 1
+    quantity_unit: Optional[str] = "unit"
+    unit_price: float
+    expense_day: int = 1
+    start_month: Optional[str] = ""
+    end_month: Optional[str] = ""
+    active: bool = True
+    notes: Optional[str] = ""
+
+class MonthlyBusinessPurchaseActualIn(BaseModel):
+    quantity: float
+    unit_price: float
+
+def _check_purchase_order(body):
+    if not body.items:
+        raise HTTPException(400, "Add at least one item to the purchase order")
+    for item in body.items:
+        if not item.stock_id and (not (item.product or "").strip() or not (item.size or "").strip()):
+            raise HTTPException(400, "Choose a stock item or enter both a product and size")
+        if not math.isfinite(item.quantity) or item.quantity <= 0:
+            raise HTTPException(400, "Purchase quantities must be greater than 0")
+        if not math.isfinite(item.unit_price) or item.unit_price < 0:
+            raise HTTPException(400, "Unit prices cannot be negative")
+
+async def _purchase_order_data(body):
+    supplier_id = (body.supplier_id or "").strip()
+    supplier_name = (body.supplier_name or "").strip()
+    supplier = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0}) if supplier_id else None
+    if supplier_id and not supplier:
+        raise HTTPException(400, "Supplier not found")
+    if supplier:
+        supplier_name = supplier["name"]
+    elif not supplier_name:
+        raise HTTPException(400, "Select a supplier or enter a supplier name")
+    items = []
+    for line in body.items:
+        stock = await db.stock.find_one({"id": line.stock_id}, {"_id": 0}) if line.stock_id else None
+        product = (line.product or "").strip()
+        size = (line.size or "").strip()
+        if stock:
+            product, size = stock["product"], stock["size"]
+        elif line.stock_id:
+            raise HTTPException(400, "A selected stock item no longer exists")
+        else:
+            stock = await db.stock.find_one({
+                "product": {"$regex": f"^{re.escape(product)}$", "$options": "i"},
+                "size": {"$regex": f"^{re.escape(size)}$", "$options": "i"},
+            }, {"_id": 0})
+            if not stock:
+                stock = await insert("stock", {"product": product, "size": size, "opening": 0, "threshold": 5})
+        items.append({
+            "stock_id": stock["id"], "product": product, "size": size,
+            "quantity": float(line.quantity), "unit_price": r2(line.unit_price),
+            "amount": buying_amount(line.quantity, line.unit_price), "received_quantity": 0,
+        })
+    return {
+        "supplier_id": supplier["id"] if supplier else "", "supplier_name": supplier_name,
+        "expected_date": body.expected_date or "", "notes": body.notes or "",
+        "items": items, "amount": dsum(item["amount"] for item in items),
+    }
+
+def _check_monthly_business_purchase(body):
+    if not body.name.strip():
+        raise HTTPException(400, "Purchase name is required")
+    if not math.isfinite(body.monthly_quantity) or body.monthly_quantity <= 0:
+        raise HTTPException(400, "Monthly quantity must be greater than 0")
+    if not math.isfinite(body.unit_price) or body.unit_price <= 0:
+        raise HTTPException(400, "Unit price must be greater than 0")
+    if body.start_month and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", body.start_month):
+        raise HTTPException(400, "Start month must be in YYYY-MM format")
+    if body.end_month and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", body.end_month):
+        raise HTTPException(400, "End month must be in YYYY-MM format")
+    if body.end_month and body.start_month and body.end_month < body.start_month:
+        raise HTTPException(400, "End month cannot be before the start month")
+    if not 1 <= body.expense_day <= 28:
+        raise HTTPException(400, "Expense day must be between 1 and 28")
+    if body.category not in ("Materials", "Fuel", "Salaries", "Rent", "Utilities", "Vehicle", "Maintenance", "General", "Other"):
+        raise HTTPException(400, "Choose a valid expense category")
+
+def _next_month(month):
+    year, value = map(int, month.split("-"))
+    return f"{year + (value == 12):04d}-{1 if value == 12 else value + 1:02d}"
+
+async def _sync_monthly_business_expenses():
+    current_month = local_today().strftime("%Y-%m")
+    for purchase in await listall("monthly_business_purchases", {"active": {"$ne": False}}):
+        created_month = str(purchase.get("created_at", ""))[:7]
+        start_month = purchase.get("start_month") or (
+            _next_month(created_month) if re.fullmatch(r"\d{4}-\d{2}", created_month)
+            else _next_month(current_month)
+        )
+        month = start_month
+        quantity = float(purchase.get("monthly_quantity") or 1)
+        unit_price = float(purchase.get("unit_price") or purchase.get("monthly_amount") or 0)
+        while month <= current_month and (not purchase.get("end_month") or month <= purchase["end_month"]):
+            amount = buying_amount(quantity, unit_price)
+            source_key = f"monthly_business_purchase:{purchase['id']}:{month}"
+            expense_day = min(int(purchase.get("expense_day") or 1), 28)
+            expense = await db.expenses.find_one_and_update(
+                {"source_key": source_key},
+                {"$setOnInsert": {
+                    "id": new_id(), "description": purchase["name"], "amount": amount,
+                    "date": f"{month}-{expense_day:02d}", "category": purchase.get("category") or "Materials", "payment_method": "Other",
+                    "reference": f"Monthly purchase {month}", "vehicle_id": "",
+                    "notes": f"Automatically recorded from monthly purchase. Update actual quantity and unit price in Supplier Purchases. No payment was made by this record.",
+                    "source_key": source_key, "purchase_id": purchase["id"],
+                    "quantity": quantity, "quantity_unit": purchase.get("quantity_unit") or "unit",
+                    "unit_price": unit_price, "supplier_name": purchase.get("supplier_name", ""),
+                    "created_by": "system",
+                    "created_at": now_iso(),
+                }},
+                upsert=True, projection={"_id": 0}, return_document=ReturnDocument.AFTER,
+            )
+            await db.monthly_business_purchase_occurrences.find_one_and_update(
+                {"source_key": source_key},
+                {"$setOnInsert": {
+                    "id": new_id(), "source_key": source_key, "purchase_id": purchase["id"],
+                    "month": month, "expense_id": expense["id"], "quantity": quantity,
+                    "quantity_unit": purchase.get("quantity_unit") or "unit",
+                    "unit_price": unit_price, "amount": amount, "actual_updated": False,
+                    "created_at": now_iso(),
+                }},
+                upsert=True, projection={"_id": 0}, return_document=ReturnDocument.AFTER,
+            )
+            month = _next_month(month)
+
+@api.get("/monthly-business-purchases")
+async def get_monthly_business_purchases(user=Depends(get_current_user)):
+    await _sync_monthly_business_expenses()
+    purchases = await listall("monthly_business_purchases", sort=("name", 1))
+    for purchase in purchases:
+        purchase["monthly_quantity"] = purchase.get("monthly_quantity") or 1
+        purchase["unit_price"] = purchase.get("unit_price") or purchase.get("monthly_amount", 0)
+        purchase["quantity_unit"] = purchase.get("quantity_unit") or "unit"
+        purchase["category"] = purchase.get("category") or "Materials"
+        purchase["expense_day"] = int(purchase.get("expense_day") or 1)
+        purchase["monthly_amount"] = buying_amount(purchase["monthly_quantity"], purchase["unit_price"])
+        created_month = str(purchase.get("created_at", ""))[:7]
+        purchase["start_month"] = purchase.get("start_month") or (
+            _next_month(created_month) if re.fullmatch(r"\d{4}-\d{2}", created_month)
+            else _next_month(local_today().strftime("%Y-%m"))
+        )
+        purchase["active"] = purchase.get("active", True)
+        purchase["end_month"] = purchase.get("end_month") or ""
+        purchase["occurrences"] = await listall(
+            "monthly_business_purchase_occurrences", {"purchase_id": purchase["id"]}, sort=("month", -1),
+        )
+    return purchases
+
+@api.post("/monthly-business-purchases")
+async def add_monthly_business_purchase(body: MonthlyBusinessPurchaseIn, user=Depends(get_current_user)):
+    _check_monthly_business_purchase(body)
+    start_month = body.start_month or _next_month(local_today().strftime("%Y-%m"))
+    if body.end_month and body.end_month < start_month:
+        raise HTTPException(400, "End month cannot be before the start month")
+    data = body.model_dump()
+    data.update({
+        "name": body.name.strip(), "supplier_name": (body.supplier_name or "").strip(),
+        "category": body.category, "quantity_unit": (body.quantity_unit or "unit").strip() or "unit",
+        "monthly_quantity": body.monthly_quantity, "unit_price": r2(body.unit_price),
+        "expense_day": body.expense_day, "end_month": body.end_month or "",
+        "monthly_amount": buying_amount(body.monthly_quantity, body.unit_price),
+        "start_month": start_month,
+    })
+    rec = await insert("monthly_business_purchases", data)
+    await log_audit("monthly_business_purchase", rec["id"], "created", user, after=rec)
+    return rec
+
+@api.put("/monthly-business-purchases/{purchase_id}")
+async def edit_monthly_business_purchase(purchase_id: str, body: MonthlyBusinessPurchaseIn, user=Depends(get_current_user)):
+    _check_monthly_business_purchase(body)
+    before = await db.monthly_business_purchases.find_one({"id": purchase_id}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Monthly business purchase not found")
+    start_month = body.start_month or before.get("start_month") or _next_month(local_today().strftime("%Y-%m"))
+    if body.end_month and body.end_month < start_month:
+        raise HTTPException(400, "End month cannot be before the start month")
+    data = body.model_dump()
+    data.update({
+        "name": body.name.strip(), "supplier_name": (body.supplier_name or "").strip(),
+        "category": body.category, "quantity_unit": (body.quantity_unit or "unit").strip() or "unit",
+        "monthly_quantity": body.monthly_quantity, "unit_price": r2(body.unit_price),
+        "expense_day": body.expense_day, "end_month": body.end_month or "",
+        "monthly_amount": buying_amount(body.monthly_quantity, body.unit_price),
+        "start_month": start_month,
+    })
+    rec = await update_doc("monthly_business_purchases", purchase_id, data)
+    await log_audit("monthly_business_purchase", purchase_id, "updated", user, before=before, after=rec)
+    return rec
+
+@api.put("/monthly-business-purchases/occurrences/{occurrence_id}")
+async def update_monthly_business_purchase_actual(
+    occurrence_id: str, body: MonthlyBusinessPurchaseActualIn, user=Depends(get_current_user),
+):
+    if not math.isfinite(body.quantity) or body.quantity <= 0:
+        raise HTTPException(400, "Actual quantity must be greater than 0")
+    if not math.isfinite(body.unit_price) or body.unit_price <= 0:
+        raise HTTPException(400, "Actual unit price must be greater than 0")
+    before = await db.monthly_business_purchase_occurrences.find_one({"id": occurrence_id}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Monthly purchase record not found")
+    expense_before = await db.expenses.find_one({"id": before["expense_id"]}, {"_id": 0})
+    if not expense_before or expense_before.get("voided"):
+        raise HTTPException(409, "The monthly expense is missing or has been voided")
+    amount = buying_amount(body.quantity, body.unit_price)
+    actual = {
+        "quantity": body.quantity, "unit_price": r2(body.unit_price), "amount": amount,
+        "actual_updated": True, "actual_updated_at": now_iso(),
+    }
+    updated_expense = await update_doc("expenses", before["expense_id"], {
+        "amount": amount, "quantity": body.quantity, "unit_price": r2(body.unit_price),
+    })
+    occurrence = await update_doc("monthly_business_purchase_occurrences", occurrence_id, actual)
+    await log_audit("monthly_business_purchase_occurrence", occurrence_id, "actual_updated", user,
+                    before=before, after=occurrence)
+    await log_audit("expense", expense_before["id"], "monthly_purchase_actual_updated", user,
+                    before=expense_before, after=updated_expense)
+    return occurrence
+
+@api.get("/purchase-orders")
+async def get_purchase_orders(user=Depends(get_current_user)):
+    return await listall("purchase_orders", sort=("created_at", -1))
+
+@api.post("/purchase-orders")
+async def add_purchase_order(body: PurchaseOrderIn, user=Depends(get_current_user)):
+    _check_purchase_order(body)
+    data = await _purchase_order_data(body)
+    data.update({"reference": await next_ref("purchase-order", "PO"), "status": "draft"})
+    rec = await insert("purchase_orders", data)
+    await log_audit("purchase_order", rec["id"], "created", user, after=rec)
+    return rec
+
+@api.put("/purchase-orders/{order_id}")
+async def edit_purchase_order(order_id: str, body: PurchaseOrderIn, user=Depends(get_current_user)):
+    _check_purchase_order(body)
+    before = await db.purchase_orders.find_one({"id": order_id}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Purchase order not found")
+    if before.get("status") != "draft":
+        raise HTTPException(409, "Only draft purchase orders can be edited")
+    data = await _purchase_order_data(body)
+    rec = await update_doc("purchase_orders", order_id, data)
+    await log_audit("purchase_order", order_id, "updated", user, before=before, after=rec)
+    return rec
+
+@api.post("/purchase-orders/{order_id}/order")
+async def place_purchase_order(order_id: str, user=Depends(get_current_user)):
+    rec = await db.purchase_orders.find_one_and_update(
+        {"id": order_id, "status": "draft"},
+        {"$set": {"status": "ordered", "ordered_at": now_iso()}},
+        projection={"_id": 0}, return_document=ReturnDocument.AFTER,
+    )
+    if not rec:
+        raise HTTPException(409, "Purchase order is not a draft")
+    await log_audit("purchase_order", order_id, "ordered", user, after=rec)
+    return rec
+
+@api.post("/purchase-orders/{order_id}/receive")
+async def receive_purchase_order(order_id: str, body: PurchaseReceiptIn, user=Depends(get_current_user)):
+    order = await db.purchase_orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "Purchase order not found")
+    if order.get("status") not in ("ordered", "partially_received", "receiving"):
+        raise HTTPException(409, "Only placed purchase orders with outstanding quantities can be received")
+    if len(body.quantities) != len(order["items"]):
+        raise HTTPException(400, "Provide one received quantity for every purchase-order line")
+    for index, received in enumerate(body.quantities):
+        remaining = max(0, order["items"][index]["quantity"] - order["items"][index].get("received_quantity", 0))
+        if not math.isfinite(received) or received < 0 or received > remaining:
+            raise HTTPException(400, f"Received quantity must be between 0 and {remaining:g} for {order['items'][index]['product']} {order['items'][index]['size']}")
+    if not any(quantity > 0 for quantity in body.quantities):
+        raise HTTPException(400, "Enter at least one received quantity")
+    async with StockLock([item["stock_id"] for item in order["items"]]):
+        current = await db.purchase_orders.find_one_and_update(
+            {"id": order_id, "status": {"$in": ["ordered", "partially_received", "receiving"]}},
+            {"$set": {"status": "receiving"}},
+            projection={"_id": 0}, return_document=ReturnDocument.AFTER,
+        )
+        if not current:
+            raise HTTPException(409, "Purchase order is already received")
+        try:
+            order = await db.purchase_orders.find_one({"id": order_id}, {"_id": 0})
+            for index, received in enumerate(body.quantities):
+                remaining = max(0, order["items"][index]["quantity"] - order["items"][index].get("received_quantity", 0))
+                if received > remaining:
+                    raise HTTPException(409, f"Only {remaining:g} remain for {order['items'][index]['product']} {order['items'][index]['size']}")
+            movements = []
+            for index, item in enumerate(order["items"]):
+                quantity = body.quantities[index]
+                if quantity == 0:
+                    continue
+                received_before = item.get("received_quantity", 0)
+                received_after = r2(received_before + quantity)
+                stock = await db.stock.find_one({"id": item["stock_id"]}, {"_id": 0})
+                if not stock:
+                    raise HTTPException(409, f"Stock item {item['product']} {item['size']} no longer exists")
+                key = f"purchase-order:{order_id}:{index}:{received_after:g}"
+                movement = await db.stock_movements.find_one({"dedupe_key": key}, {"_id": 0})
+                if not movement:
+                    movement = await post_movement(
+                        stock, "purchase", quantity, user,
+                        reason=f"Received {order['reference']}", reference=order["reference"],
+                        dedupe_key=key, direction=1,
+                        extra={"purchase_order_id": order_id, "unit_price": item["unit_price"]},
+                    )
+                movements.append(movement)
+                buying_key = f"{order_id}:{index}:{received_after:g}"
+                if not await db.buyings.find_one({"purchase_order_line": buying_key}):
+                    buying = {
+                        "product": item["product"], "source": order["supplier_name"],
+                        "quantity": quantity, "unit_price": item["unit_price"],
+                        "date": today_str(), "notes": f"Received on {order['reference']}",
+                        "purchase_order_line": buying_key, "purchase_order_id": order_id,
+                        "amount": buying_amount(quantity, item["unit_price"]),
+                    }
+                    set_buying_quantity_unit(buying)
+                    await insert("buyings", buying)
+                await db.purchase_orders.update_one(
+                    {"id": order_id},
+                    {"$set": {f"items.{index}.received_quantity": received_after}},
+                )
+                item["received_quantity"] = received_after
+            status = "received" if all(
+                item.get("received_quantity", 0) >= item["quantity"] for item in order["items"]
+            ) else "partially_received"
+            rec = await update_doc("purchase_orders", order_id, {
+                "status": status,
+                "received_at": now_iso() if status == "received" else order.get("received_at"),
+                "movement_ids": list(dict.fromkeys(
+                    (order.get("movement_ids") or []) + [movement["id"] for movement in movements]
+                )),
+            })
+        except Exception:
+            latest = await db.purchase_orders.find_one({"id": order_id}, {"_id": 0})
+            prior_status = "partially_received" if any(item.get("received_quantity", 0) for item in latest["items"]) else "ordered"
+            await update_doc("purchase_orders", order_id, {"status": prior_status})
+            raise
+    await log_audit("purchase_order", order_id, "received", user, before=order, after=rec)
+    return rec
+
 class ExpenseIn(BaseModel):
     description: str
     amount: float
@@ -2134,9 +2802,186 @@ def _check_expense(body):
         raise HTTPException(400, "Description is required")
 
 @api.get("/expenses")
-async def get_expenses(include_voided: bool = False, user=Depends(get_current_user)):
-    flt = {} if include_voided else {"voided": {"$ne": True}}
+async def get_expenses(include_voided: bool = False, include_archived: bool = False, user=Depends(get_current_user)):
+    flt = {}
+    if not include_voided:
+        flt["voided"] = {"$ne": True}
+    if not include_archived:
+        flt["archived"] = {"$ne": True}
     return await listall("expenses", flt, sort=("date", -1))
+
+def report_date_filter(selected_date):
+    selected = date.fromisoformat(selected_date)
+    dates = [(selected + timedelta(days=offset)).isoformat() for offset in (-1, 0, 1)]
+    start = datetime.combine(selected, datetime.min.time(), TZ).astimezone(timezone.utc)
+    end = datetime.combine(selected + timedelta(days=1), datetime.min.time(), TZ).astimezone(timezone.utc)
+    return {"$or": [
+        {"date": {"$in": dates}},
+        *({"date": {"$regex": f"^{day}T"}} for day in dates),
+        {"date": {"$gte": start, "$lt": end}},
+    ]}
+
+def record_local_date(record):
+    value = record.get("date")
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+        else:
+            parsed = parse_dt(value)
+        if parsed is None:
+            return None
+        return parsed.astimezone(TZ).date().isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+async def daily_report_records(collection_name, selected_date, conditions=None, sort_field="date"):
+    query = {"$and": [report_date_filter(selected_date), conditions or {}]}
+    cursor = db[collection_name].find(query, {"_id": 0}).sort(sort_field, 1)
+    records = await cursor.to_list(None)
+    return [record for record in records if record_local_date(record) == selected_date]
+
+@api.get("/daily-report")
+async def get_daily_report(report_date: Optional[str] = None, user=Depends(get_current_user)):
+    if user.get("_active_company_id") != DEFAULT_COMPANY_ID:
+        raise HTTPException(403, "Daily Report is only available in the SUPERIQFOAM company profile")
+    selected_date = report_date or today_str()
+    try:
+        selected_date = date.fromisoformat(selected_date).isoformat()
+    except ValueError:
+        raise HTTPException(422, "Report date must be a valid YYYY-MM-DD date")
+
+    invoice_records = await daily_report_records(
+        "invoices",
+        selected_date,
+        {"archived": {"$ne": True}},
+    )
+    invoice_records.sort(key=lambda invoice: str(invoice.get("number") or ""))
+    invoices = [
+        {
+            "id": invoice.get("id"),
+            "number": invoice.get("number"),
+            "client_name": invoice.get("customer_name") or invoice.get("description") or "",
+            "amount": r2(invoice.get("total", 0)),
+        }
+        for invoice in invoice_records
+        if invoice.get("number") and invoice.get("status") != "void"
+    ]
+    pending_invoices = [
+        {
+            "id": invoice.get("id"),
+            "client_name": invoice.get("customer_name") or invoice.get("description") or "",
+            "amount": r2(invoice.get("total", 0)),
+        }
+        for invoice in invoice_records
+        if not invoice.get("number") and invoice.get("status") not in ("void",)
+    ]
+
+    payments = await daily_report_records(
+        "payments",
+        selected_date,
+        {
+            "archived": {"$ne": True},
+            "reversed": {"$ne": True},
+        },
+        "created_at",
+    )
+    linked_invoice_ids = list({payment.get("invoice_id") for payment in payments if payment.get("invoice_id")})
+    linked_invoices = await db.invoices.find(
+        {"id": {"$in": linked_invoice_ids}}, {"_id": 0}
+    ).to_list(None) if linked_invoice_ids else []
+    invoice_by_id = {invoice["id"]: invoice for invoice in linked_invoices}
+    payment_rows = []
+    for payment in payments:
+        invoice = invoice_by_id.get(payment.get("invoice_id"), {})
+        note_parts = []
+        for value in (
+            payment.get("notes"),
+            payment.get("reference"),
+            payment.get("description"),
+            payment.get("method"),
+        ):
+            text = str(value or "").strip()
+            if text and text not in note_parts:
+                note_parts.append(text)
+        payment_rows.append({
+            "id": payment.get("id"),
+            "client_name": payment.get("customer_name") or invoice.get("customer_name") or "",
+            "invoice_number": payment.get("invoice_number") or invoice.get("number") or "",
+            "amount": r2(payment.get("amount", 0)),
+            "notes": " | ".join(note_parts),
+        })
+
+    expense_records = await daily_report_records(
+        "expenses",
+        selected_date,
+        {
+            "voided": {"$ne": True},
+            "archived": {"$ne": True},
+        },
+        "created_at",
+    )
+    fuel_categories = {"fuel", "diesel"}
+    fuel_expenses = [
+        expense for expense in expense_records
+        if str(expense.get("category") or "").strip().casefold() in fuel_categories
+    ]
+    expense_rows = [
+        {
+            "id": expense.get("id"),
+            "category": expense.get("category") or "General",
+            "description": expense.get("description") or "",
+            "amount": r2(expense.get("amount", 0)),
+        }
+        for expense in expense_records
+        if str(expense.get("category") or "").strip().casefold() not in fuel_categories
+    ]
+    vehicle_ids = list({expense.get("vehicle_id") for expense in fuel_expenses if expense.get("vehicle_id")})
+    vehicles = await db.vehicles.find(
+        {"id": {"$in": vehicle_ids}}, {"_id": 0}
+    ).to_list(None) if vehicle_ids else []
+    vehicle_by_id = {vehicle["id"]: vehicle for vehicle in vehicles}
+    diesel_rows = []
+    unassigned_fuel_rows = []
+    for expense in fuel_expenses:
+        vehicle = vehicle_by_id.get(expense.get("vehicle_id"))
+        row = {
+            "id": expense.get("id"),
+            "vehicle": vehicle.get("name") if vehicle else "VEHICLE REQUIRED",
+            "amount": r2(expense.get("amount", 0)),
+            "notes": " | ".join(dict.fromkeys(
+                str(value).strip()
+                for value in (expense.get("notes"), expense.get("reference"))
+                if str(value or "").strip()
+            )),
+        }
+        diesel_rows.append(row)
+        if not vehicle:
+            unassigned_fuel_rows.append({
+                "id": expense.get("id"),
+                "description": expense.get("description") or "",
+                "amount": r2(expense.get("amount", 0)),
+            })
+
+    return {
+        "date": selected_date,
+        "day": date.fromisoformat(selected_date).strftime("%A"),
+        "prepared_by": "Mr. Zuny",
+        "main_invoice_no": invoices[0]["number"] if invoices else "",
+        "invoices": invoices,
+        "pending_invoices": pending_invoices,
+        "payments": payment_rows,
+        "expenses": expense_rows,
+        "diesel_usage": diesel_rows,
+        "unassigned_fuel_expenses": unassigned_fuel_rows,
+        "totals": {
+            "sending": dsum(row["amount"] for row in invoices),
+            "received": dsum(row["amount"] for row in payment_rows),
+            "expenses": dsum(row["amount"] for row in expense_rows),
+            "diesel": dsum(row["amount"] for row in diesel_rows),
+        },
+    }
 
 @api.post("/expenses")
 async def add_expense(body: ExpenseIn, user=Depends(get_current_user)):
@@ -2204,7 +3049,7 @@ VEHICLE_COST_DONE = ("Done", "done")
 
 async def cost_ledger(since=None, until=None):
     rows = []
-    for x in await listall("expenses", {"voided": {"$ne": True}}):
+    for x in await listall("expenses", {"voided": {"$ne": True}, "archived": {"$ne": True}}):
         rows.append({"id": x["id"], "date": x.get("date"), "description": x.get("description"), "category": x.get("category", "General"),
                      "amount": x.get("amount", 0), "vehicle_id": x.get("vehicle_id", ""), "source": "spare_part" if x.get("source_key") else "expense"})
     vnames = {v["id"]: v["name"] for v in await listall("vehicles")}
@@ -2218,10 +3063,10 @@ async def cost_ledger(since=None, until=None):
     return [r for r in rows if (not since or (r["date"] or "") >= since) and (not until or (r["date"] or "") <= until)]
 
 async def profit_for(since, until=None):
-    pays = [p for p in await listall("payments") if not p.get("reversed")]
+    pays = [p for p in await listall("payments", {"archived": {"$ne": True}}) if not p.get("reversed")]
     revenue = dsum(p.get("amount", 0) for p in pays if (p.get("date") or "") >= since and (not until or (p.get("date") or "") <= until))
     expense = dsum(x["amount"] for x in await cost_ledger(since, until))
-    buyings = dsum(b.get("amount", 0) for b in await listall("buyings", {"voided": {"$ne": True}})
+    buyings = dsum(b.get("amount", 0) for b in await listall("buyings", {"voided": {"$ne": True}, "archived": {"$ne": True}})
                    if (b.get("date") or "") >= since and (not until or (b.get("date") or "") <= until))
     return {"revenue": revenue, "expenses": expense, "buyings": buyings,
             "profit": r2(D(revenue) - D(expense) - D(buyings)),
@@ -2506,7 +3351,7 @@ WEB_TOOL = [{"type": "function", "function": {"name": "web_search", "description
 
 async def business_snapshot(user):
     dash = await dashboard(user)
-    invs = await listall("invoices", sort=("date", -1))
+    invs = await listall("invoices", {"archived": {"$ne": True}}, sort=("date", -1))
     for i in invs:
         i["status"] = derive_status(i)
     open_inv = [{"number": i.get("number"), "customer": i.get("customer_name"), "date": i.get("date"), "due": i.get("due_date"),
@@ -2519,7 +3364,7 @@ async def business_snapshot(user):
     costs = await cost_ledger(month)
     orders = [{"ref": o.get("reference"), "customer": o.get("customer_name"), "destination": o.get("destination"), "products": o.get("products"),
                "priority": o.get("priority"), "status": o.get("status"), "ship_date": o.get("expected_ship_date")}
-              for o in await listall("orders") if o.get("status") in OPEN_ORDER_STATUSES]
+              for o in await listall("orders", {"archived": {"$ne": True}}) if o.get("status") in OPEN_ORDER_STATUSES]
     vrecs = await listall("vehicle_records")
     drivers = {d["id"]: d["name"] for d in await listall("drivers")}
     return {
@@ -2668,8 +3513,9 @@ class OrderIn(BaseModel):
     notes: Optional[str] = ""
 
 @api.get("/orders")
-async def get_orders(user=Depends(get_current_user)):
-    return await listall("orders", sort=("created_at", -1))
+async def get_orders(include_archived: bool = False, user=Depends(get_current_user)):
+    flt = {} if include_archived else {"archived": {"$ne": True}}
+    return await listall("orders", flt, sort=("created_at", -1))
 
 @api.post("/orders")
 async def add_order(body: OrderIn, user=Depends(get_current_user)):
@@ -2727,25 +3573,83 @@ async def del_order(oid: str, user=Depends(get_current_user)):
 
 # ---------------- Attendance summary ----------------
 # ---------------- Simple daily production (white / blue blocks) ----------------
+class DailyProductionBlock(BaseModel):
+    block: str
+    quantity: int = 0
+
 class DailyProdIn(BaseModel):
     date: str = Field(default_factory=today_str)
     white_blocks: int = 0
     blue_blocks: int = 0
+    blocks: list[DailyProductionBlock] = Field(default_factory=list)
     notes: Optional[str] = ""
 
+def daily_production_blocks(record):
+    blocks = record.get("blocks") or []
+    if blocks:
+        return [
+            {"block": normalize_block_name(item.get("block")), "quantity": int(item.get("quantity", 0) or 0)}
+            for item in blocks
+        ]
+    return [
+        {"block": name, "quantity": int(record.get(field, 0) or 0)}
+        for name, field in (("White", "white_blocks"), ("Blue", "blue_blocks"))
+        if int(record.get(field, 0) or 0) > 0
+    ]
+
 @api.get("/production/daily")
-async def get_daily_prod(user=Depends(get_current_user)):
-    rows = await listall("production_daily", sort=("date", -1))
+async def get_daily_prod(include_archived: bool = False, user=Depends(get_current_user)):
+    flt = {} if include_archived else {"archived": {"$ne": True}}
+    rows = await listall("production_daily", flt, sort=("date", -1))
     active_rows = [r for r in rows if not r.get("archived")]
+    for row in rows:
+        row["blocks"] = daily_production_blocks(row)
+        row["total_blocks"] = sum(item["quantity"] for item in row["blocks"])
     week, month = period_starts()
-    tot = lambda since: {c: sum(r.get(c, 0) for r in active_rows if r["date"] >= since) for c in ("white_blocks", "blue_blocks")}
+    def tot(since):
+        totals = {}
+        for record in active_rows:
+            if record["date"] < since:
+                continue
+            for item in daily_production_blocks(record):
+                block = item["block"]
+                totals[block] = totals.get(block, 0) + item["quantity"]
+        return {
+            "blocks": totals,
+            "total_blocks": sum(totals.values()),
+            "white_blocks": totals.get("White", 0),
+            "blue_blocks": totals.get("Blue", 0),
+        }
     return {"rows": rows, "today": tot(today_str()), "week": tot(week), "month": tot(month)}
 
 @api.post("/production/daily")
 async def save_daily_prod(body: DailyProdIn, user=Depends(get_current_user)):
-    if body.white_blocks < 0 or body.blue_blocks < 0:
+    blocks = [
+        {"block": normalize_block_name(item.block), "quantity": item.quantity}
+        for item in body.blocks
+    ]
+    if blocks:
+        if any(not item["block"] for item in blocks):
+            raise HTTPException(400, "A block name is required")
+        if any(item["quantity"] < 0 for item in blocks):
+            raise HTTPException(400, "Block counts cannot be negative")
+        white_blocks = sum(item["quantity"] for item in blocks if item["block"].casefold() == "white")
+        blue_blocks = sum(item["quantity"] for item in blocks if item["block"].casefold() == "blue")
+    else:
+        if body.white_blocks < 0 or body.blue_blocks < 0:
+            raise HTTPException(400, "Block counts cannot be negative")
+        white_blocks, blue_blocks = body.white_blocks, body.blue_blocks
+        blocks = [
+            {"block": name, "quantity": quantity}
+            for name, quantity in (("White", white_blocks), ("Blue", blue_blocks))
+            if quantity > 0
+        ]
+    if any(not item["block"] for item in blocks):
+        raise HTTPException(400, "A block name is required")
+    if any(item["quantity"] < 0 for item in blocks):
         raise HTTPException(400, "Block counts cannot be negative")
     d = body.model_dump()
+    d.update({"blocks": blocks, "white_blocks": white_blocks, "blue_blocks": blue_blocks})
     ex = await db.production_daily.find_one({"date": d["date"]}, {"_id": 0})
     rec = await update_doc("production_daily", ex["id"], d) if ex else await insert("production_daily", d)
     await log_audit("production_daily", rec["id"], "saved", user, before=ex, after=rec)
@@ -2772,6 +3676,149 @@ async def restore_daily_prod(pid: str, user=Depends(get_current_user)):
     })
     await log_audit("production_daily", pid, "restored", user, before=before, after=updated)
     return {"ok": True}
+
+class ProductionRunMaterialIn(BaseModel):
+    stock_id: str
+    quantity: float
+    unit_cost: float = 0
+
+class ProductionRunIn(BaseModel):
+    date: str = Field(default_factory=today_str)
+    product: str
+    order_id: Optional[str] = ""
+    planned_quantity: float
+    planned_hours: float = 0
+    labor_rate: float = 0
+    materials: List[ProductionRunMaterialIn] = Field(default_factory=list)
+    notes: Optional[str] = ""
+
+class CompleteProductionRunIn(BaseModel):
+    actual_quantity: float
+    scrap_quantity: float = 0
+    actual_hours: float
+    materials: List[ProductionRunMaterialIn] = Field(default_factory=list)
+
+def _validate_run_materials(materials):
+    for material in materials:
+        if not math.isfinite(material.quantity) or material.quantity <= 0:
+            raise HTTPException(400, "Material quantities must be greater than 0")
+        if not math.isfinite(material.unit_cost) or material.unit_cost < 0:
+            raise HTTPException(400, "Material unit costs cannot be negative")
+
+@api.get("/production/runs")
+async def get_production_runs(user=Depends(get_current_user)):
+    return await listall("production_runs", sort=("date", -1))
+
+@api.post("/production/runs")
+async def create_production_run(body: ProductionRunIn, user=Depends(get_current_user)):
+    if not body.product.strip():
+        raise HTTPException(400, "Product is required")
+    if not math.isfinite(body.planned_quantity) or body.planned_quantity <= 0:
+        raise HTTPException(400, "Planned quantity must be greater than 0")
+    if not math.isfinite(body.planned_hours) or body.planned_hours < 0:
+        raise HTTPException(400, "Planned hours cannot be negative")
+    if not math.isfinite(body.labor_rate) or body.labor_rate < 0:
+        raise HTTPException(400, "Labor rate cannot be negative")
+    _validate_run_materials(body.materials)
+    order = None
+    if body.order_id:
+        order = await db.orders.find_one({"id": body.order_id}, {"_id": 0})
+        if not order:
+            raise HTTPException(400, "Linked order not found")
+    materials = []
+    for item in body.materials:
+        stock = await db.stock.find_one({"id": item.stock_id}, {"_id": 0})
+        if not stock:
+            raise HTTPException(400, "A selected material stock item no longer exists")
+        materials.append({
+            **item.model_dump(), "product": stock["product"], "size": stock["size"],
+        })
+    planned_material_cost = dsum(buying_amount(item["quantity"], item["unit_cost"]) for item in materials)
+    planned_labor_cost = body.planned_hours * body.labor_rate
+    if not math.isfinite(planned_labor_cost):
+        raise HTTPException(400, "Planned labor cost is too large")
+    data = body.model_dump()
+    data.update({
+        "product": body.product.strip(), "order_reference": order.get("reference", "") if order else "",
+        "materials": materials, "planned_material_cost": planned_material_cost,
+        "planned_labor_cost": r2(planned_labor_cost),
+        "status": "planned",
+    })
+    rec = await insert("production_runs", data)
+    await log_audit("production_run", rec["id"], "planned", user, after=rec)
+    return rec
+
+@api.post("/production/runs/{run_id}/complete")
+async def complete_production_run(run_id: str, body: CompleteProductionRunIn, user=Depends(get_current_user)):
+    run = await db.production_runs.find_one({"id": run_id}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Production plan not found")
+    if run.get("status") != "planned":
+        raise HTTPException(409, "Only planned production runs can be completed")
+    if not math.isfinite(body.actual_quantity) or body.actual_quantity <= 0:
+        raise HTTPException(400, "Actual production quantity must be greater than 0")
+    if not math.isfinite(body.scrap_quantity) or body.scrap_quantity < 0 or body.scrap_quantity > body.actual_quantity:
+        raise HTTPException(400, "Scrap quantity must be between zero and actual production")
+    if not math.isfinite(body.actual_hours) or body.actual_hours < 0:
+        raise HTTPException(400, "Actual hours cannot be negative")
+    _validate_run_materials(body.materials)
+    materials = []
+    for item in body.materials:
+        stock = await db.stock.find_one({"id": item.stock_id}, {"_id": 0})
+        if not stock:
+            raise HTTPException(400, "A selected material stock item no longer exists")
+        materials.append({**item.model_dump(), "product": stock["product"], "size": stock["size"]})
+    stock_ids = [item["stock_id"] for item in materials]
+    async with StockLock(stock_ids):
+        claimed = await db.production_runs.find_one_and_update(
+            {"id": run_id, "status": "planned"},
+            {"$set": {"status": "processing"}},
+            projection={"_id": 0}, return_document=ReturnDocument.AFTER,
+        )
+        if not claimed:
+            raise HTTPException(409, "Production run is already being completed or is complete")
+        try:
+            totals = {}
+            for item in materials:
+                totals[item["stock_id"]] = totals.get(item["stock_id"], 0) + item["quantity"]
+            for stock_id, quantity in totals.items():
+                stock = await db.stock.find_one({"id": stock_id}, {"_id": 0})
+                await stock_current(stock)
+                if quantity > stock["current"]:
+                    raise HTTPException(400, f"Insufficient stock for {stock['product']} {stock['size']}: available {stock['current']}, requested {quantity}")
+            for index, item in enumerate(materials):
+                key = f"production-run:{run_id}:{index}"
+                if not await db.stock_movements.find_one({"dedupe_key": key}):
+                    stock = await db.stock.find_one({"id": item["stock_id"]}, {"_id": 0})
+                    await post_movement(
+                        stock, "production_consumption", item["quantity"], user,
+                        reason=f"Production run {run_id}", reference=run.get("order_reference", ""),
+                        dedupe_key=key, direction=-1,
+                        extra={"production_run_id": run_id, "unit_cost": item["unit_cost"]},
+                    )
+            material_cost = dsum(buying_amount(item["quantity"], item["unit_cost"]) for item in materials)
+            labor_cost_value = body.actual_hours * run["labor_rate"]
+            if not math.isfinite(labor_cost_value):
+                raise HTTPException(400, "Actual labor cost is too large")
+            labor_cost = r2(labor_cost_value)
+            if not math.isfinite(material_cost + labor_cost):
+                raise HTTPException(400, "Actual production cost is too large")
+            total_cost = r2(material_cost + labor_cost)
+            good_quantity = body.actual_quantity - body.scrap_quantity
+            rec = await update_doc("production_runs", run_id, {
+                "status": "completed", "actual_quantity": body.actual_quantity,
+                "scrap_quantity": body.scrap_quantity, "good_quantity": good_quantity,
+                "actual_hours": body.actual_hours, "actual_materials": materials,
+                "actual_material_cost": material_cost, "actual_labor_cost": labor_cost,
+                "actual_total_cost": total_cost,
+                "cost_per_good_unit": r2(total_cost / good_quantity) if good_quantity else None,
+                "completed_at": now_iso(),
+            })
+        except Exception:
+            await update_doc("production_runs", run_id, {"status": "planned"})
+            raise
+    await log_audit("production_run", run_id, "completed", user, before=run, after=rec)
+    return rec
 
 class BulkAttendanceIn(BaseModel):
     date: str
@@ -2910,9 +3957,10 @@ async def attendance_summary(user=Depends(get_current_user)):
 
 # ---------------- Seeding ----------------
 async def seed():
-    admin_email = os.environ["ADMIN_EMAIL"].lower()
+    admin_email = canonical_email(os.environ["ADMIN_EMAIL"])
     admin_pw = os.environ["ADMIN_PASSWORD"]
-    if not await db.users.find_one({"email": admin_email}):
+    existing_admin = await base_db.users.find_one({"email": admin_email}, {"_id": 0})
+    if not existing_admin:
         await db.users.insert_one({"id": new_id(), "email": admin_email,
                                    "password_hash": hash_pw(admin_pw), "name": "Admin",
                                    "role": "admin", "created_at": now_iso()})
@@ -2975,6 +4023,7 @@ async def seed():
     for coll, keys, kw in (("payments", "idempotency_key", {"unique": True, "sparse": True}),
                            ("stock_movements", "dedupe_key", {"unique": True, "sparse": True}),
                            ("expenses", "source_key", {"unique": True, "sparse": True}),
+                           ("monthly_business_purchase_occurrences", "source_key", {"unique": True}),
                            ("attendance", [("employee_id", 1), ("date", 1)], {"unique": True}),
                            ("prices", [("zone", 1), ("category", 1), ("size", 1)], {"unique": True}),
                            ("audit_log", [("entity", 1), ("entity_id", 1)], {})):
@@ -2996,7 +4045,7 @@ async def initialize_multi_company():
     if not owner:
         raise RuntimeError("Configured ADMIN_EMAIL account is missing; refusing multi-company migration")
     await base_db.users.update_one({"id": owner["id"]}, {"$set": {
-        "role": "owner", "username": "SUPERIQFOAM", "company_roles": {},
+        "role": "owner", "company_roles": {},
         "company_ids": [profile["id"] for profile in COMPANY_PROFILES], "active": True,
     }})
 
@@ -3028,30 +4077,47 @@ async def initialize_multi_company():
             {"$set": {"company_id": DEFAULT_COMPANY_ID}},
         )
         await base_db[collection_name].create_index("company_id")
+    for collection_name in ("invoices", "payments", "expenses"):
+        await base_db[collection_name].create_index([("company_id", 1), ("date", 1)])
 
     for company_id in ("iqfoam-manufactoring", "iqfoam-whole-sallers"):
         await initialize_empty_company(company_id)
 
-    await base_db.users.create_index("username", unique=True, sparse=True)
+    for index_name, index in (await base_db.users.index_information()).items():
+        if index_name != "_id_" and index.get("key") == [("username", 1)] and index.get("unique"):
+            await base_db.users.drop_index(index_name)
+    await base_db.users.create_index("username", sparse=True)
     await base_db.companies.create_index("id", unique=True)
     await initialize_company_profile_users()
 
 async def initialize_company_profile_users():
     profiles = [
         ("iqfoam-manufactoring", "IQFOAM MANUFACTORING", "manufactoring@profiles.invalid", "INITIAL_MANUFACTURING_PASSWORD"),
-        ("iqfoam-whole-sallers", "IQFOAM WHOLE SALLERS", "wholesallers@profiles.invalid", "INITIAL_WHOLESALER_PASSWORD"),
+        ("iqfoam-whole-sallers", "IQFOAM WHOLESALERS", "wholesallers@profiles.invalid", "INITIAL_WHOLESALER_PASSWORD"),
     ]
     for company_id, username, email, env_name in profiles:
-        if await base_db.users.find_one({"username": username}):
-            continue
         initial_password = os.environ.get(env_name)
+        account = await base_db.users.find_one({"profile_id": company_id}, {"_id": 0})
+        if not account:
+            account = await base_db.users.find_one({"username": username}, {"_id": 0})
+        if not account and company_id == "iqfoam-whole-sallers":
+            account = await base_db.users.find_one({"username": "IQFOAM WHOLE SALLERS"}, {"_id": 0})
+        if account:
+            updates = {}
+            if not account.get("profile_id"):
+                updates["profile_id"] = company_id
+            if company_id == "iqfoam-whole-sallers" and account.get("username") == "IQFOAM WHOLE SALLERS":
+                updates["username"] = username
+            if updates:
+                await base_db.users.update_one({"id": account["id"]}, {"$set": updates})
+            continue
         if not initial_password:
             logging.warning("Initial profile %s is waiting for a secure server-side password configuration", username)
             continue
         await base_db.users.insert_one({"id": new_id(), "username": username, "email": email,
             "name": username, "password_hash": hash_pw(initial_password), "role": "user",
             "company_roles": {company_id: "user"}, "company_ids": [company_id], "active": True,
-            "auth_provider": "password", "created_at": now_iso()})
+            "auth_provider": "password", "profile_id": company_id, "created_at": now_iso()})
 
 async def initialize_empty_company(company_id):
     company_db = tenant_database(client, base_db, company_id)
@@ -3105,10 +4171,13 @@ async def initialize_empty_company(company_id):
     for coll, keys, options in (("payments", "idempotency_key", {"unique": True, "sparse": True}),
                                 ("stock_movements", "dedupe_key", {"unique": True, "sparse": True}),
                                 ("expenses", "source_key", {"unique": True, "sparse": True}),
+                                ("monthly_business_purchase_occurrences", "source_key", {"unique": True}),
                                 ("attendance", [("employee_id", 1), ("date", 1)], {"unique": True}),
                                 ("prices", [("zone", 1), ("category", 1), ("size", 1)], {"unique": True}),
                                 ("audit_log", [("entity", 1), ("entity_id", 1)], {})):
         await company_db[coll].create_index(keys, **options)
+    for coll in ("invoices", "payments", "expenses"):
+        await company_db[coll].create_index([("company_id", 1), ("date", 1)])
 
 @app.on_event("startup")
 async def on_startup():

@@ -1,9 +1,10 @@
 import { forwardRef } from "react";
 import { COMPANY } from "@/components/InvoiceDocument";
+import { companyDisplayName } from "@/lib/company";
 
 const T = {
-  en: { title: "DELIVERY NOTE", date: "Date", no: "Note No.", deliverTo: "Deliver To", details: "Details", qty: "Quantity", product: "Product", size: "Size / Measurements", total: "Total pieces", phone: "Phone", email: "Email",
-    priority: "Priority", ship: "Ship date", vehicle: "Vehicle", notes: "Notes", received: "Received in good order by", sign: "Signature", name: "Name", driver: "Driver" },
+  en: { title: "DELIVERY NOTE", date: "Date", no: "Delivery Note No.", deliverTo: "Deliver To", details: "Details", qty: "Quantity", product: "Product", size: "Size", total: "Total quantity", phone: "Phone", email: "Email",
+    priority: "Priority", ship: "Ship date", vehicle: "Vehicle", notes: "Notes", received: "Received in good condition by", sign: "Signature", name: "Name", driver: "Driver" },
   ur: { title: "ڈلیوری نوٹ", date: "تاریخ", no: "نوٹ نمبر", deliverTo: "ترسیل برائے", details: "تفصیلات", qty: "مقدار", product: "پروڈکٹ", size: "سائز / پیمائش", total: "کل تعداد", phone: "فون", email: "ای میل",
     priority: "ترجیح", ship: "روانگی کی تاریخ", vehicle: "گاڑی", notes: "نوٹس", received: "سامان درست حالت میں وصول کیا", sign: "دستخط", name: "نام", driver: "ڈرائیور" },
 };
@@ -25,49 +26,50 @@ export const DeliveryNote = forwardRef(function DeliveryNote({ order, lang = "en
   const lines = orderLines(order);
   const total = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
   const prod = (c) => (ur ? UR_PRODUCTS[c] || c : c);
-  const cell = "border border-slate-800 px-3 py-2";
+  const companyName = companyDisplayName(settings.company_name || COMPANY.name);
+  const cell = "border border-slate-800 px-3 py-3";
   return (
-    <div ref={ref} dir={ur ? "rtl" : "ltr"} lang={lang} className="bg-white text-slate-900 mx-auto p-8 text-[14px]" style={{ width: 794, minHeight: 1123, boxSizing: "border-box", fontFamily: ur ? "'Noto Nastaliq Urdu','Jameel Noori Nastaleeq',Tahoma,sans-serif" : undefined }} data-testid="delivery-note">
+    <div ref={ref} dir={ur ? "rtl" : "ltr"} lang={lang} className="bg-white text-slate-950 mx-auto p-8 text-[16px] leading-7" style={{ width: 794, minHeight: 1123, boxSizing: "border-box", fontFamily: ur ? "'Noto Nastaliq Urdu','Jameel Noori Nastaleeq',Tahoma,sans-serif" : "Arial, sans-serif" }} data-testid="delivery-note">
       <div className="flex justify-between items-start">
         <div>
-          <p className="text-[28px] font-extrabold" dir="ltr">{settings.company_name || COMPANY.name}</p>
-          <p className="whitespace-pre-line text-[14px] leading-6" dir="ltr">{settings.address || COMPANY.address.join(", ")}</p>
-          <p className="text-[14px] leading-6" dir="ltr">{settings.telephone || COMPANY.phones}</p>
+          <p className="text-[30px] font-extrabold leading-tight" dir="ltr">{companyName}</p>
+          <p className="whitespace-pre-line text-[16px] leading-7" dir="ltr">{settings.address || COMPANY.address.join(", ")}</p>
+          <p className="text-[16px] leading-7" dir="ltr">{settings.telephone || COMPANY.phones}</p>
         </div>
         <div className={ur ? "text-left" : "text-right"}>
-          <p className="text-[28px] font-bold mb-2">{t.title}</p>
-          <table className="border border-slate-800 text-[14px]">
+          <p className="text-[30px] font-bold leading-tight mb-3">{t.title}</p>
+          <table className="border border-slate-800 text-[16px]">
             <thead><tr className="bg-slate-100"><th className={cell}>{t.date}</th><th className={cell}>{t.no}</th></tr></thead>
             <tbody><tr><td className={cell} dir="ltr">{order.expected_ship_date || new Date().toISOString().slice(0, 10)}</td><td className={`${cell} font-mono`} dir="ltr">{order.reference}</td></tr></tbody>
           </table>
         </div>
       </div>
       <div className="grid grid-cols-2 gap-6 mt-6">
-        <div className="border border-slate-800"><div className="border-b border-slate-800 bg-slate-100 px-3 py-2 font-bold">{t.deliverTo}</div><div className="px-3 py-2 min-h-[70px] leading-6">
+        <div className="border border-slate-800"><div className="border-b border-slate-800 bg-slate-100 px-3 py-3 text-[18px] font-bold">{t.deliverTo}</div><div className="px-3 py-3 min-h-[90px] leading-7">
           <p dir="ltr" className={ur ? "text-right" : ""}>{order.customer_name}</p>
           {order.customer_address && <p dir="ltr" className={ur ? "text-right" : ""}>{order.customer_address}</p>}
           {order.destination && order.destination !== order.customer_address && <p dir="ltr" className={ur ? "text-right" : ""}>{order.destination}</p>}
           {order.customer_phone && <p dir="ltr" className={ur ? "text-right" : ""}>{t.phone}: {order.customer_phone}</p>}
           {order.customer_email && <p dir="ltr" className={ur ? "text-right" : ""}>{t.email}: {order.customer_email}</p>}
         </div></div>
-        <div className="border border-slate-800"><div className="border-b border-slate-800 bg-slate-100 px-3 py-2 font-bold">{t.details}</div><div className="px-3 py-2 min-h-[70px] leading-6">
+        <div className="border border-slate-800"><div className="border-b border-slate-800 bg-slate-100 px-3 py-3 text-[18px] font-bold">{t.details}</div><div className="px-3 py-3 min-h-[90px] leading-7">
           {order.priority && <p>{t.priority}: {ur ? UR_PRIORITY[order.priority] || order.priority : order.priority}</p>}
           {vehicleName && <p>{t.vehicle}: <span dir="ltr">{vehicleName}</span></p>}
         </div></div>
       </div>
-      <table className="w-full border border-slate-800 text-[14px] mt-5">
+      <table className="w-full border border-slate-800 text-[16px] mt-5">
         <thead><tr className="bg-slate-100">
-          <th className={`${cell} w-20`}>{t.qty}</th>
-          <th className={`${cell} w-40`}>{t.product}</th>
-          <th className={`${cell} w-32`}>{t.size}</th>
+          <th className={`${cell} w-1/4 text-left`}>{t.size}</th>
+          <th className={`${cell} w-1/2 text-left`}>{t.product}</th>
+          <th className={`${cell} w-1/4 text-center`}>{t.qty}</th>
         </tr></thead>
         <tbody>
           {lines.map((l, i) => <tr key={i}>
-            <td className={`${cell} text-center font-bold`}>{l.qty}</td>
-            <td className={cell}>{prod(l.category || l.description) || "-"}</td>
-            <td className={`${cell} text-center`} dir="ltr">{l.size || "-"}</td>
+            <td className={`${cell} text-center text-[18px] font-bold`} dir="ltr">{l.size || "-"}</td>
+            <td className={`${cell} text-[18px]`}>{prod(l.category || l.description) || "-"}</td>
+            <td className={`${cell} text-center text-[20px] font-extrabold`} dir="ltr">{l.qty}</td>
           </tr>)}
-          <tr className="bg-slate-100"><td className={`${cell} text-center font-bold`}>{total}</td><td className={`${cell} font-bold`} colSpan={2}>{t.total}</td></tr>
+          <tr className="bg-slate-100"><td className={cell} /><td className={`${cell} text-right font-bold`}>{t.total}</td><td className={`${cell} text-center text-[20px] font-extrabold`} dir="ltr">{total}</td></tr>
         </tbody>
       </table>
       {order.notes && <p className="mt-4"><b>{t.notes}:</b> {order.notes}</p>}

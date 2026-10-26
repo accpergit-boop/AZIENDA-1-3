@@ -7,7 +7,8 @@ import { Factory, Plus, Save, Trash2, Pencil, RotateCcw } from "lucide-react";
 
 export default function Production() {
   const [data, setData] = useState(null);
-  const [form, setForm] = useState({ date: today(), white_blocks: "", blue_blocks: "", notes: "" });
+  const emptyForm = () => ({ date: today(), blocks: [{ block: "White", quantity: "" }], notes: "" });
+  const [form, setForm] = useState(emptyForm);
   const [stock, setStock] = useState([]);
   const [blockCuttings, setBlockCuttings] = useState([]);
   const [cutOpen, setCutOpen] = useState(false);
@@ -24,10 +25,16 @@ export default function Production() {
   const availableSizes = [...new Set(stock.map((item) => item.size).filter(Boolean))].sort();
 
   const save = async () => {
+    const blocks = form.blocks
+      .filter((item) => String(item.quantity).trim() !== "")
+      .map((item) => ({ block: item.block.trim(), quantity: Number(item.quantity) }));
+    if (!blocks.length || blocks.some((item) => !item.block || !Number.isInteger(item.quantity) || item.quantity < 0)) {
+      return toast.error("Enter a block name and a valid non-negative quantity");
+    }
     if (busy) return; setBusy(true);
     try {
-      await api.post("/production/daily", { ...form, white_blocks: Number(form.white_blocks) || 0, blue_blocks: Number(form.blue_blocks) || 0 });
-      toast.success("Production saved"); setForm({ ...form, white_blocks: "", blue_blocks: "", notes: "" }); load();
+      await api.post("/production/daily", { ...form, blocks });
+      toast.success("Production saved"); setForm(emptyForm()); load();
     } catch (e) { toast.error(apiError(e)); } finally { setBusy(false); }
   };
   const saveBlockCutting = async () => {
@@ -71,18 +78,30 @@ export default function Production() {
   };
   const Tot = ({ l, v, k }) => (
     <Card className="p-4" data-testid={`prod-total-${k}`}><p className="text-xs text-slate-400 uppercase font-semibold">{l}</p>
-      <p className="mt-1 font-mono text-slate-800"><span className="text-xl font-bold">{v?.white_blocks || 0}</span> white · <span className="text-xl font-bold text-blue-600">{v?.blue_blocks || 0}</span> blue</p></Card>);
+      <p className="mt-1 font-mono text-slate-800"><span className="text-xl font-bold">{v?.total_blocks || 0}</span> total blocks</p>
+      <p className="mt-1 text-xs text-slate-500">{Object.entries(v?.blocks || {}).map(([block, quantity]) => `${block}: ${quantity}`).join(" · ") || "No blocks recorded"}</p></Card>);
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Production" subtitle="Blocks produced per day — white and blue" />
+      <PageHeader title="Production" subtitle="Record block quantities produced each day" />
       <Card className="p-5">
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 items-end">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
           <Input label="Date" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} data-testid="prod-date-input" />
-          <Input label="White blocks" type="number" min="0" value={form.white_blocks} onChange={(e) => setForm({ ...form, white_blocks: e.target.value })} data-testid="prod-white-input" />
-          <Input label="Blue blocks" type="number" min="0" value={form.blue_blocks} onChange={(e) => setForm({ ...form, blue_blocks: e.target.value })} data-testid="prod-blue-input" />
           <Input label="Notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} data-testid="prod-notes-input" />
-          <Btn disabled={busy} onClick={save} data-testid="save-production-btn"><Save size={16} /> Save</Btn>
+        </div>
+        <datalist id="production-block-options"><option value="Black" /><option value="White" /></datalist>
+        <div className="mt-4 space-y-3">
+          {form.blocks.map((item, index) => (
+            <div key={index} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-end">
+              <Input label="Block" list="production-block-options" value={item.block} onChange={(e) => setForm({ ...form, blocks: form.blocks.map((block, row) => row === index ? { ...block, block: e.target.value } : block) })} data-testid={`prod-block-input-${index}`} />
+              <Input label="Quantity" type="number" min="0" step="1" value={item.quantity} onChange={(e) => setForm({ ...form, blocks: form.blocks.map((block, row) => row === index ? { ...block, quantity: e.target.value } : block) })} data-testid={`prod-quantity-input-${index}`} />
+              {form.blocks.length > 1 && <Btn variant="outline" onClick={() => setForm({ ...form, blocks: form.blocks.filter((_, row) => row !== index) })} aria-label="Remove block row"><Trash2 size={16} /></Btn>}
+            </div>
+          ))}
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="outline" onClick={() => setForm({ ...form, blocks: [...form.blocks, { block: "Black", quantity: "" }] })} data-testid="add-production-block-btn"><Plus size={16} /> Add Block</Btn>
+            <Btn disabled={busy} onClick={save} data-testid="save-production-btn"><Save size={16} /> Save</Btn>
+          </div>
         </div>
         <p className="text-xs text-slate-400 mt-2">Saving the same date again replaces that day's numbers.</p>
       </Card>
@@ -93,7 +112,7 @@ export default function Production() {
         </div>
         {blockCuttings.length === 0 ? <p className="text-sm text-slate-400">No block cutting records yet.</p> : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[640px] text-sm">
               <thead><tr className="border-b border-border bg-slate-50 text-left text-xs text-slate-500"><th className="px-3 py-2">Block</th><th className="px-3 py-2">Size</th><th className="px-3 py-2">Date and Time</th><th className="px-3 py-2 text-right">Actions</th></tr></thead>
               <tbody>{blockCuttings.map((record) => <tr key={record.id} className="border-b border-border/70" data-testid={`block-cutting-row-${record.id}`}>
                 <td className="px-3 py-2 font-semibold">{record.block}{record.archived && <Badge cls="ml-2 bg-amber-50 text-amber-700 border-amber-200">Archived</Badge>}</td><td className="px-3 py-2">{record.size}</td><td className="px-3 py-2 text-slate-500">{fmtDateTime(record.created_at)}</td>
@@ -111,21 +130,23 @@ export default function Production() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4"><Tot l="Today" v={data?.today} k="today" /><Tot l="This week" v={data?.week} k="week" /><Tot l="This month" v={data?.month} k="month" /></div>
       <Card className="overflow-hidden">
         {!data ? <p className="p-6 text-sm text-slate-400">Loading...</p> : data.rows.length === 0 ? <Empty icon={Factory} title="No production recorded yet" /> : (
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border"><th className="px-4 py-3">Date</th><th className="px-4 text-right">White</th><th className="px-4 text-right">Blue</th><th className="px-4 text-right">Total</th><th className="px-4">Notes</th><th className="px-4" /></tr></thead>
+            <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border"><th className="px-4 py-3">Date</th><th className="px-4">Blocks</th><th className="px-4 text-right">Total</th><th className="px-4">Notes</th><th className="px-4" /></tr></thead>
             <tbody>{data.rows.map((r) => (
               <tr key={r.id} className="border-b border-border/60" data-testid={`prod-row-${r.id}`}>
-                <td className="px-4 py-3">{fmtDate(r.date)}{r.archived && <Badge cls="ml-2 bg-amber-50 text-amber-700 border-amber-200">Archived</Badge>}</td><td className="px-4 text-right font-mono">{r.white_blocks}</td><td className="px-4 text-right font-mono text-blue-600">{r.blue_blocks}</td>
-                <td className="px-4 text-right font-mono font-bold">{r.white_blocks + r.blue_blocks}</td><td className="px-4 text-slate-500">{r.notes}</td>
-                <td className="px-4 text-right">{r.archived ? <button onClick={() => restoreDaily(r)} className="text-emerald-700" aria-label="Restore production record"><RotateCcw size={15} /></button> : <><button onClick={() => setForm({ date: r.date, white_blocks: r.white_blocks, blue_blocks: r.blue_blocks, notes: r.notes || "" })} className="text-primary text-xs font-semibold mr-3">Edit</button><button onClick={() => del(r)} className="text-slate-400 hover:text-red-600" aria-label="Archive production record"><Trash2 size={15} /></button></>}</td>
+                <td className="px-4 py-3">{fmtDate(r.date)}{r.archived && <Badge cls="ml-2 bg-amber-50 text-amber-700 border-amber-200">Archived</Badge>}</td>
+                <td className="px-4 font-mono">{(r.blocks || []).map((item) => `${item.block}: ${item.quantity}`).join(" · ") || "—"}</td>
+                <td className="px-4 text-right font-mono font-bold">{r.total_blocks ?? r.white_blocks + r.blue_blocks}</td><td className="px-4 text-slate-500">{r.notes}</td>
+                <td className="px-4 text-right">{r.archived ? <button onClick={() => restoreDaily(r)} className="text-emerald-700" aria-label="Restore production record"><RotateCcw size={15} /></button> : <><button onClick={() => setForm({ date: r.date, blocks: r.blocks?.length ? r.blocks.map((item) => ({ ...item, quantity: String(item.quantity) })) : [{ block: "White", quantity: String(r.white_blocks || "") }, { block: "Blue", quantity: String(r.blue_blocks || "") }], notes: r.notes || "" })} className="text-primary text-xs font-semibold mr-3">Edit</button><button onClick={() => del(r)} className="text-slate-400 hover:text-red-600" aria-label="Archive production record"><Trash2 size={15} /></button></>}</td>
               </tr>))}</tbody>
-          </table>)}
+          </table>
+          </div>)}
       </Card>
       <Modal open={cutOpen} onClose={() => setCutOpen(false)} title={cutForm.id ? "Edit Block Cutting" : "Add Block Cutted"}>
         <div className="space-y-4">
-          <Select label="Which block?" value={cutForm.block} onChange={(event) => setCutForm({ block: event.target.value, size: "" })} data-testid="block-cutting-type-select">
-            <option value="">Select block...</option><option value="Blue">Blue</option><option value="Bianco">Bianco</option>
-          </Select>
+          <Input label="Which block?" list="block-cutting-options" value={cutForm.block} onChange={(event) => setCutForm({ ...cutForm, block: event.target.value, size: "" })} placeholder="Choose or type a block" data-testid="block-cutting-type-select" />
+          <datalist id="block-cutting-options"><option value="Black" /><option value="White" /></datalist>
           <Select label="Which size?" value={cutForm.size} onChange={(event) => setCutForm({ ...cutForm, size: event.target.value })} disabled={!cutForm.block || availableSizes.length === 0} data-testid="block-cutting-size-select">
             <option value="">{availableSizes.length ? "Select size..." : "No sizes available in Stock"}</option>
             {availableSizes.map((size) => <option key={size} value={size}>{size}</option>)}

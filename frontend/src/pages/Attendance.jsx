@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { today } from "@/lib/format";
 import { Card, Btn, Input, Select, Modal, PageHeader, Empty } from "@/components/common";
-import { Users, Plus, CheckCheck, Pencil, CalendarCheck, Wallet, History, Landmark } from "lucide-react";
+import { Users, Plus, CheckCheck, Pencil, CalendarCheck, Wallet, History, Landmark, Trash2 } from "lucide-react";
 import { fmtMoney } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
 
@@ -18,7 +18,7 @@ const weekPeriod = (offset = 0) => {
   return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
 };
 
-function SalaryEmployeeCard({ employee, rate, deduction, saving, onRateChange, onSaveRate, onDeductionChange, onSaveCut, onAddAdvance, onViewHistory }) {
+function SalaryEmployeeCard({ employee, rate, deduction, saving, onRateChange, onSaveRate, onDeductionChange, onSaveCut, onAddAdvance, onViewHistory, onDelete }) {
   const remainingBalance = employee.available_balance - deduction;
   const takeHome = employee.gross_salary - deduction;
   return (
@@ -61,6 +61,7 @@ function SalaryEmployeeCard({ employee, rate, deduction, saving, onRateChange, o
           <div className="flex flex-wrap gap-2">
             <Btn variant="outline" disabled={saving} onClick={onAddAdvance} data-testid={`salary-advance-${employee.employee_id}`}>+ Add borrowed balance</Btn>
             <Btn disabled={saving} onClick={onSaveCut} data-testid={`save-salary-cut-${employee.employee_id}`}>{saving ? "Saving…" : "Save this week’s cut"}</Btn>
+            {onDelete && <Btn variant="danger" disabled={saving} onClick={onDelete} data-testid={`delete-salary-employee-${employee.employee_id}`}><Trash2 size={15} /> Delete employee</Btn>}
           </div>
         </div>
       </div>
@@ -71,6 +72,7 @@ function SalaryEmployeeCard({ employee, rate, deduction, saving, onRateChange, o
 export default function Attendance() {
   const { user } = useAuth();
   const [employees, setEmployees] = useState([]);
+  const [deletedEmployees, setDeletedEmployees] = useState([]);
   const [records, setRecords] = useState([]);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -135,6 +137,20 @@ export default function Attendance() {
     if (!empModal.name.trim()) return toast.error("Name required");
     try { empModal.id ? await api.put(`/employees/${empModal.id}`, empModal) : await api.post("/employees", empModal); setEmpModal(null); load(); toast.success("Employee saved"); }
     catch (e) { toast.error(apiError(e)); }
+  };
+  const deleteEmployee = async (employee) => {
+    if (!window.confirm(`Permanently delete ${employee.name} from this profile? The employee will appear in Deleted employees; attendance and salary history will be retained.`)) return;
+    try {
+      await api.del(`/employees/${employee.id}`);
+      setEmployees((current) => current.filter((item) => item.id !== employee.id));
+      toast.success("Employee permanently deleted; history retained");
+    } catch (error) {
+      toast.error(apiError(error));
+      return;
+    }
+    try { setDeletedEmployees(await api.get("/employees/deleted")); }
+    catch (error) { toast.error(`Employee deleted, but deleted-employee archive could not be refreshed: ${apiError(error)}`); }
+    if (salaryReport) await loadSalaries();
   };
   const loadSalaries = async (startDate = salaryStart, endDate = salaryEnd) => {
     if (!startDate || !endDate) return toast.error("Select both salary period dates");
@@ -221,8 +237,24 @@ export default function Attendance() {
       <div className="flex gap-2 border-b border-border">
         <button onClick={() => setSection("attendance")} className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold ${section === "attendance" ? "border-primary text-primary" : "border-transparent text-slate-500"}`} data-testid="attendance-section-tab"><CalendarCheck size={16} /> Attendance</button>
         {(user?.is_admin || user?.role === "admin") && <button onClick={() => setSection("salaries")} className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold ${section === "salaries" ? "border-primary text-primary" : "border-transparent text-slate-500"}`} data-testid="salary-section-tab"><Wallet size={16} /> Salaries</button>}
+        {user?.is_owner && <button onClick={async () => {
+          setSection("deleted");
+          try { setDeletedEmployees(await api.get("/employees/deleted")); }
+          catch (error) { toast.error(apiError(error)); }
+        }} className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold ${section === "deleted" ? "border-primary text-primary" : "border-transparent text-slate-500"}`} data-testid="deleted-employees-tab"><Trash2 size={15} /> Deleted employees ({deletedEmployees.length})</button>}
       </div>
-      {section === "salaries" && (user?.is_admin || user?.role === "admin") ? (
+      {section === "deleted" && user?.is_owner ? (
+        <Card className="overflow-hidden">
+          {deletedEmployees.length === 0 ? <Empty icon={Users} title="No deleted employees" /> : <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="bg-slate-50 text-left text-xs text-slate-400"><th className="px-4 py-3">Name</th><th className="px-4 py-3">Department</th><th className="px-4 py-3">Deleted</th></tr></thead>
+              <tbody>{deletedEmployees.map((employee) => <tr key={employee.id} className="border-t border-border/60" data-testid={`deleted-employee-row-${employee.id}`}>
+                <td className="px-4 py-3 font-semibold text-slate-800">{employee.name}</td><td className="px-4 py-3 text-slate-500">{employee.department || "—"}</td><td className="px-4 py-3 text-slate-500">{employee.deleted_at ? new Date(employee.deleted_at).toLocaleString() : "—"}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>}
+        </Card>
+      ) : section === "salaries" && (user?.is_admin || user?.role === "admin") ? (
         <div className="space-y-4">
           <Card className="space-y-4 p-4">
             <div>
@@ -263,6 +295,7 @@ export default function Attendance() {
                   onSaveCut={() => saveSalaryCut(employee)}
                   onAddAdvance={() => setAdvanceModal({ employee_id: employee.employee_id, employee_name: employee.name, date: today(), amount: "", notes: "" })}
                   onViewHistory={() => setHistoryEmployee(employee)}
+                  onDelete={user?.is_owner ? () => deleteEmployee({ id: employee.employee_id, name: employee.name }) : undefined}
                 />;
               })}
             </div>
@@ -295,6 +328,7 @@ export default function Attendance() {
                 {["Present", "Half Day"].includes(s) && <div className="w-32"><Input label="Overtime hours" type="number" min="0" step="0.25" value={overtimeDraft[e.id] ?? records.find((record) => record.employee_id === e.id && record.date === date)?.overtime_hours ?? 0}
                   onChange={(event) => setOvertimeDraft((current) => ({ ...current, [e.id]: event.target.value }))} onBlur={() => saveOvertime(e)} data-testid={`attendance-overtime-${e.id}`} /></div>}
                 <button onClick={() => setEmpModal({ ...e })} className="text-slate-300 hover:text-primary" data-testid={`edit-employee-${e.id}`}><Pencil size={15} /></button>
+                {user?.is_owner && <button onClick={() => deleteEmployee(e)} className="text-slate-300 hover:text-red-600" aria-label={`Permanently delete ${e.name}`} title="Permanently delete employee" data-testid={`delete-employee-${e.id}`}><Trash2 size={15} /></button>}
               </div>);
           })}</div>
         </Card>))}
