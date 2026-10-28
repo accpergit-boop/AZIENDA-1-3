@@ -15,7 +15,7 @@ const blankV = () => ({ name: "", registration: "", vtype: "Medium Truck", capac
 const blankR = () => ({ type: "expense", description: "", amount: "", date: today(), status: "Done" });
 const blankP = () => ({ name: "", quantity: 1, expected_price: "", actual_cost: "", vehicle_id: "", status: "to_buy", notes: "" });
 
-function VehicleCard({ v, recs, onOpen, onEdit }) {
+function VehicleCard({ v, recs, onOpen, onEdit, onDelete }) {
   const sum = (t) => recs.filter((r) => r.type === t && isDone(r)).reduce((s, r) => s + (r.amount || 0), 0);
   const needed = recs.filter(isPending).length;
   return (
@@ -39,6 +39,7 @@ function VehicleCard({ v, recs, onOpen, onEdit }) {
       <div className="flex gap-2">
         <Btn variant="subtle" className="flex-1" onClick={onOpen} data-testid={`vehicle-records-${v.id}`}>Records <ArrowRight size={14} /></Btn>
         <Btn variant="outline" onClick={onEdit} data-testid={`edit-vehicle-${v.id}`}><Pencil size={14} /></Btn>
+        <Btn variant="outline" onClick={onDelete} aria-label={`Remove ${v.name}`} data-testid={`delete-vehicle-${v.id}`}><Trash2 size={14} /></Btn>
       </div>
     </Card>
   );
@@ -67,6 +68,11 @@ export default function Fleet() {
   const saveVehicle = async () => {
     if (!vModal.name.trim()) return toast.error("Vehicle name required");
     try { vModal.id ? await api.put(`/vehicles/${vModal.id}`, vModal) : await api.post("/vehicles", vModal); toast.success("Vehicle saved"); setVModal(null); load(); } catch (e) { err(e); }
+  };
+  const delVehicle = async (v) => {
+    if (!window.confirm(`Remove "${v.name}" from the fleet? Its records and history will be retained.`)) return;
+    try { await api.del(`/vehicles/${v.id}`); toast.success("Vehicle removed from the fleet"); load(); }
+    catch (e) { err(e); }
   };
   const addRecord = async () => {
     if (!rForm.description.trim()) return toast.error("Description required");
@@ -115,7 +121,7 @@ export default function Fleet() {
       {tab === "vehicles" ? (
         loading ? <Card><p className="p-6 text-sm text-slate-400" role="status">Loading vehicles...</p></Card> : vehicles.length === 0 ? <Card><Empty icon={Truck} title="No vehicles registered" /></Card> : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {vehicles.map((v) => <VehicleCard key={v.id} v={v} recs={vRecs(v.id)} onOpen={() => { setDetail(v); setRForm(blankR()); }} onEdit={() => setVModal({ ...v })} />)}
+            {vehicles.map((v) => <VehicleCard key={v.id} v={v} recs={vRecs(v.id)} onOpen={() => { setDetail(v); setRForm(blankR()); }} onEdit={() => setVModal({ ...v })} onDelete={() => delVehicle(v)} />)}
           </div>)
       ) : (
         <>

@@ -127,6 +127,7 @@ export default function Settings() {
   const [removeUser, setRemoveUser] = useState(null);
   const [removingUser, setRemovingUser] = useState(false);
   const [pModal, setPModal] = useState(null);
+  const [priceSaving, setPriceSaving] = useState(false);
   const [dModal, setDModal] = useState(null);
   const [zone, setZone] = useState(1);
 
@@ -248,31 +249,35 @@ export default function Settings() {
   };
 
   const savePrice = async () => {
+    if (priceSaving) return;
     try {
       if (!pModal.category?.trim()) return toast.error("Product name is required");
       if (!pModal.size?.trim()) return toast.error("Size or unit is required");
-      if (pModal.price === "" || !(Number(pModal.price) > 0)) return toast.error("Enter a valid product price");
+      const hasPrice = pModal.price !== "" && pModal.price != null;
+      if (hasPrice && !(Number(pModal.price) > 0)) return toast.error("Enter a valid product price");
       const body = {
         ...pModal,
         category: pModal.category.trim(),
         size: pModal.size.trim(),
         zone: unifiedPriceList ? 1 : pModal.zone,
-        price: Number(pModal.price),
+        price: hasPrice ? Number(pModal.price) : null,
       };
+      setPriceSaving(true);
       if (pModal.id) await api.put(`/prices/${pModal.id}`, body);
       else await api.post("/prices", body);
       toast.success(pModal.newProduct ? "Product saved and available on invoices" : "Price saved");
       setPModal(null);
       setPrices(await api.get("/prices"));
     } catch (e) { toast.error(apiError(e)); }
+    finally { setPriceSaving(false); }
   };
 
   const deletePrice = async (price) => {
-    if (!window.confirm(`Deactivate ${priceProductName(price.category)} — ${price.size}? The price record will be retained and can be reactivated later.`)) return;
+    if (!window.confirm(`Permanently delete ${priceProductName(price.category)} — ${price.size}? This cannot be undone.`)) return;
     try {
       await api.del(`/prices/${price.id}`);
-      setPrices((current) => current.map((item) => item.id === price.id ? { ...item, active: false } : item));
-      toast.success("Price deactivated");
+      setPrices((current) => current.filter((item) => item.id !== price.id));
+      toast.success("Product price permanently deleted");
     } catch (e) { toast.error(apiError(e)); }
   };
 
@@ -360,7 +365,7 @@ export default function Settings() {
                     <td className="px-4 text-center"><Badge cls={p.active ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-500 border-slate-200"}>{p.active ? "Active" : "Inactive"}</Badge></td>
                     <td className="px-4 text-right whitespace-nowrap">
                       <button onClick={() => setPModal({ ...p, category: priceProductName(p.category), price: p.price == null ? "" : p.price })} className="text-slate-400 hover:text-primary p-1" aria-label={`Edit ${priceProductName(p.category)} ${p.size}`} data-testid={`edit-price-${p.id}`}><Pencil size={15} /></button>
-                      <button onClick={() => deletePrice(p)} className="ml-2 p-1 text-slate-400 hover:text-red-600" aria-label={`Delete ${priceProductName(p.category)} ${p.size}`} data-testid={`delete-price-${p.id}`}><Trash2 size={15} /></button>
+                      <button onClick={() => deletePrice(p)} title="Permanently delete product price" className="ml-2 p-1 text-slate-400 hover:text-red-600" aria-label={`Permanently delete ${priceProductName(p.category)} ${p.size}`} data-testid={`delete-price-${p.id}`}><Trash2 size={15} /></button>
                     </td>
                   </tr>))}</tbody>
               </table>
@@ -474,7 +479,7 @@ export default function Settings() {
             {pModal.newProduct ? <p className="text-xs text-slate-500">This product will be available on invoices after saving.</p> : <Input label="Size / Unit" value={pModal.size} onChange={(e) => setPModal({ ...pModal, size: e.target.value })} placeholder="910x100 or Unit" />}
           <Input label="Unit Price (R) — leave empty if unconfirmed" type="number" step="0.01" value={pModal.price} onChange={(e) => setPModal({ ...pModal, price: e.target.value })} data-testid="price-value-input" />
           <label className="flex items-center gap-2 text-sm font-semibold text-slate-600"><input type="checkbox" checked={pModal.active} onChange={(e) => setPModal({ ...pModal, active: e.target.checked })} /> Active</label>
-          <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setPModal(null)}>Cancel</Btn><Btn onClick={savePrice} data-testid="save-price-btn">Save</Btn></div>
+          <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setPModal(null)} disabled={priceSaving}>Cancel</Btn><Btn onClick={savePrice} disabled={priceSaving} data-testid="save-price-btn">{priceSaving ? "Saving..." : "Save"}</Btn></div>
         </div>}
       </Modal>
 

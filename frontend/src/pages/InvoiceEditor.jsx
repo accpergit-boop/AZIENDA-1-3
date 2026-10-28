@@ -44,6 +44,7 @@ export default function InvoiceEditor() {
   const [payModal, setPayModal] = useState(null);
   const [nextNum, setNextNum] = useState("");
   const [pendingSave, setPendingSave] = useState(null);
+  const [pendingStockSubmit, setPendingStockSubmit] = useState(null);
   const [downloadIssuedDraft, setDownloadIssuedDraft] = useState(false);
   const docRef = useRef(null);
   const saveLockRef = useRef(false);
@@ -208,8 +209,12 @@ export default function InvoiceEditor() {
     return true;
   };
 
-  const save = async (status, saveNewEntries = null, downloadAfterSave = false) => {
+  const save = async (status, saveNewEntries = null, downloadAfterSave = false, deductStock = null) => {
     if (!validate(status) || busy || saveLockRef.current) return;
+    if (status !== "draft" && deductStock === null) {
+      setPendingStockSubmit({ action: "save", status, downloadAfterSave });
+      return;
+    }
     if (!id && saveNewEntries === null) {
       const knownCustomer = customers.some((customer) => customer.active && customer.name.trim().toLowerCase() === inv.customer_name.trim().toLowerCase());
       const newProducts = [...new Map(invoiceItems
@@ -218,7 +223,7 @@ export default function InvoiceEditor() {
           price.category === priceCat(inv.zone, item.category, unifiedPriceList) && price.size === item.size))
         .map((item) => [`${priceCat(inv.zone, item.category, unifiedPriceList)}|${item.size}`, item])).values()];
       if (!knownCustomer || newProducts.length) {
-        setPendingSave({ status, newCustomer: !knownCustomer, newProducts, downloadAfterSave });
+        setPendingSave({ status, newCustomer: !knownCustomer, newProducts, downloadAfterSave, deductStock });
         return;
       }
     }
@@ -254,7 +259,7 @@ export default function InvoiceEditor() {
         }));
         if (savedPrices.length) setPrices((current) => [...current, ...savedPrices]);
       }
-      const payload = { ...buildPayload(status), customer_id: customerId, customer_name: inv.customer_name.trim() };
+      const payload = { ...buildPayload(status), customer_id: customerId, customer_name: inv.customer_name.trim(), deduct_stock: !!deductStock };
       const res = id ? await api.put(`/invoices/${id}`, payload) : await api.post("/invoices", payload);
       const submitted = !id && status !== "draft";
       toast.success(submitted ? "INVOICE SUBMITTED" : status === "draft" ? "Saved as draft" : "Invoice saved");
@@ -268,23 +273,57 @@ export default function InvoiceEditor() {
     if (!validate(inv.status === "draft" ? "draft" : "issued") || busy || saveLockRef.current) return;
     const reason = window.prompt("Reason for this change (optional):", "");
     if (reason === null) return;
+    if (inv.status !== "draft") {
+      setPendingStockSubmit({ action: "edit", reason });
+      return;
+    }
+    await submitEdit(false, reason);
+  };
+
+  const submitEdit = async (deductStock, reason) => {
+    if (busy || saveLockRef.current) return;
     saveLockRef.current = true;
     setBusy(true);
     try {
-      const res = await api.put(`/invoices/${id}`, { ...buildPayload(inv.status === "draft" ? "draft" : "issued"), edit_reason: reason });
+      const res = await api.put(`/invoices/${id}`, {
+        ...buildPayload(inv.status === "draft" ? "draft" : "issued"),
+        edit_reason: reason,
+        deduct_stock: deductStock,
+      });
       setInv(res); setPayRecords(res.payment_records || []); setEditing(false);
       toast.success("Invoice updated");
     } catch (e) { toast.error(apiError(e)); } finally { saveLockRef.current = false; setBusy(false); }
   };
 
-  const issueExisting = async () => {
+  const issueExisting = () => setPendingStockSubmit({ action: "issue" });
+
+  const chooseStockDeduction = async (deductStock) => {
+    const pending = pendingStockSubmit;
+    if (!pending) return;
+    setPendingStockSubmit(null);
+    if (pending.action === "save") {
+      save(pending.status, null, pending.downloadAfterSave, deductStock);
+      return;
+    }
+    if (pending.action === "edit") {
+      submitEdit(deductStock, pending.reason);
+      return;
+    }
+    if (busy) return;
+    setBusy(true);
     try {
-      const res = await api.post(`/invoices/${id}/issue`);
+      const res = await api.post(`/invoices/${id}/issue`, { deduct_stock: deductStock });
       setInv(res);
-      toast.success("Invoice issued");
-      nav("/invoices");
+      if (pending.action === "download") {
+        setDownloadIssuedDraft(true);
+        toast.success("Invoice issued");
+      } else {
+        toast.success("Invoice issued");
+        nav("/invoices");
+      }
     }
     catch (e) { toast.error(apiError(e)); }
+    finally { setBusy(false); }
   };
 
   const voidInvoice = async () => {
@@ -353,7 +392,7 @@ export default function InvoiceEditor() {
     }
     L.push(`Subtotal: ${fmtMoney(totals.subtotal)}`);
     if (Number(inv.discount)) L.push(`Discount: ${fmtMoney(inv.discount)}`);
-    if (Number(inv.extra_charges)) L.push(`Extra Charges: ${fmtMoney(inv.extra_charges)}`);
+    if (Number(inv.extra_charges)) L.push(`Added: ${fmtMoney(inv.extra_charges)}`);
     if (inv.tax_enabled) L.push(`Tax (${inv.tax_rate}%): ${fmtMoney(totals.tax)}`);
     L.push(`Total: ${fmtMoney(totals.total)}`);
     L.push(`Amount Paid: ${fmtMoney(inv.amount_paid)}`);
@@ -404,14 +443,7 @@ export default function InvoiceEditor() {
     }
     if (inv.status === "draft") {
       if (busy) return;
-      setBusy(true);
-      try {
-        const issuedInvoice = await api.post(`/invoices/${id}/issue`);
-        setInv(issuedInvoice);
-        setDownloadIssuedDraft(true);
-        toast.success("Invoice issued");
-      } catch (e) { toast.error(apiError(e)); }
-      finally { setBusy(false); }
+      setPendingStockSubmit({ action: "download" });
       return;
     }
     return runPdfDownload(
@@ -646,7 +678,7 @@ export default function InvoiceEditor() {
                 <div className="flex justify-between"><span className="text-slate-500">Subtotal</span><span className="font-mono font-semibold">{fmtMoney(totals.subtotal)}</span></div>
                 <div className="flex justify-between items-center"><span className="text-slate-500">Discount</span>
                   <input type="number" step="0.01" value={inv.discount} onChange={(e) => setInv({ ...inv, discount: e.target.value })} data-testid="discount-input" className="w-24 rounded border border-input px-2 py-1 text-sm font-mono text-right" /></div>
-                <div className="flex justify-between items-center"><span className="text-slate-500">Extra Charges</span>
+                <div className="flex justify-between items-center"><span className="text-slate-500">Added</span>
                   <input type="number" step="0.01" value={inv.extra_charges} onChange={(e) => setInv({ ...inv, extra_charges: e.target.value })} className="w-24 rounded border border-input px-2 py-1 text-sm font-mono text-right" /></div>
                 <label className="flex items-center justify-between"><span className="text-slate-500">Apply Tax {inv.tax_enabled ? `(${inv.tax_rate}%)` : ""}</span>
                   <input type="checkbox" checked={inv.tax_enabled} onChange={(e) => setInv({ ...inv, tax_enabled: e.target.checked })} /></label>
@@ -710,8 +742,37 @@ export default function InvoiceEditor() {
           </ul>}
           <p className="text-xs text-slate-500">If you choose not to save, the customer name and product details will still appear on this invoice only.</p>
           <div className="flex flex-wrap justify-end gap-2">
-            <Btn variant="outline" disabled={busy} onClick={() => { const { status, downloadAfterSave } = pendingSave; setPendingSave(null); save(status, false, downloadAfterSave); }} data-testid="invoice-dont-save-new-entry">Don't save it</Btn>
-            <Btn disabled={busy} onClick={() => save(pendingSave.status, true, pendingSave.downloadAfterSave)} data-testid="invoice-save-new-entry">Save it</Btn>
+            <Btn variant="outline" disabled={busy} onClick={() => { const { status, downloadAfterSave, deductStock } = pendingSave; setPendingSave(null); save(status, false, downloadAfterSave, deductStock); }} data-testid="invoice-dont-save-new-entry">Don't save it</Btn>
+            <Btn disabled={busy} onClick={() => save(pendingSave.status, true, pendingSave.downloadAfterSave, pendingSave.deductStock)} data-testid="invoice-save-new-entry">Save it</Btn>
+          </div>
+        </div>}
+      </Modal>
+      <Modal open={!!pendingStockSubmit} onClose={() => setPendingStockSubmit(null)}
+        title={pendingStockSubmit?.action === "edit" ? "Update stock for edited invoice?" : "Deduct invoice items from stock?"}>
+        {pendingStockSubmit && <div className="space-y-4">
+          <p className="text-sm text-slate-600">
+            {pendingStockSubmit.action === "edit"
+              ? "Do you want to update stock to match the edited invoice? Added or removed quantities will be reconciled."
+              : "Do you want to subtract the quantities on this invoice from finished stock?"}
+          </p>
+          <div className="max-h-48 overflow-y-auto rounded-lg border border-border divide-y divide-border">
+            {invoiceItems.map((item, index) => (
+              <div key={`${item.category}-${item.size}-${index}`} className="flex justify-between gap-3 px-3 py-2 text-sm">
+                <span className="text-slate-700">{[item.category, item.size || item.description].filter(Boolean).join(" · ") || "Invoice item"}</span>
+                <span className="shrink-0 font-mono font-semibold">× {item.qty}</span>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-slate-500">
+            {pendingStockSubmit.action === "edit"
+              ? "Choosing no saves the invoice but leaves stock unchanged. If additional stock is insufficient, the edit will not be saved."
+              : "Choosing no will submit the invoice without changing stock. If stock is insufficient, the invoice will not be issued."}
+          </p>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Btn variant="outline" disabled={busy} onClick={() => chooseStockDeduction(false)} data-testid="invoice-submit-without-stock">No, keep stock unchanged</Btn>
+            <Btn disabled={busy} onClick={() => chooseStockDeduction(true)} data-testid="invoice-submit-deduct-stock">
+              {pendingStockSubmit.action === "edit" ? "Yes, update stock" : "Yes, deduct from stock"}
+            </Btn>
           </div>
         </div>}
       </Modal>

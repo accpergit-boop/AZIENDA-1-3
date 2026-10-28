@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { fmtDateTime } from "@/lib/format";
 import { Card, Btn, Input, Select, Badge, Modal, PageHeader, Empty } from "@/components/common";
-import { Boxes, Plus, ArrowUpDown, History, Undo2 } from "lucide-react";
+import { Boxes, Plus, ArrowUpDown, History, Undo2, Trash2 } from "lucide-react";
 
 const MOVE_TYPES = [
   { v: "adjustment_in", l: "Manual Adjustment In (+)" },
@@ -11,7 +11,7 @@ const MOVE_TYPES = [
   { v: "adjustment_out", l: "Manual Adjustment Out (-)" },
   { v: "damage", l: "Damage / Waste (-)" },
 ];
-const TYPE_LABEL = { production: "Production Received", production_consumption: "Production Material Used", purchase: "Purchase Received", dispatch: "Delivery Dispatched", adjustment_in: "Adjustment In", adjustment_out: "Adjustment Out", return: "Return", damage: "Damage/Waste", reversal: "Reversal" };
+const TYPE_LABEL = { production: "Production Received", production_consumption: "Production Material Used", purchase: "Purchase Received", dispatch: "Delivery Dispatched", invoice: "Invoice Submitted", adjustment_in: "Adjustment In", adjustment_out: "Adjustment Out", return: "Return", damage: "Damage/Waste", reversal: "Reversal" };
 const sign = (m) => (m.direction ? m.direction : ["production", "purchase", "adjustment_in", "return"].includes(m.type) ? 1 : -1);
 const CATEGORIES = ["Simple", "Ribbon Balck", "Ribbon Pink", "Candy", "Uncovered", "Strong Boy"];
 const STOCK_CATEGORY = {
@@ -48,9 +48,24 @@ export default function Stock() {
     if (await run(() => api.post("/stock", addModal), "Stock item added")) setAddModal(null);
   };
 
+  const deleteStock = async (stock) => {
+    if (!window.confirm(`Permanently delete ${stock.product} ${stock.size} and all its stock movements? This cannot be undone.`)) return;
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.del(`/stock/${stock.id}`);
+      setList((current) => current.filter((item) => item.id !== stock.id));
+      setMovements((current) => current.filter((movement) => movement.stock_id !== stock.id));
+      toast.success("Stock product and its movements permanently deleted");
+    } catch (error) {
+      toast.error(apiError(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const saveMove = async () => {
     if (!(Number(moveModal.quantity) > 0)) return toast.error("Quantity must be positive");
-    if (!moveModal.reason.trim()) return toast.error("A reason is required");
     if (await run(() => api.post(`/stock/${moveModal.stock_id}/movements`, moveModal), "Movement recorded")) setMoveModal(null);
   };
 
@@ -78,23 +93,21 @@ export default function Stock() {
       <Card className="overflow-hidden">
         {list === null ? <p className="p-6 text-sm text-slate-400">Loading stock...</p> : filteredList.length === 0 ? <Empty icon={Boxes} title={category ? "No stock items in this category" : "No stock records"} /> : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[800px]">
+            <table className="w-full text-sm min-w-[640px]">
               <thead><tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-border">
-                <th className="px-4 py-3 font-semibold">Product</th><th className="px-4 font-semibold">Size</th><th className="px-4 font-semibold text-right">Opening</th><th className="px-4 font-semibold text-right">Production</th><th className="px-4 font-semibold text-right">Purchased</th><th className="px-4 font-semibold text-right">Used</th><th className="px-4 font-semibold text-right">Dispatched</th><th className="px-4 font-semibold text-right">Other</th><th className="px-4 font-semibold text-right">Current</th><th className="px-4 font-semibold text-right">Min</th><th className="px-4 font-semibold text-right">Action</th>
+                <th className="px-4 py-3 font-semibold">Size</th><th className="px-4 font-semibold">Product</th><th className="px-4 font-semibold text-right">Other</th><th className="px-4 font-semibold text-right">Invoiced</th><th className="px-4 font-semibold text-right">Current</th><th className="px-4 font-semibold text-right">Actions</th>
               </tr></thead>
               <tbody>{filteredList.map((s) => (
                 <tr key={s.id} className="border-b border-border/60 hover:bg-slate-50" data-testid={`stock-row-${s.id}`}>
-                  <td className="px-4 py-3 font-semibold text-slate-800">{s.product}</td>
-                  <td className="px-4 text-slate-500 font-mono">{s.size}</td>
-                  <td className="px-4 text-right font-mono text-slate-500">{s.opening}</td>
-                  <td className="px-4 text-right font-mono text-emerald-600">+{s.production_received || 0}</td>
-                  <td className="px-4 text-right font-mono text-emerald-600">+{s.purchased || 0}</td>
-                  <td className="px-4 text-right font-mono text-red-500">{s.production_used ? `-${s.production_used}` : 0}</td>
-                  <td className="px-4 text-right font-mono text-red-500">{s.dispatched ? `-${s.dispatched}` : 0}</td>
+                  <td className="px-4 py-3 text-slate-500 font-mono">{s.size}</td>
+                  <td className="px-4 font-semibold text-slate-800">{s.product}</td>
                   <td className="px-4 text-right font-mono text-slate-500">{s.adjustments || 0}</td>
+                  <td className="px-4 text-right font-mono text-red-500">{s.invoiced ? `-${s.invoiced}` : 0}</td>
                   <td className="px-4 text-right"><span className={`font-mono font-bold ${s.current < s.threshold ? "text-red-600" : "text-slate-800"}`} data-testid={`stock-current-${s.id}`}>{s.current}</span>{s.current < s.threshold && <Badge cls="bg-red-50 text-red-700 border-red-200 ml-2">Low</Badge>}</td>
-                  <td className="px-4 text-right font-mono text-slate-400">{s.threshold}</td>
-                  <td className="px-4 text-right"><button onClick={() => setMoveModal({ stock_id: s.id, label: `${s.product} ${s.size}`, current: s.current, type: "adjustment_in", quantity: 1, reason: "", reference: "", notes: "" })} className="text-primary hover:underline text-xs font-semibold flex items-center gap-1 ml-auto" data-testid={`move-stock-${s.id}`}><ArrowUpDown size={13} /> Adjust</button></td>
+                  <td className="px-4 text-right whitespace-nowrap">
+                    <button onClick={() => setMoveModal({ stock_id: s.id, label: `${s.product} ${s.size}`, current: s.current, type: "adjustment_in", quantity: 1, reason: "", reference: "", notes: "" })} className="text-primary hover:underline text-xs font-semibold inline-flex items-center gap-1" data-testid={`move-stock-${s.id}`}><ArrowUpDown size={13} /> Adjust</button>
+                    <button type="button" onClick={() => deleteStock(s)} disabled={busy} title="Permanently delete stock and movements" aria-label={`Permanently delete ${s.product} ${s.size}`} className="ml-2 rounded p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-50" data-testid={`delete-stock-${s.id}`}><Trash2 size={15} /></button>
+                  </td>
                 </tr>))}</tbody>
             </table>
           </div>
@@ -121,7 +134,7 @@ export default function Stock() {
             {MOVE_TYPES.map((m) => <option key={m.v} value={m.v}>{m.l}</option>)}
           </Select>
           <Input label="Quantity" type="number" value={moveModal.quantity} onChange={(e) => setMoveModal({ ...moveModal, quantity: Number(e.target.value) })} data-testid="move-qty-input" />
-          <Input label="Reason *" value={moveModal.reason} onChange={(e) => setMoveModal({ ...moveModal, reason: e.target.value })} data-testid="move-reason-input" />
+          <Input label="Reason (optional)" value={moveModal.reason} onChange={(e) => setMoveModal({ ...moveModal, reason: e.target.value })} data-testid="move-reason-input" />
           <Input label="Reference (optional)" value={moveModal.reference} onChange={(e) => setMoveModal({ ...moveModal, reference: e.target.value })} />
           <div className="flex justify-end gap-2"><Btn variant="outline" onClick={() => setMoveModal(null)}>Cancel</Btn><Btn disabled={busy} onClick={saveMove} data-testid="save-move-btn">Record</Btn></div>
         </div>}

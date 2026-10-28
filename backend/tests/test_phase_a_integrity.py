@@ -116,6 +116,58 @@ class TestInvoiceCalc:
         assert g["total"] == 701.50 and g["status"] == "issued"
 
 
+class TestInvoiceStock:
+    def test_submit_can_deduct_matching_stock(self, s, customer):
+        stock = new_stock(s, opening=10)
+        line = {"qty": 4, "category": stock["product"], "size": stock["size"],
+                "unit_price": 100, "price_override": True}
+        deducted = issued_invoice(s, customer, items=[line], deduct_stock=True)
+        assert stock_current(s, stock["id"]) == 6
+        movement = s.get(f"{API}/stock/movements").json()
+        assert any(m.get("invoice_id") == deducted["id"] and m["type"] == "invoice" for m in movement)
+
+        unchanged = issued_invoice(s, customer, items=[line], deduct_stock=False)
+        assert stock_current(s, stock["id"]) == 6
+        draft = s.post(f"{API}/invoices", json={"customer_id": customer["id"], "zone": 1,
+                      "status": "draft", "items": [{**line, "qty": 2}]})
+        assert draft.status_code == 200, draft.text
+        issued_draft = s.post(f"{API}/invoices/{draft.json()['id']}/issue", json={"deduct_stock": True})
+        assert issued_draft.status_code == 200, issued_draft.text
+        assert stock_current(s, stock["id"]) == 4
+        s.delete(f"{API}/invoices/{deducted['id']}")
+        s.delete(f"{API}/invoices/{unchanged['id']}")
+        s.delete(f"{API}/invoices/{draft.json()['id']}")
+
+    def test_edit_reconciles_stock_and_archive_can_return_it(self, s, customer):
+        stock = new_stock(s, opening=10)
+        line = {"qty": 4, "category": stock["product"], "size": stock["size"],
+                "unit_price": 100, "price_override": True}
+        invoice = issued_invoice(s, customer, items=[line], deduct_stock=True)
+        assert stock_current(s, stock["id"]) == 6
+
+        edited_line = {**line, "qty": 3}
+        edited = s.put(f"{API}/invoices/{invoice['id']}", json={
+            "customer_id": customer["id"], "zone": 1, "status": "issued",
+            "items": [edited_line], "deduct_stock": True,
+        })
+        assert edited.status_code == 200, edited.text
+        assert stock_current(s, stock["id"]) == 7
+
+        archived = s.delete(f"{API}/invoices/{invoice['id']}", params={"restore_stock": "true"})
+        assert archived.status_code == 200, archived.text
+        assert archived.json()["stock_restored"] is True
+        assert stock_current(s, stock["id"]) == 10
+
+    def test_submit_rejects_insufficient_stock_deduction(self, s, customer):
+        stock = new_stock(s, opening=2)
+        line = {"qty": 3, "category": stock["product"], "size": stock["size"],
+                "unit_price": 100, "price_override": True}
+        r = s.post(f"{API}/invoices", json={"customer_id": customer["id"], "zone": 1,
+                      "status": "issued", "deduct_stock": True, "items": [line]})
+        assert r.status_code == 400 and "Insufficient stock" in r.text
+        assert stock_current(s, stock["id"]) == 2
+
+
 # --- Price lookup (tests 4,5)
 class TestPriceLookup:
     @pytest.mark.parametrize("zone,cat,size,price", [
@@ -251,22 +303,24 @@ class TestStockLedger:
     def test_movements(self, s):
         st = new_stock(s, 10)
         sid = st["id"]
-        assert s.post(f"{API}/stock/{sid}/movements", json={"type": "adjustment_in", "quantity": 5}).status_code == 400  # reason
+        m = s.post(f"{API}/stock/{sid}/movements", json={"type": "adjustment_in", "quantity": 5})
+        assert m.status_code == 200
+        assert stock_current(s, sid) == 15
         for t in ("production", "dispatch", "foo"):
             assert s.post(f"{API}/stock/{sid}/movements", json={"type": t, "quantity": 1, "reason": "x"}).status_code == 400
         m = s.post(f"{API}/stock/{sid}/movements", json={"type": "adjustment_in", "quantity": 5, "reason": "TEST count"})
         assert m.status_code == 200
-        assert stock_current(s, sid) == 15
+        assert stock_current(s, sid) == 20
         assert s.post(f"{API}/stock/{sid}/movements", json={"type": "damage", "quantity": 16, "reason": "x"}).status_code == 400
-        assert stock_current(s, sid) == 15
+        assert stock_current(s, sid) == 20
         assert s.post(f"{API}/stock/{sid}/movements", json={"type": "damage", "quantity": 2, "reason": "TEST"}).status_code == 200
         assert s.post(f"{API}/stock/{sid}/movements", json={"type": "return", "quantity": 1, "reason": "TEST"}).status_code == 200
         assert s.post(f"{API}/stock/{sid}/movements", json={"type": "adjustment_out", "quantity": 1, "reason": "TEST"}).status_code == 200
-        assert stock_current(s, sid) == 13
+        assert stock_current(s, sid) == 18
         mid = m.json()["id"]
         rv = s.post(f"{API}/stock/movements/{mid}/reverse", json={"reason": "TEST wrong"})
         assert rv.status_code == 200
-        assert stock_current(s, sid) == 8
+        assert stock_current(s, sid) == 13
         assert s.post(f"{API}/stock/movements/{mid}/reverse", json={"reason": "again"}).status_code == 400
         assert stock_current(s, sid) == 8
         # opening locked

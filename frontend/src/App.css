@@ -24,6 +24,54 @@
     color: #61dafb;
 }
 
+.owner-welcome-card {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    transform: translate3d(0, 0, 0);
+    backface-visibility: hidden;
+    transition:
+        transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+        background-color 220ms cubic-bezier(0.22, 1, 0.36, 1),
+        border-color 220ms cubic-bezier(0.22, 1, 0.36, 1),
+        box-shadow 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.owner-welcome-card::before {
+    position: absolute;
+    z-index: -1;
+    inset: 0;
+    background: linear-gradient(115deg, transparent 18%, rgba(209, 250, 229, 0.1) 48%, transparent 78%);
+    content: "";
+    opacity: 0;
+    transform: translateX(-65%);
+    transition: opacity 220ms ease-out, transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
+    pointer-events: none;
+}
+
+.owner-welcome-card:hover {
+    transform: translate3d(0, -2px, 0) scale(1.008);
+    border-color: rgba(209, 250, 229, 0.42);
+    background-color: rgba(255, 255, 255, 0.09);
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.2), 0 0 28px rgba(167, 243, 208, 0.08);
+}
+
+.owner-welcome-card:hover::before {
+    opacity: 1;
+    transform: translateX(65%);
+}
+
+.owner-welcome-card:active {
+    transform: translate3d(0, -1px, 0) scale(0.99);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .owner-welcome-card,
+    .owner-welcome-card::before {
+        transition: none;
+    }
+}
+
 @keyframes App-logo-spin {
     from {
         transform: rotate(0deg);
@@ -35,56 +83,58 @@
 
 .daily-report-paper {
     overflow: hidden;
-    border: 1px solid #cbd0d3;
+    border: 1px solid #e0e5e8;
+    border-radius: 9px;
     background: #fff;
     padding: 16px;
     box-shadow: 0 8px 24px rgba(15, 23, 42, 0.07);
 }
 
 .daily-report-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
     margin: 0 auto 14px;
     max-width: 1000px;
-    border-bottom: 1px solid #9ca3a8;
-    padding: 0 4px 9px;
-    text-align: center;
+    padding: 0 4px;
 }
 
 .daily-report-company {
-    color: #a64f2b;
-    font-size: 21px;
+    color: #152b3b;
+    font-size: 20px;
     font-weight: 800;
     line-height: 1.1;
 }
 
-.daily-report-tagline {
-    margin-top: 3px;
-    color: #34404a;
-    font-size: 12px;
-    font-weight: 600;
-}
-
 .daily-report-title {
-    margin-top: 3px;
-    color: #111827;
-    font-size: 18px;
-    font-weight: 800;
+    color: #518ba3;
+    font-size: 24px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-align: right;
 }
 
 .daily-report-meta {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 8px;
-    margin-top: 12px;
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: hidden;
+    border: 1px solid #e0e5e8;
+    border-radius: 7px;
+    background: #fff;
     text-align: left;
     font-size: 11px;
 }
 
-.daily-report-meta span:nth-child(2) {
-    text-align: center;
+.daily-report-meta span {
+    min-width: 0;
+    padding: 8px 10px;
+    overflow-wrap: anywhere;
 }
 
-.daily-report-meta span:nth-child(3) {
-    text-align: right;
+.daily-report-meta span + span {
+    border-left: 1px solid #e0e5e8;
 }
 
 .daily-report-grid {
@@ -96,18 +146,39 @@
 .daily-report-section {
     min-width: 0;
     overflow: hidden;
-    border: 2px solid #111820;
+    border: 1px solid #e0e5e8;
+    border-radius: 8px;
     background: #fff;
+}
+
+.daily-report-section:nth-child(1) {
+    --report-accent: #4389a5;
+    --report-tint: #dcecf4;
+}
+
+.daily-report-section:nth-child(2) {
+    --report-accent: #4d956b;
+    --report-tint: #dff1e5;
+}
+
+.daily-report-section:nth-child(3) {
+    --report-accent: #b18454;
+    --report-tint: #f7e9d8;
+}
+
+.daily-report-section:nth-child(4) {
+    --report-accent: #70649b;
+    --report-tint: #e7e3f2;
 }
 
 .daily-report-section-title {
     display: flex;
-    min-height: 31px;
+    min-height: 34px;
     align-items: center;
     gap: 9px;
-    background: #132b41;
-    padding: 4px 7px;
-    color: #fff;
+    background: var(--report-tint);
+    padding: 5px 9px;
+    color: #18212a;
     font-size: 11px;
     font-weight: 800;
     letter-spacing: 0.025em;
@@ -120,7 +191,9 @@
     flex: 0 0 auto;
     align-items: center;
     justify-content: center;
-    background: #b5532b;
+    border-radius: 999px;
+    background: var(--report-accent);
+    color: #fff;
     font-size: 10px;
 }
 
@@ -137,15 +210,15 @@
 .daily-report-table td {
     height: 25px;
     overflow-wrap: anywhere;
-    border: 1px solid #616a70;
+    border: 1px solid #e3e7e9;
     padding: 3px 5px;
     vertical-align: middle;
 }
 
 .daily-report-table th {
     height: 26px;
-    background: #1b374e;
-    color: #fff;
+    background: #fff;
+    color: #26323a;
     font-size: 9px;
     font-weight: 800;
     letter-spacing: 0.015em;
@@ -157,12 +230,12 @@
 }
 
 .daily-report-table .daily-report-total {
-    background: #e9ecee;
+    background: var(--report-tint);
     font-weight: 800;
 }
 
 .daily-report-table .daily-report-main-invoice {
-    background: #f4f5f6;
+    background: #fafbfc;
     font-size: 9px;
     font-weight: 700;
 }
@@ -190,13 +263,17 @@
         grid-template-columns: 1fr 1fr;
     }
 
+    .daily-report-meta span + span {
+        border-left: 0;
+    }
+
     .daily-report-meta span:nth-child(2) {
-        text-align: right;
+        border-left: 1px solid #e0e5e8;
     }
 
     .daily-report-meta span:nth-child(3) {
         grid-column: 1 / -1;
-        text-align: left;
+        border-top: 1px solid #e0e5e8;
     }
 }
 

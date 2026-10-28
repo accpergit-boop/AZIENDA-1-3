@@ -84,7 +84,9 @@ def test_vehicle_create_edit(client):
     v = r.json()
     u = client.put(f"{BASE_URL}/api/vehicles/{v['id']}", json={"name": "TEST_Van2", "vtype": "Truck", "length": "6 m"})
     assert u.json()["name"] == "TEST_Van2" and u.json()["length"] == "6 m"
-    # no delete endpoint for vehicles -> cleanup via mongo later
+    deleted = client.delete(f"{BASE_URL}/api/vehicles/{v['id']}")
+    assert deleted.status_code == 200 and deleted.json()["archived"] is True
+    assert v["id"] not in {vehicle["id"] for vehicle in client.get(f"{BASE_URL}/api/vehicles").json()}
 
 
 def test_vehicle_records_and_profit(client):

@@ -20,6 +20,9 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 import seed_data
+from costs_math import calculate_production_cost
+from piecework_math import calculate_piecework
+from salary_math import calculate_salary_hours
 from tenancy import DEFAULT_COMPANY_ID, GLOBAL_COLLECTIONS, ScopedDatabase, active_company_id, tenant_database, uses_unified_price_list
 
 mongo_url = os.environ['MONGO_URL']
@@ -947,11 +950,13 @@ async def delete_price(pid: str, user=Depends(get_current_user)):
     before = await db.prices.find_one({"id": pid}, {"_id": 0})
     if not before:
         raise HTTPException(404, "Product price not found")
-    updated = await update_doc("prices", pid, {
-        "active": False, "archived_at": now_iso(), "archived_by": user.get("id"),
-    })
-    await log_audit("price", pid, "archived", user, before=before, after=updated)
-    return {"ok": True, "archived": True}
+    await db.audit_log.delete_many({"entity": "price", "entity_id": pid})
+    result = await db.prices.delete_one({"id": pid})
+    if not result.deleted_count:
+        raise HTTPException(404, "Product price not found")
+    await log_audit("price", pid, "permanently_deleted", user,
+                    before=before, after={"permanently_deleted": True})
+    return {"ok": True, "deleted": True}
 
 RIBBON_FAMILY = {"Ribbon", "Ribbon Black & Pink", "Ribbon Black", "Ribbon Pink", "Candy"}
 MANUAL_ONLY_SIZES = {"1370x150"}
@@ -1069,6 +1074,10 @@ class InvoiceIn(BaseModel):
     status: str = "draft"
     edit_reason: Optional[str] = ""
     opening_balance: Optional[bool] = None
+    deduct_stock: bool = False
+
+class InvoiceIssueIn(BaseModel):
+    deduct_stock: bool = False
 
 INV_DIFF_FIELDS = ("customer_name", "date", "due_date", "zone", "payment_terms", "reference", "destination", "notes", "discount", "extra_charges", "tax_enabled", "total")
 
@@ -1144,12 +1153,41 @@ async def get_invoice(iid: str, user=Depends(get_current_user)):
     inv["payment_records"] = await listall("payments", {"invoice_id": iid}, ("created_at", -1))
     return inv
 
-async def _archive_invoice(iid, user, reason=""):
+async def restore_invoice_stock(inv, user):
+    movements = await listall("stock_movements", {"invoice_id": inv["id"], "type": "invoice"})
+    quantities = {}
+    for movement in movements:
+        stock_id = movement["stock_id"]
+        quantities[stock_id] = quantities.get(stock_id, Decimal("0")) - D(movement["quantity"]) * mov_sign(movement)
+    quantities = {stock_id: quantity for stock_id, quantity in quantities.items() if quantity > 0}
+    if not quantities:
+        return False
+    async with StockLock(quantities):
+        for stock_id, quantity in quantities.items():
+            stock = await db.stock.find_one({"id": stock_id}, {"_id": 0})
+            if not stock:
+                raise HTTPException(409, f"Cannot restore invoice stock: stock item {stock_id} no longer exists")
+            movement = await post_movement(
+                stock, "invoice", quantity, user,
+                reason=f"Stock returned from archived invoice {inv.get('number') or inv['id']}",
+                reference=inv.get("number") or inv["id"],
+                direction=1,
+                dedupe_key=f"invoice-archive:{inv['id']}:{inv.get('updated_at') or inv.get('created_at')}:{stock_id}",
+                extra={"invoice_id": inv["id"], "invoice_number": inv.get("number", ""),
+                       "invoice_stock_return": True},
+            )
+            await log_audit("stock_movement", movement["id"], "posted", user, after=movement)
+    await update_doc("invoices", inv["id"], {"stock_deducted": False, "stock_restored": True})
+    return True
+
+async def _archive_invoice(iid, user, reason="", restore_stock=False):
     inv = await db.invoices.find_one({"id": iid}, {"_id": 0})
     if not inv:
         return False
     if inv.get("archived"):
         return True
+    if restore_stock and inv.get("stock_deducted"):
+        await restore_invoice_stock(inv, user)
     await update_doc("invoices", iid, {
         "archived": True,
         "archived_at": now_iso(),
@@ -1163,10 +1201,10 @@ async def _archive_invoice(iid, user, reason=""):
     return True
 
 @api.delete("/invoices/{iid}")
-async def delete_invoice(iid: str, user=Depends(get_current_user)):
-    if not await _archive_invoice(iid, user):
+async def delete_invoice(iid: str, restore_stock: bool = False, user=Depends(get_current_user)):
+    if not await _archive_invoice(iid, user, restore_stock=restore_stock):
         raise HTTPException(404, "Invoice not found")
-    return {"ok": True, "archived": True}
+    return {"ok": True, "archived": True, "stock_restored": restore_stock}
 
 @api.delete("/invoices/{iid}/permanent")
 async def permanently_delete_invoice(iid: str, user=Depends(get_current_user)):
@@ -1204,13 +1242,14 @@ async def restore_invoice(iid: str, user=Depends(get_current_user)):
 class BulkDeleteIn(BaseModel):
     ids: List[str]
     reason: Optional[str] = ""
+    restore_stock: bool = False
 
 @api.post("/invoices/bulk-delete")
 async def bulk_delete_invoices(body: BulkDeleteIn, user=Depends(get_current_user)):
     n = 0
     for iid in body.ids:
-        n += await _archive_invoice(iid, user, body.reason or "")
-    return {"archived": n}
+        n += await _archive_invoice(iid, user, body.reason or "", body.restore_stock)
+    return {"archived": n, "stock_restored": body.restore_stock}
 
 async def _prepare_invoice(body: InvoiceIn):
     customer_id = (body.customer_id or "").strip()
@@ -1220,6 +1259,7 @@ async def _prepare_invoice(body: InvoiceIn):
     if not cust and not body.customer_name.strip():
         raise HTTPException(400, "Customer name is required")
     inv = body.model_dump()
+    inv.pop("deduct_stock", None)
     inv["customer_id"] = customer_id
     if inv.get("opening_balance") is None or inv.get("opening_balance") is False:
         inv.pop("opening_balance", None)
@@ -1238,6 +1278,7 @@ async def _prepare_invoice(body: InvoiceIn):
 
 @api.post("/invoices")
 async def create_invoice(body: InvoiceIn, user=Depends(get_current_user)):
+    deduct_stock = body.deduct_stock
     inv = await _prepare_invoice(body)
     if inv["status"] != "draft":
         inv["status"] = "issued"
@@ -1247,9 +1288,19 @@ async def create_invoice(body: InvoiceIn, user=Depends(get_current_user)):
         inv["issued_at"] = now_iso()
         inv["audit"] = [{"action": "issued", "at": now_iso(), "by": user["email"]}]
     else:
+        if deduct_stock:
+            raise HTTPException(400, "Stock can only be deducted when an invoice is issued")
         inv["number"] = None
         inv["audit"] = [{"action": "draft_created", "at": now_iso(), "by": user["email"]}]
-    return await insert("invoices", inv)
+    if not deduct_stock:
+        return await insert("invoices", inv)
+    deductions = await invoice_stock_deductions(inv)
+    async with StockLock([item["stock_id"] for item in deductions]):
+        await validate_invoice_stock(deductions)
+        rec = await insert("invoices", inv)
+        await post_invoice_stock_deductions(rec, deductions, user)
+        rec = await update_doc("invoices", rec["id"], {"stock_deducted": True})
+    return rec
 
 @api.put("/invoices/{iid}")
 async def update_invoice(iid: str, body: InvoiceIn, user=Depends(get_current_user)):
@@ -1286,7 +1337,17 @@ async def update_invoice(iid: str, body: InvoiceIn, user=Depends(get_current_use
     else:
         changes = invoice_changes(existing, inv)
         inv["audit"].append({"action": "edited", "at": now_iso(), "by": user["email"], "reason": reason, "changes": changes})
-    rec = await update_doc("invoices", iid, inv)
+    if existing.get("stock_deducted"):
+        inv["stock_deducted"] = True
+    if not body.deduct_stock:
+        rec = await update_doc("invoices", iid, inv)
+    else:
+        stock_changes = await invoice_stock_changes({**inv, "id": iid})
+        async with StockLock(stock_changes):
+            stocks = await validate_invoice_stock_changes(stock_changes)
+            rec = await update_doc("invoices", iid, inv)
+            await post_invoice_stock_changes(rec, stock_changes, stocks, user)
+            rec = await update_doc("invoices", iid, {"stock_deducted": True, "stock_restored": False})
     if existing.get("number"):
         await log_audit("invoice", iid, "issued_invoice_edited", user,
                         before={"items": existing.get("items"), "total": existing.get("total")},
@@ -1296,7 +1357,7 @@ async def update_invoice(iid: str, body: InvoiceIn, user=Depends(get_current_use
     return rec
 
 @api.post("/invoices/{iid}/issue")
-async def issue_invoice(iid: str, user=Depends(get_current_user)):
+async def issue_invoice(iid: str, body: InvoiceIssueIn = InvoiceIssueIn(), user=Depends(get_current_user)):
     inv = await db.invoices.find_one({"id": iid})
     if not inv:
         raise HTTPException(404, "Invoice not found")
@@ -1305,6 +1366,8 @@ async def issue_invoice(iid: str, user=Depends(get_current_user)):
     if inv.get("status") == "void":
         raise HTTPException(400, "Cannot issue a voided invoice")
     await validate_for_issue(inv)
+    if body.deduct_stock and inv.get("stock_deducted"):
+        raise HTTPException(409, "Stock has already been deducted for this invoice")
     upd = {"items": inv["items"]}
     if not inv.get("number"):
         upd["number"] = await next_invoice_number(inv.get("date"))
@@ -1314,7 +1377,14 @@ async def issue_invoice(iid: str, user=Depends(get_current_user)):
     audit = inv.get("audit", [])
     audit.append({"action": "issued", "at": now_iso(), "by": user["email"]})
     upd["audit"] = audit
-    return await update_doc("invoices", iid, upd)
+    if not body.deduct_stock:
+        return await update_doc("invoices", iid, upd)
+    deductions = await invoice_stock_deductions(inv)
+    async with StockLock([item["stock_id"] for item in deductions]):
+        await validate_invoice_stock(deductions)
+        rec = await update_doc("invoices", iid, upd)
+        await post_invoice_stock_deductions(rec, deductions, user)
+        return await update_doc("invoices", iid, {"stock_deducted": True})
 
 class ReasonIn(BaseModel):
     reason: str
@@ -1427,7 +1497,7 @@ class StockIn(BaseModel):
     threshold: float = 5
 
 INC_TYPES = ("production", "purchase", "adjustment_in", "return")
-DEC_TYPES = ("dispatch", "production_consumption", "adjustment_out", "damage")
+DEC_TYPES = ("dispatch", "invoice", "production_consumption", "adjustment_out", "damage")
 OPEN_ORDER_STATUSES = ("To Send", "Preparing", "Assigned", "Partially Delivered")
 
 def mov_sign(m):
@@ -1442,7 +1512,8 @@ async def stock_current(s):
     s["purchased"] = dsum(m["quantity"] for m in movs if m["type"] == "purchase")
     s["production_used"] = dsum(m["quantity"] for m in movs if m["type"] == "production_consumption")
     s["dispatched"] = dsum(m["quantity"] for m in movs if m["type"] == "dispatch")
-    s["adjustments"] = r2(sum((D(m["quantity"]) * mov_sign(m) for m in movs if m["type"] not in ("production", "purchase", "production_consumption", "dispatch")), Decimal("0")))
+    s["invoiced"] = dsum(D(m["quantity"]) * -mov_sign(m) for m in movs if m["type"] == "invoice")
+    s["adjustments"] = r2(sum((D(m["quantity"]) * mov_sign(m) for m in movs if m["type"] not in ("production", "purchase", "production_consumption", "dispatch", "invoice")), Decimal("0")))
     s["last_movement"] = max([m["created_at"] for m in movs], default=None)
     return s
 
@@ -1459,6 +1530,115 @@ async def post_movement(stock, mtype, qty, user, reason="", reference="", notes=
         m["dedupe_key"] = dedupe_key
     return await insert("stock_movements", m)
 
+def invoice_stock_product(item):
+    category = (item.get("category") or "").strip()
+    if category.casefold() in ("standard", "simple/mix color"):
+        return "Simple"
+    return category
+
+async def invoice_stock_deductions(invoice, allow_empty=False):
+    stock_items = await listall("stock")
+    stock_by_product_size = {
+        ((item.get("product") or "").strip().casefold(), (item.get("size") or "").strip().casefold()): item
+        for item in stock_items
+    }
+    quantities = {}
+    for index, item in enumerate(invoice.get("items", []), 1):
+        product = invoice_stock_product(item)
+        size = (item.get("size") or "").strip()
+        if not product or not size:
+            continue
+        stock = stock_by_product_size.get((product.casefold(), size.casefold()))
+        if not stock:
+            raise HTTPException(400, f"Stock item not found for invoice line {index}: {product} {size}")
+        quantity = D(item.get("qty", 0))
+        if quantity <= 0:
+            raise HTTPException(400, f"Invoice line {index} quantity must be greater than 0")
+        entry = quantities.setdefault(stock["id"], {"stock_id": stock["id"], "product": stock["product"],
+                                                     "size": stock["size"], "quantity": Decimal("0")})
+        entry["quantity"] += quantity
+    if not quantities and not allow_empty:
+        raise HTTPException(400, "No invoice products match stock items to deduct")
+    return list(quantities.values())
+
+async def validate_invoice_stock(deductions):
+    for item in deductions:
+        stock = await db.stock.find_one({"id": item["stock_id"]}, {"_id": 0})
+        if not stock:
+            raise HTTPException(409, f"Stock item no longer exists: {item['product']} {item['size']}")
+        await stock_current(stock)
+        if item["quantity"] > D(stock["current"]):
+            raise HTTPException(
+                400,
+                f"Insufficient stock for {item['product']} {item['size']}: "
+                f"available {stock['current']}, requested {r2(item['quantity'])}",
+            )
+        item["stock"] = stock
+
+async def post_invoice_stock_deductions(invoice, deductions, user):
+    for item in deductions:
+        key = f"invoice:{invoice['id']}:{item['stock_id']}"
+        movement = await db.stock_movements.find_one({"dedupe_key": key}, {"_id": 0})
+        if movement:
+            continue
+        movement = await post_movement(
+            item["stock"], "invoice", item["quantity"], user,
+            reason=f"Invoice {invoice['number']}", reference=invoice["number"],
+            dedupe_key=key,
+            extra={"invoice_id": invoice["id"], "invoice_number": invoice["number"]},
+        )
+        await log_audit("stock_movement", movement["id"], "posted", user, after=movement)
+
+async def invoice_stock_changes(invoice):
+    movements = await listall("stock_movements", {"invoice_id": invoice["id"], "type": "invoice"})
+    desired = {
+        item["stock_id"]: item["quantity"]
+        for item in await invoice_stock_deductions(invoice, allow_empty=bool(movements))
+    }
+    previous = {}
+    for movement in movements:
+        stock_id = movement["stock_id"]
+        previous[stock_id] = previous.get(stock_id, Decimal("0")) - D(movement["quantity"]) * mov_sign(movement)
+    changes = {}
+    for stock_id in previous.keys() | desired.keys():
+        delta = desired.get(stock_id, Decimal("0")) - max(previous.get(stock_id, Decimal("0")), Decimal("0"))
+        if delta:
+            changes[stock_id] = delta
+    return changes
+
+async def validate_invoice_stock_changes(changes):
+    stocks = {}
+    for stock_id, delta in changes.items():
+        stock = await db.stock.find_one({"id": stock_id}, {"_id": 0})
+        if not stock:
+            raise HTTPException(409, f"Stock item {stock_id} no longer exists")
+        if delta > 0:
+            await stock_current(stock)
+            if delta > D(stock["current"]):
+                raise HTTPException(
+                    400,
+                    f"Insufficient stock for {stock['product']} {stock['size']}: "
+                    f"available {stock['current']}, additional quantity requested {r2(delta)}",
+                )
+        stocks[stock_id] = stock
+    return stocks
+
+async def post_invoice_stock_changes(invoice, changes, stocks, user):
+    for stock_id, delta in changes.items():
+        if delta == 0:
+            continue
+        stock = stocks[stock_id]
+        movement = await post_movement(
+            stock, "invoice", abs(delta), user,
+            reason=f"Stock reconciled for edited invoice {invoice.get('number') or invoice['id']}",
+            reference=invoice.get("number") or invoice["id"],
+            direction=-1 if delta > 0 else 1,
+            dedupe_key=f"invoice-edit:{invoice['id']}:{new_id()}:{stock_id}",
+            extra={"invoice_id": invoice["id"], "invoice_number": invoice.get("number", ""),
+                   "invoice_edit": True},
+        )
+        await log_audit("stock_movement", movement["id"], "posted", user, after=movement)
+
 @api.get("/stock")
 async def get_stock(user=Depends(get_current_user)):
     items = await listall("stock", sort=("product", 1))
@@ -1469,6 +1649,29 @@ async def get_stock(user=Depends(get_current_user)):
 @api.post("/stock")
 async def add_stock(body: StockIn, user=Depends(get_current_user)):
     return await insert("stock", body.model_dump())
+
+@api.delete("/stock/{sid}")
+async def delete_stock(sid: str, user=Depends(get_current_user)):
+    stock = await db.stock.find_one({"id": sid}, {"_id": 0})
+    if not stock:
+        raise HTTPException(404, "Stock item not found")
+    movements = await listall("stock_movements", {"stock_id": sid})
+    movement_ids = [movement["id"] for movement in movements if movement.get("id")]
+    await db.stock_movements.delete_many({"stock_id": sid})
+    if movement_ids:
+        await db.audit_log.delete_many({
+            "entity": "stock_movement",
+            "entity_id": {"$in": movement_ids},
+        })
+    await db.audit_log.delete_many({"entity": "stock", "entity_id": sid})
+    result = await db.stock.delete_one({"id": sid})
+    if not result.deleted_count:
+        raise HTTPException(404, "Stock item not found")
+    await log_audit("stock", sid, "permanently_deleted", user,
+                    before={"product": stock["product"], "size": stock["size"],
+                            "movement_count": len(movements)},
+                    after={"permanently_deleted": True})
+    return {"ok": True, "deleted": True, "movements_deleted": len(movements)}
 
 @api.put("/stock/{sid}")
 async def edit_stock(sid: str, body: StockIn, user=Depends(get_current_user)):
@@ -1498,11 +1701,9 @@ async def add_movement(sid: str, body: MovementIn, user=Depends(get_current_user
         raise HTTPException(400, "Production receipts come from Production and dispatches from Deliveries")
     if body.quantity <= 0:
         raise HTTPException(400, "Quantity must be positive")
-    if body.reason is None or not body.reason.strip():
-        raise HTTPException(400, "A reason is required for manual stock movements")
     async with StockLock([sid]):
-        m = await post_movement(s, body.type, body.quantity, user, body.reason, body.reference, body.notes)
-    await log_audit("stock_movement", m["id"], "posted", user, after=m, reason=body.reason)
+        m = await post_movement(s, body.type, body.quantity, user, body.reason or "", body.reference, body.notes)
+    await log_audit("stock_movement", m["id"], "posted", user, after=m, reason=body.reason or "")
     return m
 
 @api.post("/stock/movements/{mid}/reverse")
@@ -1725,7 +1926,199 @@ class EmployeeIn(BaseModel):
 
 @api.get("/employees")
 async def get_employees(user=Depends(get_current_user)):
-    return await listall("employees", sort=("name", 1))
+    employees = await listall("employees", sort=("name", 1))
+    return [
+        {**employee, "pay_type": "piece" if is_piece_paid_employee(employee) else employee.get("pay_type", "hourly")}
+        for employee in employees
+    ]
+
+@api.post("/employees/import-roster")
+async def import_employee_roster(user=Depends(get_current_user)):
+    require_admin(user)
+    reconciliation = await reconcile_employee_roster(user)
+    reconciliation.pop("employees_by_name")
+    return reconciliation
+
+def payroll_employee_name_key(name):
+    normalized_name = " ".join((name or "").split()).upper()
+    canonical_name = seed_data.EMPLOYEE_PAYROLL_NAME_ALIASES.get(normalized_name, normalized_name)
+    return canonical_name.casefold()
+
+
+def is_piece_paid_employee(employee):
+    normalized_name = " ".join((employee.get("name") or "").split()).upper()
+    return (
+        employee.get("pay_type") == "piece"
+        or normalized_name in seed_data.PIECEWORK_EMPLOYEE_NAMES
+    )
+
+def piecework_includes_sunday(employee_name):
+    normalized_name = " ".join((employee_name or "").split()).upper()
+    return normalized_name not in seed_data.PIECEWORK_EMPLOYEE_NAMES
+
+async def merge_duplicate_attendance(duplicate, employee, user):
+    duplicate_records = await listall("attendance", {"employee_id": duplicate["id"]})
+    for record in duplicate_records:
+        existing = await db.attendance.find_one({
+            "employee_id": employee["id"],
+            "date": record["date"],
+        }, {"_id": 0})
+        if existing:
+            await log_audit(
+                "attendance", record["id"], "duplicate_attendance_conflict_archived", user,
+                before=record,
+                after={"preserved_attendance_id": existing["id"], "employee_id": employee["id"]},
+                reason="The retained employee profile already has an attendance record for this date.",
+            )
+            await db.attendance.delete_one({"id": record["id"]})
+        else:
+            await update_doc("attendance", record["id"], {
+                "employee_id": employee["id"],
+                "employee_name": employee.get("name", ""),
+                "department": employee.get("department", ""),
+            })
+
+
+async def reconcile_employee_roster(user):
+    roster_by_name = {
+        payroll_employee_name_key(employee["name"]): employee
+        for employee in seed_data.EMPLOYEE_PAYROLL_ROSTER
+    }
+    existing_employees = await listall("employees")
+    employees_by_name = {}
+    for employee in existing_employees:
+        key = payroll_employee_name_key(employee.get("name", ""))
+        employees_by_name.setdefault(key, []).append(employee)
+
+    added = updated = unchanged = duplicates_archived = unlisted_archived = 0
+    roster_employees_by_name = {}
+    for key, roster_employee in roster_by_name.items():
+        matches = employees_by_name.pop(key, [])
+        matches.sort(key=lambda employee: (
+            employee.get("active") is False,
+            employee.get("created_at") or "",
+            employee.get("id") or "",
+        ))
+        weekly_salary = roster_employee["weekly_salary"]
+        hours_per_week = roster_employee["hours_per_week"]
+        employee_data = {
+            "name": roster_employee["name"],
+            "department": roster_employee["department"],
+            "pay_type": roster_employee["pay_type"],
+            "hourly_rate": weekly_salary / hours_per_week,
+            "weekly_salary": weekly_salary,
+            "hours_per_week": hours_per_week,
+            "active": True,
+        }
+
+        if matches:
+            employee = matches[0]
+            changes = {
+                field: value for field, value in employee_data.items()
+                if employee.get(field) != value
+            }
+            if changes:
+                employee = await update_doc("employees", employee["id"], changes)
+                await log_audit("employee", employee["id"], "payroll_roster_reconciled",
+                                user, before=matches[0], after=employee)
+                updated += 1
+            else:
+                unchanged += 1
+            roster_employees_by_name[key] = employee
+
+            for duplicate in matches[1:]:
+                await merge_duplicate_attendance(duplicate, employee, user)
+                for collection in ("salary_advances", "salary_cuts", "piece_production"):
+                    await db[collection].update_many(
+                        {"employee_id": duplicate["id"]},
+                        {"$set": {"employee_id": employee["id"], "employee_name": employee_data["name"]}},
+                    )
+                deleted_at = now_iso()
+                await db.deleted_employees.insert_one({
+                    **duplicate, "deleted_at": deleted_at, "deleted_by": user.get("id"),
+                    "archive_reason": "Duplicate payroll roster entry",
+                    "merged_into_employee_id": employee["id"],
+                })
+                await db.employees.delete_one({"id": duplicate["id"]})
+                await log_audit(
+                    "employee", duplicate["id"], "duplicate_payroll_profile_archived", user,
+                    before=duplicate, after={"deleted_at": deleted_at, "merged_into_employee_id": employee["id"]},
+                )
+                duplicates_archived += 1
+        else:
+            employee = await insert("employees", employee_data)
+            await log_audit("employee", employee["id"], "payroll_roster_imported", user, after=employee)
+            roster_employees_by_name[key] = employee
+            added += 1
+
+    for unmatched in employees_by_name.values():
+        for employee in unmatched:
+            deleted_at = now_iso()
+            await db.deleted_employees.insert_one({
+                **employee, "deleted_at": deleted_at, "deleted_by": user.get("id"),
+                "archive_reason": "Not included in the supplied payroll roster",
+            })
+            await db.employees.delete_one({"id": employee["id"]})
+            await log_audit(
+                "employee", employee["id"], "unlisted_payroll_profile_archived", user,
+                before=employee, after={"deleted_at": deleted_at},
+            )
+            unlisted_archived += 1
+
+    return {
+        "added": added,
+        "updated": updated,
+        "unchanged": unchanged,
+        "duplicates_archived": duplicates_archived,
+        "unlisted_archived": unlisted_archived,
+        "employees_by_name": roster_employees_by_name,
+    }
+
+@api.post("/employees/reconcile-payroll-roster")
+async def reconcile_payroll_roster(user=Depends(get_current_user)):
+    require_admin(user)
+    reconciliation = await reconcile_employee_roster(user)
+    roster_employees_by_name = reconciliation.pop("employees_by_name")
+
+    today = local_today()
+    week_start = today - timedelta(days=today.weekday())
+    attendance_records = []
+    for roster_employee in seed_data.EMPLOYEE_PAYROLL_ROSTER:
+        employee = roster_employees_by_name[payroll_employee_name_key(roster_employee["name"])]
+        if not employee:
+            raise HTTPException(500, f"Could not find reconciled employee {roster_employee['name']}")
+        workdays = 6 if roster_employee["hours_per_week"] == 50 else 5
+        for day_offset in range(workdays):
+            attendance_records.append({
+                "id": new_id(),
+                "employee_id": employee["id"],
+                "employee_name": employee["name"],
+                "department": employee.get("department", ""),
+                "date": (week_start + timedelta(days=day_offset)).isoformat(),
+                "status": "Present",
+                "overtime_hours": 0,
+                "start_time": None,
+                "end_time": None,
+                "notes": "",
+                "created_at": now_iso(),
+            })
+
+    deleted_attendance = await db.attendance.delete_many({})
+    if attendance_records:
+        await db.attendance.insert_many(attendance_records)
+    await log_audit(
+        "attendance", f"payroll-roster-reset-{week_start.isoformat()}",
+        "history_cleared_and_current_week_repopulated", user,
+        before={"deleted_records": deleted_attendance.deleted_count},
+        after={"created_records": len(attendance_records), "week_start": week_start.isoformat()},
+    )
+    return {
+        **reconciliation,
+        "attendance_deleted": deleted_attendance.deleted_count,
+        "attendance_created": len(attendance_records),
+        "week_start": week_start.isoformat(),
+        "week_end": (week_start + timedelta(days=6)).isoformat(),
+    }
 
 @api.get("/employees/deleted")
 async def get_deleted_employees(user=Depends(get_current_user)):
@@ -1760,6 +2153,8 @@ class AttendanceIn(BaseModel):
     date: str
     status: str = "Present"
     overtime_hours: Optional[float] = Field(default=None, ge=0)
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
     notes: Optional[str] = ""
 
 @api.get("/attendance")
@@ -1777,6 +2172,28 @@ async def add_attendance(body: AttendanceIn, user=Depends(get_current_user)):
     data = body.model_dump()
     if data["overtime_hours"] is None:
         data["overtime_hours"] = (existing or {}).get("overtime_hours", 0) if body.status in ("Present", "Half Day") else 0
+    time_fields_set = body.model_fields_set.intersection({"start_time", "end_time"})
+    if time_fields_set and time_fields_set != {"start_time", "end_time"}:
+        raise HTTPException(400, "Provide both start and end times")
+    if body.status not in ("Present", "Half Day"):
+        if body.start_time is not None or body.end_time is not None:
+            raise HTTPException(400, "Work times can only be set for present employees")
+        data["start_time"] = None
+        data["end_time"] = None
+    elif not time_fields_set:
+        data["start_time"] = (existing or {}).get("start_time")
+        data["end_time"] = (existing or {}).get("end_time")
+    elif body.start_time is None and body.end_time is None:
+        data["start_time"] = None
+        data["end_time"] = None
+    elif body.start_time is None or body.end_time is None:
+        raise HTTPException(400, "Provide both start and end times")
+    else:
+        for value in (body.start_time, body.end_time):
+            if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+                raise HTTPException(400, "Work times must use HH:MM format")
+        if body.start_time == body.end_time:
+            raise HTTPException(400, "Start and end times must be different")
     data["employee_name"] = emp["name"]
     data["department"] = emp.get("department", "")
     if existing:
@@ -1799,6 +2216,97 @@ class SalaryCutIn(BaseModel):
 class SalaryRateIn(BaseModel):
     hourly_rate: float = Field(ge=0.01)
 
+class PieceProductionIn(BaseModel):
+    employee_id: str
+    date: str
+    pieces: int = Field(ge=0)
+
+@api.get("/piece-production")
+async def get_piece_production(start_date: str, end_date: str, user=Depends(get_current_user)):
+    salary_period_dates(start_date, end_date)
+    return await listall("piece_production", {"date": {"$gte": start_date, "$lte": end_date}}, ("date", 1))
+
+
+async def piecework_week_snapshot(employee_id, work_date, employee_name):
+    week_start = work_date - timedelta(days=work_date.weekday())
+    week_end = week_start + timedelta(days=6)
+    records = await listall("piece_production", {
+        "employee_id": employee_id,
+        "date": {"$gte": week_start.isoformat(), "$lte": week_end.isoformat()},
+    }, ("date", 1))
+    result = calculate_piecework(
+        records,
+        include_sunday=piecework_includes_sunday(employee_name),
+        start_date=week_start.isoformat(),
+        end_date=week_end.isoformat(),
+    )
+    return result["weeks"][0]
+
+
+@api.post("/piece-production")
+async def save_piece_production(body: PieceProductionIn, user=Depends(get_current_user)):
+    try:
+        date.fromisoformat(body.date)
+    except ValueError:
+        raise HTTPException(400, "Use a valid YYYY-MM-DD work date")
+    employee = await db.employees.find_one({"id": body.employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(404, "Employee not found")
+    if not is_piece_paid_employee(employee):
+        raise HTTPException(400, "Piece production is only available for piece-paid employees")
+    data = {**body.model_dump(), "employee_name": employee.get("name", "")}
+    existing = await db.piece_production.find_one({"employee_id": body.employee_id, "date": body.date}, {"_id": 0})
+    work_date = date.fromisoformat(body.date)
+    previous_calculation = await piecework_week_snapshot(body.employee_id, work_date, employee.get("name", ""))
+    audit_reason = (
+        "Historical production change preserves the prior weekly calculation in this audit entry."
+        if work_date < local_today()
+        else "Production change records the weekly calculation before and after the change."
+    )
+    if existing:
+        updated = await update_doc("piece_production", existing["id"], data)
+        next_calculation = await piecework_week_snapshot(body.employee_id, work_date, employee.get("name", ""))
+        await log_audit(
+            "piece_production", existing["id"], "updated_weekly_payroll_recalculated", user,
+            before={"record": existing, "weekly_calculation": previous_calculation},
+            after={"record": updated, "weekly_calculation": next_calculation},
+            reason=audit_reason,
+        )
+        return updated
+    created = await insert("piece_production", data)
+    next_calculation = await piecework_week_snapshot(body.employee_id, work_date, employee.get("name", ""))
+    await log_audit(
+        "piece_production", created["id"], "created_weekly_payroll_calculated", user,
+        before={"weekly_calculation": previous_calculation},
+        after={"record": created, "weekly_calculation": next_calculation},
+    )
+    return created
+
+
+@api.delete("/piece-production/{record_id}")
+async def delete_piece_production(record_id: str, user=Depends(get_current_user)):
+    record = await db.piece_production.find_one({"id": record_id}, {"_id": 0})
+    if not record:
+        raise HTTPException(404, "Piece production record not found")
+    employee = await db.employees.find_one({"id": record.get("employee_id")}, {"_id": 0})
+    employee_name = (employee or {}).get("name") or record.get("employee_name", "")
+    work_date = date.fromisoformat(record["date"])
+    previous_calculation = await piecework_week_snapshot(record["employee_id"], work_date, employee_name)
+    audit_reason = (
+        "Historical production deletion preserves the prior weekly calculation in this audit entry."
+        if work_date < local_today()
+        else "Production deletion records the weekly calculation before and after the change."
+    )
+    await db.piece_production.delete_one({"id": record_id})
+    next_calculation = await piecework_week_snapshot(record["employee_id"], work_date, employee_name)
+    await log_audit(
+        "piece_production", record_id, "deleted_weekly_payroll_recalculated", user,
+        before={"record": record, "weekly_calculation": previous_calculation},
+        after={"weekly_calculation": next_calculation},
+        reason=audit_reason,
+    )
+    return {"ok": True}
+
 def salary_period_dates(start_date, end_date):
     try:
         start = date.fromisoformat(start_date)
@@ -1813,30 +2321,34 @@ async def salary_report(start_date, end_date):
     salary_period_dates(start_date, end_date)
     employees = await listall("employees", sort=("name", 1))
     attendance = await listall("attendance", {"date": {"$gte": start_date, "$lte": end_date}}, ("date", 1))
+    piece_records = await listall("piece_production", {"date": {"$gte": start_date, "$lte": end_date}}, ("date", 1))
     advances = await listall("salary_advances", {"voided": {"$ne": True}})
     cuts = await listall("salary_cuts", {"voided": {"$ne": True}})
     result = []
     for employee in employees:
         hourly_rate = float(employee.get("hourly_rate") or 20)
+        is_piece_paid = is_piece_paid_employee(employee)
+        weekly_salary = employee.get("weekly_salary") if not is_piece_paid else None
+        hours_per_week = float(employee.get("hours_per_week") or 45)
+        if weekly_salary is None and not is_piece_paid:
+            weekly_salary = r2(D(hourly_rate) * D(hours_per_week))
         rows = sorted(
             [record for record in attendance if record.get("employee_id") == employee["id"]],
             key=lambda record: record.get("date", ""),
         )
-        days = []
-        regular_hours = 0.0
-        overtime_hours = 0.0
-        present_days = 0
-        half_days = 0
-        for record in rows:
-            status = record.get("status")
-            standard = 8 if status == "Present" else 4 if status == "Half Day" else 0
-            overtime = float(record.get("overtime_hours", 0) or 0) if standard else 0
-            regular_hours += standard
-            overtime_hours += overtime
-            present_days += int(status == "Present")
-            half_days += int(status == "Half Day")
-            days.append({"date": record.get("date"), "status": status, "regular_hours": standard,
-                         "overtime_hours": overtime, "pay": r2(D(standard + overtime) * D(hourly_rate))})
+        employee_piecework = calculate_piecework([
+            record for record in piece_records if record.get("employee_id") == employee["id"]
+        ], include_sunday=piecework_includes_sunday(employee.get("name", "")),
+            start_date=start_date, end_date=end_date) if is_piece_paid else {
+                "days": [], "total_pieces": 0, "piece_rate": 0, "piece_pay": 0, "weeks": [],
+            }
+        days = [] if is_piece_paid else calculate_salary_hours(rows, weekly_regular_limit=hours_per_week)
+        regular_hours = sum(day["regular_hours"] for day in days)
+        overtime_hours = sum(day["overtime_hours"] for day in days)
+        present_days = sum(day["status"] == "Present" for day in days)
+        half_days = sum(day["status"] == "Half Day" for day in days)
+        for day in days:
+            day["pay"] = r2(D(day["regular_hours"] + day["overtime_hours"]) * D(hourly_rate))
         employee_advances = [item for item in advances if item.get("employee_id") == employee["id"]]
         employee_cuts = [item for item in cuts if item.get("employee_id") == employee["id"]]
         all_advance_total = sum((D(item.get("amount", 0)) for item in employee_advances), Decimal("0"))
@@ -1845,7 +2357,7 @@ async def salary_report(start_date, end_date):
                            if item.get("start_date") == start_date and item.get("end_date") == end_date), None)
         regular_pay = r2(D(regular_hours) * D(hourly_rate))
         overtime_pay = r2(D(overtime_hours) * D(hourly_rate))
-        gross = r2(regular_pay + overtime_pay)
+        gross = employee_piecework["piece_pay"] if is_piece_paid else r2(regular_pay + overtime_pay)
         cut = r2((period_cut or {}).get("amount", 0))
         balance = all_advance_total - all_cut_total
         balance_before_period = sum(
@@ -1890,7 +2402,14 @@ async def salary_report(start_date, end_date):
         result.append({
             "employee_id": employee["id"], "name": employee.get("name", ""),
             "department": employee.get("department", ""), "active": employee.get("active", True),
-            "hourly_rate": hourly_rate,
+            "hourly_rate": hourly_rate, "weekly_salary": weekly_salary,
+            "hours_per_week": hours_per_week,
+            "pay_type": "piece" if is_piece_paid else "hourly",
+            "total_pieces": employee_piecework["total_pieces"],
+            "piece_rate": employee_piecework["piece_rate"],
+            "piece_pay": employee_piecework["piece_pay"],
+            "piece_days": employee_piecework["days"],
+            "piece_weeks": employee_piecework["weeks"],
             "days": days, "present_days": present_days, "half_days": half_days,
             "regular_hours": regular_hours, "overtime_hours": overtime_hours,
             "regular_pay": regular_pay, "overtime_pay": overtime_pay, "gross_salary": gross,
@@ -1914,7 +2433,12 @@ async def save_salary_rate(eid: str, body: SalaryRateIn, user=Depends(get_curren
     employee = await db.employees.find_one({"id": eid}, {"_id": 0})
     if not employee:
         raise HTTPException(404, "Employee not found")
-    updated = await update_doc("employees", eid, {"hourly_rate": r2(body.hourly_rate)})
+    hourly_rate = float(D(body.hourly_rate).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP))
+    hours_per_week = float(employee.get("hours_per_week") or 45)
+    updated = await update_doc("employees", eid, {
+        "hourly_rate": hourly_rate,
+        "weekly_salary": r2(D(hourly_rate) * D(hours_per_week)),
+    })
     await log_audit("employee", eid, "salary_rate_updated", user,
                     before={"hourly_rate": employee.get("hourly_rate", 20)},
                     after={"hourly_rate": updated["hourly_rate"]})
@@ -2018,7 +2542,7 @@ class VehicleIn(BaseModel):
 
 @api.get("/vehicles")
 async def get_vehicles(user=Depends(get_current_user)):
-    return await listall("vehicles", sort=("name", 1))
+    return await listall("vehicles", {"archived": {"$ne": True}}, sort=("name", 1))
 
 @api.post("/vehicles")
 async def add_vehicle(body: VehicleIn, user=Depends(get_current_user)):
@@ -2027,6 +2551,17 @@ async def add_vehicle(body: VehicleIn, user=Depends(get_current_user)):
 @api.put("/vehicles/{vid}")
 async def edit_vehicle(vid: str, body: VehicleIn, user=Depends(get_current_user)):
     return await update_doc("vehicles", vid, body.model_dump())
+
+@api.delete("/vehicles/{vid}")
+async def delete_vehicle(vid: str, user=Depends(get_current_user)):
+    vehicle = await db.vehicles.find_one({"id": vid}, {"_id": 0})
+    if not vehicle:
+        raise HTTPException(404, "Vehicle not found")
+    updated = await update_doc("vehicles", vid, {
+        "archived": True, "archived_at": now_iso(), "archived_by": user.get("id"),
+    })
+    await log_audit("vehicle", vid, "archived", user, before=vehicle, after=updated)
+    return {"ok": True, "archived": True}
 
 # ---------------- Deliveries ----------------
 class DeliveryIn(BaseModel):
@@ -2389,6 +2924,10 @@ class SupplierIn(BaseModel):
     contact: Optional[str] = ""
     phone: Optional[str] = ""
     email: Optional[str] = ""
+    address: Optional[str] = ""
+    city: Optional[str] = ""
+    terms: Optional[str] = ""
+    active: bool = True
     notes: Optional[str] = ""
 
 @api.get("/suppliers")
@@ -2423,6 +2962,15 @@ async def edit_supplier(supplier_id: str, body: SupplierIn, user=Depends(get_cur
     rec = await update_doc("suppliers", supplier_id, data)
     await log_audit("supplier", supplier_id, "updated", user, before=before, after=rec)
     return rec
+
+@api.delete("/suppliers/{supplier_id}")
+async def deactivate_supplier(supplier_id: str, user=Depends(get_current_user)):
+    before = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Supplier not found")
+    rec = await update_doc("suppliers", supplier_id, {"active": False, "archived_at": now_iso()})
+    await log_audit("supplier", supplier_id, "deactivated", user, before=before, after=rec)
+    return {"ok": True, "deactivated": True}
 
 class PurchaseOrderLineIn(BaseModel):
     stock_id: Optional[str] = ""
@@ -2795,6 +3343,100 @@ class ExpenseIn(BaseModel):
     vehicle_id: Optional[str] = ""
     notes: Optional[str] = ""
 
+class ProductionCostItemIn(BaseModel):
+    description: str
+    quantity: float
+    unit: str
+    unit_cost: float
+
+class ProductionCostRecordIn(BaseModel):
+    product: str
+    production_date: str = Field(default_factory=today_str)
+    quantity_produced: float
+    quantity_unit: str = "block"
+    selling_price_per_unit: float
+    cost_items: List[ProductionCostItemIn]
+    notes: Optional[str] = ""
+
+def production_cost_record_data(body):
+    if not body.product.strip():
+        raise HTTPException(400, "Product name is required")
+    if not math.isfinite(body.quantity_produced) or body.quantity_produced <= 0:
+        raise HTTPException(400, "Quantity produced must be greater than 0")
+    if not math.isfinite(body.selling_price_per_unit) or body.selling_price_per_unit <= 0:
+        raise HTTPException(400, "Selling price per unit must be greater than 0")
+    try:
+        date.fromisoformat(body.production_date)
+    except ValueError:
+        raise HTTPException(400, "Production date must use YYYY-MM-DD format")
+    if not body.cost_items:
+        raise HTTPException(400, "Add at least one production material or cost")
+
+    items = []
+    for item in body.cost_items:
+        if not item.description.strip():
+            raise HTTPException(400, "Every production cost needs a description")
+        if not item.unit.strip():
+            raise HTTPException(400, "Every production cost needs a unit of measure")
+        if not math.isfinite(item.quantity) or item.quantity <= 0:
+            raise HTTPException(400, "Material quantities must be greater than 0")
+        if not math.isfinite(item.unit_cost) or item.unit_cost <= 0:
+            raise HTTPException(400, "Material unit costs must be greater than 0")
+        if not math.isfinite(item.quantity * item.unit_cost):
+            raise HTTPException(400, "Material cost is too large")
+        items.append({
+            "description": item.description.strip(),
+            "quantity": item.quantity,
+            "unit": item.unit.strip(),
+            "unit_cost": item.unit_cost,
+        })
+
+    if not math.isfinite(body.quantity_produced * body.selling_price_per_unit):
+        raise HTTPException(400, "Potential sales revenue is too large")
+    calculations = calculate_production_cost(
+        body.quantity_produced, body.selling_price_per_unit, items,
+    )
+    if any(not math.isfinite(value) for value in (
+        calculations["total_production_cost"],
+        calculations["cost_per_unit"],
+        calculations["selling_price_per_unit"],
+        calculations["profit_per_unit"],
+        calculations["revenue_if_all_sold"],
+        calculations["total_profit_if_all_sold"],
+    )):
+        raise HTTPException(400, "Calculated production cost is too large")
+    return {
+        "product": body.product.strip(),
+        "production_date": body.production_date,
+        "quantity_produced": body.quantity_produced,
+        "quantity_unit": body.quantity_unit.strip() or "unit",
+        "notes": (body.notes or "").strip(),
+        **calculations,
+        "calculation_method": "sum(quantity used × unit cost); total cost ÷ quantity produced",
+    }
+
+@api.get("/cost-records")
+async def get_cost_records(user=Depends(get_current_user)):
+    return await listall("cost_records", sort=("production_date", -1))
+
+@api.post("/cost-records")
+async def add_cost_record(body: ProductionCostRecordIn, user=Depends(get_current_user)):
+    record = await insert("cost_records", production_cost_record_data(body))
+    await log_audit("cost_record", record["id"], "created", user, after=record)
+    return record
+
+@api.delete("/cost-records/{record_id}")
+async def delete_cost_record(record_id: str, user=Depends(get_current_user)):
+    record = await db.cost_records.find_one({"id": record_id}, {"_id": 0})
+    if not record:
+        raise HTTPException(404, "Production cost not found")
+    result = await db.cost_records.delete_one({"id": record_id})
+    if not result.deleted_count:
+        raise HTTPException(404, "Production cost not found")
+    await log_audit("cost_record", record_id, "permanently_deleted", user, before=record,
+                    after={"permanently_deleted": True})
+    return {"ok": True, "deleted": True}
+
 def _check_expense(body):
     if body.amount <= 0:
         raise HTTPException(400, "Amount must be greater than 0")
@@ -2844,8 +3486,12 @@ async def daily_report_records(collection_name, selected_date, conditions=None, 
 
 @api.get("/daily-report")
 async def get_daily_report(report_date: Optional[str] = None, user=Depends(get_current_user)):
-    if user.get("_active_company_id") != DEFAULT_COMPANY_ID:
-        raise HTTPException(403, "Daily Report is only available in the SUPERIQFOAM company profile")
+    company_id = user.get("_active_company_id") or DEFAULT_COMPANY_ID
+    company_name = {
+        "superiqfoam": "SUPER IQ-FOAM",
+        "iqfoam-whole-sallers": "IQFOAM WHOLESALERS",
+        "iqfoam-manufactoring": "IQFOAM MANUFACTURING",
+    }.get(company_id, "SUPER IQ-FOAM")
     selected_date = report_date or today_str()
     try:
         selected_date = date.fromisoformat(selected_date).isoformat()
@@ -2965,6 +3611,8 @@ async def get_daily_report(report_date: Optional[str] = None, user=Depends(get_c
             })
 
     return {
+        "company_id": company_id,
+        "company_name": company_name,
         "date": selected_date,
         "day": date.fromisoformat(selected_date).strftime("%A"),
         "prepared_by": "Mr. Zuny",
@@ -3050,8 +3698,14 @@ VEHICLE_COST_DONE = ("Done", "done")
 async def cost_ledger(since=None, until=None):
     rows = []
     for x in await listall("expenses", {"voided": {"$ne": True}, "archived": {"$ne": True}}):
+        source_key = x.get("source_key", "")
+        source = (
+            "spare_part" if source_key.startswith("sparepart:")
+            else "monthly_purchase" if source_key.startswith("monthly_business_purchase:")
+            else "expense"
+        )
         rows.append({"id": x["id"], "date": x.get("date"), "description": x.get("description"), "category": x.get("category", "General"),
-                     "amount": x.get("amount", 0), "vehicle_id": x.get("vehicle_id", ""), "source": "spare_part" if x.get("source_key") else "expense"})
+                     "amount": x.get("amount", 0), "vehicle_id": x.get("vehicle_id", ""), "source": source})
     vnames = {v["id"]: v["name"] for v in await listall("vehicles")}
     for x in await listall("vehicle_records"):
         if x.get("status") in VEHICLE_COST_DONE and (x.get("amount") or 0) > 0:
@@ -4025,6 +4679,7 @@ async def seed():
                            ("expenses", "source_key", {"unique": True, "sparse": True}),
                            ("monthly_business_purchase_occurrences", "source_key", {"unique": True}),
                            ("attendance", [("employee_id", 1), ("date", 1)], {"unique": True}),
+                           ("piece_production", [("employee_id", 1), ("date", 1)], {"unique": True}),
                            ("prices", [("zone", 1), ("category", 1), ("size", 1)], {"unique": True}),
                            ("audit_log", [("entity", 1), ("entity_id", 1)], {})):
         try:
@@ -4173,6 +4828,7 @@ async def initialize_empty_company(company_id):
                                 ("expenses", "source_key", {"unique": True, "sparse": True}),
                                 ("monthly_business_purchase_occurrences", "source_key", {"unique": True}),
                                 ("attendance", [("employee_id", 1), ("date", 1)], {"unique": True}),
+                                ("piece_production", [("employee_id", 1), ("date", 1)], {"unique": True}),
                                 ("prices", [("zone", 1), ("category", 1), ("size", 1)], {"unique": True}),
                                 ("audit_log", [("entity", 1), ("entity_id", 1)], {})):
         await company_db[coll].create_index(keys, **options)

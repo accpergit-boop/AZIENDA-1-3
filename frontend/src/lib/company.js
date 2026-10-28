@@ -12,6 +12,11 @@ export const companyProfileName = (companyId) => ({
   "iqfoam-manufactoring": "IQFOAM MANUFACTURING",
 }[companyId] || "SUPERIQFOAM");
 
+export const companyDailyReportName = (companyId) => ({
+  "iqfoam-whole-sallers": "IQFOAM WHOLESALERS",
+  "iqfoam-manufactoring": "IQFOAM MANUFACTURING",
+}[companyId] || "SUPER IQ-FOAM");
+
 export const companyDisplayName = (name) => {
   if (!name) return "SUPERIQFOAM";
   if (/wholesale/i.test(name)) return "IQ FOAM WHOLESALERS";

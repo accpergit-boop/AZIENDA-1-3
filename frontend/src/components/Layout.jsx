@@ -1,10 +1,10 @@
 import { NavLink, useNavigate, Outlet, useLocation } from "react-router-dom";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   LayoutDashboard, Users, FileText, Boxes, Factory, CalendarCheck,
   Truck, Menu, X, LogOut, Search, Bell, Layers,
-  ClipboardList, Banknote, Wrench, Wallet, ShoppingCart, ChevronDown, Building2, Settings as Cog,
+  ClipboardList, Banknote, Wrench, Wallet, ShoppingCart, ChevronDown, Building2, Settings as Cog, Calculator,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { api, apiError } from "@/lib/api";
@@ -26,20 +26,121 @@ const NAV_GROUPS = [
     { to: "/deliveries", label: "Deliveries", icon: Truck },
   ] },
   { label: "Operations", items: [
-    { to: "/buyings", label: "Buying", icon: ShoppingCart },
+    { to: "/suppliers", label: "Suppliers", icon: Building2 },
     { to: "/stock", label: "Stock", icon: Boxes },
     { to: "/production", label: "Production", icon: Factory },
     { to: "/fleet", label: "Fleet", icon: Wrench },
   ] },
   { label: "Finance & team", items: [
+    { to: "/costs", label: "Costs", icon: Calculator },
     { to: "/expenses", label: "Expenses", icon: Banknote },
-    { to: "/daily-report", label: "Daily Report", icon: FileText, companyId: "superiqfoam" },
+    { to: "/daily-report", label: "Daily Report", icon: FileText },
     { to: "/attendance", label: "Attendance", icon: CalendarCheck },
   ] },
   { label: "Administration", items: [
     { to: "/settings", label: "Settings", icon: Cog },
   ] },
 ];
+
+const WHATSAPP_POSITION_KEY = "whatsapp-floating-position";
+const WHATSAPP_BUTTON_SIZE = 56;
+const WHATSAPP_EDGE_GAP = 8;
+
+function clampWhatsAppPosition(position) {
+  return {
+    x: Math.max(WHATSAPP_EDGE_GAP, Math.min(position.x, window.innerWidth - WHATSAPP_BUTTON_SIZE - WHATSAPP_EDGE_GAP)),
+    y: Math.max(WHATSAPP_EDGE_GAP, Math.min(position.y, window.innerHeight - WHATSAPP_BUTTON_SIZE - WHATSAPP_EDGE_GAP)),
+  };
+}
+
+function WhatsAppFloatingButton() {
+  const [position, setPosition] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(WHATSAPP_POSITION_KEY) || "null");
+      return saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)
+        ? clampWhatsAppPosition(saved)
+        : null;
+    } catch {
+      return null;
+    }
+  });
+  const drag = useRef(null);
+  const suppressClick = useRef(false);
+
+  useEffect(() => {
+    const keepInViewport = () => {
+      setPosition((current) => current ? clampWhatsAppPosition(current) : current);
+    };
+    window.addEventListener("resize", keepInViewport);
+    return () => window.removeEventListener("resize", keepInViewport);
+  }, []);
+
+  const startDrag = (event) => {
+    if (event.button !== 0) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    drag.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: rect.left,
+      originY: rect.top,
+      position: { x: rect.left, y: rect.top },
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const moveDrag = (event) => {
+    const active = drag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    const dx = event.clientX - active.startX;
+    const dy = event.clientY - active.startY;
+    if (!active.moved && Math.hypot(dx, dy) < 4) return;
+    active.moved = true;
+    active.position = clampWhatsAppPosition({
+      x: active.originX + dx,
+      y: active.originY + dy,
+    });
+    setPosition(active.position);
+  };
+
+  const endDrag = (event) => {
+    moveDrag(event);
+    const active = drag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    if (active.moved) {
+      suppressClick.current = true;
+      try {
+        localStorage.setItem(WHATSAPP_POSITION_KEY, JSON.stringify(active.position));
+      } catch {
+        toast.error("Could not save the WhatsApp button position");
+      }
+    }
+    drag.current = null;
+  };
+
+  return (
+    <a href="https://web.whatsapp.com/" target="_blank" rel="noreferrer"
+      aria-label="Open WhatsApp Web" title="Drag to move · click to open WhatsApp Web"
+      data-testid="whatsapp-floating-button"
+      onPointerDown={startDrag}
+      onPointerMove={moveDrag}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onClick={(event) => {
+        if (!suppressClick.current) return;
+        event.preventDefault();
+        suppressClick.current = false;
+      }}
+      style={position ? { left: position.x, top: position.y, right: "auto", bottom: "auto" } : undefined}
+      className={`fixed z-40 flex h-14 w-14 touch-none items-center justify-center rounded-full bg-[#25D366] text-white shadow-lg transition-transform hover:scale-105 hover:bg-[#20bd5a] focus:outline-none focus:ring-4 focus:ring-[#25D366]/30 ${position ? "" : "right-5 bottom-5"} cursor-grab active:cursor-grabbing`}
+    >
+      <svg viewBox="0 0 32 32" className="pointer-events-none h-8 w-8" aria-hidden="true">
+        <path fill="currentColor" d="M16.02 3.2A12.7 12.7 0 0 0 5.08 22.35L3.3 28.8l6.6-1.73A12.8 12.8 0 1 0 16.02 3.2Zm0 23.3c-1.94 0-3.84-.52-5.5-1.5l-.4-.24-3.92 1.03 1.05-3.82-.26-.42a10.48 10.48 0 1 1 9.03 4.95Zm5.75-7.85c-.31-.16-1.84-.91-2.12-1.02-.28-.1-.49-.15-.69.16-.21.31-.8 1.02-.98 1.23-.18.21-.36.23-.67.08-.31-.16-1.3-.48-2.48-1.52-.92-.82-1.54-1.84-1.72-2.15-.18-.31-.02-.48.14-.64.14-.14.31-.36.46-.54.15-.18.21-.31.31-.52.1-.2.05-.39-.03-.54-.08-.15-.69-1.66-.94-2.28-.25-.6-.5-.51-.69-.52h-.59c-.2 0-.54.08-.82.39-.28.31-1.08 1.05-1.08 2.56s1.1 2.97 1.26 3.18c.15.2 2.17 3.32 5.25 4.66.73.32 1.3.51 1.74.65.73.23 1.4.2 1.93.12.59-.09 1.84-.75 2.1-1.48.26-.72.26-1.33.18-1.46-.08-.13-.28-.2-.59-.36Z" />
+      </svg>
+    </a>
+  );
+}
 
 function SidebarContent({ onNav, companyName, companyId }) {
   const reduceMotion = useReducedMotion();
@@ -214,13 +315,7 @@ export default function Layout() {
           </Suspense>
         </main>
       </div>
-      {(user?.is_admin || user?.role === "admin") && <a href="https://web.whatsapp.com/" target="_blank" rel="noreferrer"
-        aria-label="Open WhatsApp Web" title="WhatsApp Web" data-testid="whatsapp-floating-button"
-        className="fixed right-5 bottom-5 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[#25D366] text-white shadow-lg transition-transform hover:scale-105 hover:bg-[#20bd5a] focus:outline-none focus:ring-4 focus:ring-[#25D366]/30">
-        <svg viewBox="0 0 32 32" className="h-8 w-8" aria-hidden="true">
-          <path fill="currentColor" d="M16.02 3.2A12.7 12.7 0 0 0 5.08 22.35L3.3 28.8l6.6-1.73A12.8 12.8 0 1 0 16.02 3.2Zm0 23.3c-1.94 0-3.84-.52-5.5-1.5l-.4-.24-3.92 1.03 1.05-3.82-.26-.42a10.48 10.48 0 1 1 9.03 4.95Zm5.75-7.85c-.31-.16-1.84-.91-2.12-1.02-.28-.1-.49-.15-.69.16-.21.31-.8 1.02-.98 1.23-.18.21-.36.23-.67.08-.31-.16-1.3-.48-2.48-1.52-.92-.82-1.54-1.84-1.72-2.15-.18-.31-.02-.48.14-.64.14-.14.31-.36.46-.54.15-.18.21-.31.31-.52.1-.2.05-.39-.03-.54-.08-.15-.69-1.66-.94-2.28-.25-.6-.5-.51-.69-.52h-.59c-.2 0-.54.08-.82.39-.28.31-1.08 1.05-1.08 2.56s1.1 2.97 1.26 3.18c.15.2 2.17 3.32 5.25 4.66.73.32 1.3.51 1.74.65.73.23 1.4.2 1.93.12.59-.09 1.84-.75 2.1-1.48.26-.72.26-1.33.18-1.46-.08-.13-.28-.2-.59-.36Z" />
-        </svg>
-      </a>}
+      {(user?.is_admin || user?.role === "admin") && <WhatsAppFloatingButton />}
     </div>
   );
 }

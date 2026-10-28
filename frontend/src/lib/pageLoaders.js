@@ -5,6 +5,7 @@ const invoiceEditor = () => import("@/pages/InvoiceEditor");
 export const pageLoaders = {
   "/": () => import("@/pages/Dashboard"),
   "/customers": () => import("@/pages/Customers"),
+  "/suppliers": () => import("@/pages/Suppliers"),
   "/client-payments": () => import("@/pages/ClientPayments"),
   "/buyings": () => import("@/pages/Buyings"),
   "/invoices": () => import("@/pages/InvoiceList"),
@@ -16,6 +17,7 @@ export const pageLoaders = {
   "/deliveries": () => import("@/pages/Deliveries"),
   "/fleet": () => import("@/pages/Fleet"),
   "/expenses": () => import("@/pages/Expenses"),
+  "/costs": () => import("@/pages/Costs"),
   "/daily-report": () => import("@/pages/DailyReport"),
   "/settings": () => import("@/pages/Settings"),
 };
@@ -23,6 +25,7 @@ export const pageLoaders = {
 const pageData = {
   "/": ["/dashboard"],
   "/customers": ["/customers"],
+  "/suppliers": ["/suppliers"],
   "/client-payments": ["/customers"],
   "/buyings": ["/buyings"],
   "/invoices": ["/invoices"],
@@ -34,6 +37,7 @@ const pageData = {
   "/deliveries": ["/deliveries", "/customers", "/drivers", "/vehicles", "/stock"],
   "/fleet": ["/vehicles", "/vehicles/records/all", "/spareparts"],
   "/expenses": ["/expenses", "/reports/profit", "/reports/costs", "/vehicles"],
+  "/costs": ["/reports/costs"],
   "/settings": ["/settings", "/prices", "/drivers"],
 };
 

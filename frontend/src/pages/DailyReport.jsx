@@ -5,6 +5,8 @@ import { toast } from "sonner";
 import { api, apiError } from "@/lib/api";
 import { today } from "@/lib/format";
 import { downloadDailyReportPdf } from "@/lib/dailyReportPdf";
+import { companyDailyReportName } from "@/lib/company";
+import { useAuth } from "@/context/AuthContext";
 import { Btn } from "@/components/common";
 
 const MIN_ROWS = 12;
@@ -125,12 +127,14 @@ function ReportTables({ report }) {
 }
 
 export default function DailyReport() {
+  const { user } = useAuth();
   const [reportDate, setReportDate] = useState(today());
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [downloading, setDownloading] = useState(false);
   const followToday = useRef(true);
+  const companyName = report?.company_name || companyDailyReportName(user?.company_id);
 
   useEffect(() => {
     let active = true;
@@ -194,7 +198,7 @@ export default function DailyReport() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Daily Report</h1>
-          <p className="mt-1 text-sm text-slate-500">SUPER IQ-FOAM daily transaction summary</p>
+          <p className="mt-1 text-sm text-slate-500">{companyName} daily transaction summary</p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
           <label className="block">
@@ -247,13 +251,12 @@ export default function DailyReport() {
 
       <div className="daily-report-paper" aria-busy={loading}>
         <header className="daily-report-heading">
-          <div className="daily-report-company">SUPER IQ-FOAM</div>
-          <div className="daily-report-tagline">Mr. Zuny | Mr. Zuny</div>
+          <div className="daily-report-company">{companyName}</div>
           <div className="daily-report-title">DAILY REPORT</div>
           <div className="daily-report-meta">
             <span><strong>Date:</strong> {reportDate}</span>
-            <span><strong>Prepared By:</strong> Mr. Zuny</span>
             <span><strong>Day:</strong> {report?.day || ""}</span>
+            <span><strong>Company:</strong> {companyName}</span>
           </div>
         </header>
         {loading ? (

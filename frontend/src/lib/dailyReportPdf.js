@@ -1,6 +1,13 @@
 const NAVY = [19, 43, 65];
 const ORANGE = [181, 83, 43];
-const GRID = [46, 55, 65];
+const BRAND = [31, 54, 70];
+const GRID = [205, 212, 216];
+const SECTION_STYLES = {
+  "01": { accent: [67, 137, 165], background: [220, 236, 244] },
+  "02": { accent: [77, 149, 107], background: [223, 241, 229] },
+  "03": { accent: [177, 132, 84], background: [247, 233, 216] },
+  "04": { accent: [112, 100, 155], background: [231, 227, 242] },
+};
 const ROWS_PER_PAGE = 12;
 const ROW_HEIGHT = 4.65;
 const CELL_FONT_SIZE = 5.8;
@@ -115,6 +122,7 @@ function paginateRows(pdf, section, width) {
 }
 
 function drawSection(pdf, section, pageRows, x, y, width, height, pageIndex) {
+  const colors = SECTION_STYLES[section.number];
   const titleHeight = 8;
   const columnHeight = 7;
   const footerHeight = section.footerNote ? 14 : 7;
@@ -124,9 +132,9 @@ function drawSection(pdf, section, pageRows, x, y, width, height, pageIndex) {
   pdf.setDrawColor(...GRID);
   pdf.setLineWidth(0.28);
   pdf.rect(x, y, width, height);
-  pdf.setFillColor(...NAVY);
+  pdf.setFillColor(...colors.background);
   pdf.rect(x, y, width, titleHeight, "F");
-  pdf.setFillColor(...ORANGE);
+  pdf.setFillColor(...colors.accent);
   pdf.rect(x + 1, y + 1.3, 8, 5.4, "F");
   pdf.setTextColor(255, 255, 255);
   pdf.setFont("helvetica", "bold");
@@ -136,15 +144,16 @@ function drawSection(pdf, section, pageRows, x, y, width, height, pageIndex) {
   pdf.text(section.title, x + 11, y + 5.3);
 
   const columnsY = y + titleHeight;
-  pdf.setFillColor(29, 55, 78);
+  pdf.setFillColor(255, 255, 255);
   pdf.rect(x, columnsY, width, columnHeight, "F");
+  pdf.setTextColor(38, 48, 56);
   let columnX = x;
   pdf.setFontSize(5.8);
   for (const column of section.columns) {
     const cellWidth = width * column.width;
     pdf.setDrawColor(...GRID);
     pdf.rect(columnX, columnsY, cellWidth, columnHeight);
-    pdf.setTextColor(255, 255, 255);
+    pdf.setTextColor(38, 48, 56);
     pdf.text(column.label, columnX + 1.2, columnsY + 4.5);
     columnX += cellWidth;
   }
@@ -215,7 +224,7 @@ function drawSection(pdf, section, pageRows, x, y, width, height, pageIndex) {
   }
 
   const footerY = rowsY + bodyHeight;
-  pdf.setFillColor(246, 247, 248);
+  pdf.setFillColor(...colors.background);
   pdf.rect(x, footerY, width, footerHeight, "F");
   pdf.setDrawColor(...GRID);
   pdf.rect(x, footerY, width, section.footerNote ? 7 : footerHeight);
@@ -239,10 +248,10 @@ function drawAppendixPages(pdf, report, pageWidth, title, items, descriptionLabe
   const pageSize = 18;
   for (let start = 0; start < items.length; start += pageSize) {
     pdf.addPage("a4", "landscape");
-    pdf.setTextColor(...ORANGE);
+    pdf.setTextColor(...BRAND);
     pdf.setFont("helvetica", "bold");
     pdf.setFontSize(14);
-    pdf.text("SUPER IQ-FOAM", pageWidth / 2, 12, { align: "center" });
+    pdf.text(report.company_name || "SUPER IQ-FOAM", pageWidth / 2, 12, { align: "center" });
     pdf.setTextColor(38, 43, 48);
     pdf.setFontSize(10);
     pdf.text(title, pageWidth / 2, 20, { align: "center" });
@@ -299,22 +308,20 @@ export async function downloadDailyReportPdf(report, mainInvoiceNo) {
 
   for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
     if (pageIndex > 0) pdf.addPage("a4", "landscape");
-    pdf.setTextColor(...ORANGE);
+    pdf.setTextColor(...BRAND);
     pdf.setFont("helvetica", "bold");
     pdf.setFontSize(15);
-    pdf.text("SUPER IQ-FOAM", pageWidth / 2, 10, { align: "center" });
+    pdf.text(report.company_name || "SUPER IQ-FOAM", pageWidth / 2, 10, { align: "center" });
     pdf.setTextColor(38, 43, 48);
-    pdf.setFontSize(8);
-    pdf.text("Mr. Zuny | Mr. Zuny", pageWidth / 2, 15, { align: "center" });
     pdf.setFontSize(11);
-    pdf.text(pageIndex ? "DAILY REPORT (CONTINUED)" : "DAILY REPORT", pageWidth / 2, 21, { align: "center" });
+    pdf.text(pageIndex ? "DAILY REPORT (CONTINUED)" : "DAILY REPORT", pageWidth / 2, 17, { align: "center" });
     pdf.setDrawColor(90, 96, 101);
     pdf.line(margin, 25, pageWidth - margin, 25);
     pdf.setFont("helvetica", "normal");
     pdf.setFontSize(7);
     pdf.text(`Date: ${report.date}`, margin, 31);
-    pdf.text("Prepared By: Mr. Zuny", pageWidth / 2 - 16, 31);
-    pdf.text(`Day: ${report.day || ""}`, pageWidth - margin, 31, { align: "right" });
+    pdf.text(`Day: ${report.day || ""}`, pageWidth / 2, 31, { align: "center" });
+    pdf.text(`Company: ${report.company_name || "SUPER IQ-FOAM"}`, pageWidth - margin, 31, { align: "right" });
 
     sections.forEach((section, index) => {
       const x = margin + (index % 2) * (sectionWidth + gapX);
@@ -331,5 +338,6 @@ export async function downloadDailyReportPdf(report, mainInvoiceNo) {
     report.pending_invoices || [],
     "CLIENT / DESCRIPTION - NO INVOICE NUMBER",
   );
-  pdf.save(`SUPERIQFOAM_Daily_Report_${report.date}.pdf`);
+  const companyFileName = (report.company_name || "SUPERIQFOAM").replace(/[^a-z0-9]+/gi, "_");
+  pdf.save(`${companyFileName}_Daily_Report_${report.date}.pdf`);
 }

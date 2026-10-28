@@ -61,7 +61,7 @@ export const InvoiceDocument = forwardRef(function InvoiceDocument({ inv, totals
           </tr>))}</tbody>
       </table>}
       <div className="flex justify-end mt-4"><div className="w-[320px] text-[16px]">
-        {[["Subtotal", totals.subtotal], ["Discount", Number(inv.discount) || 0], ...(Number(inv.extra_charges) ? [["Additional Charges", inv.extra_charges]] : []), ...(inv.tax_enabled ? [[`Tax (${inv.tax_rate}%)`, totals.tax]] : [])].map(([k, v]) => (
+        {[["Subtotal", totals.subtotal], ["Discount", Number(inv.discount) || 0], ...(Number(inv.extra_charges) ? [["Added", inv.extra_charges]] : []), ...(inv.tax_enabled ? [[`Tax (${inv.tax_rate}%)`, totals.tax]] : [])].map(([k, v]) => (
           <div key={k} className="flex justify-between py-1.5 px-3"><span className="font-semibold text-slate-700">{k}</span><span>{fmtMoney(v)}</span></div>))}
         <div className="flex justify-between py-2 px-3 text-[20px] font-extrabold"><span>Total</span><span data-testid="doc-total">{fmtMoney(totals.total)}</span></div>
         <div className="flex justify-between py-1.5 px-3 mt-3"><span className="font-semibold text-slate-700">Amount Paid</span><span>{fmtMoney(inv.amount_paid)}</span></div>

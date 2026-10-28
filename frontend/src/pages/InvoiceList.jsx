@@ -67,11 +67,21 @@ export default function InvoiceList() {
   const toggle = (id) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const removeMany = async (ids) => {
     if (!window.confirm(`Delete ${ids.length} invoice(s)? They will be moved to Archived, not permanently erased. Invoice data and payments are retained and can be restored.`)) return;
-    try { const r = await api.post("/invoices/bulk-delete", { ids }); toast.success(`${r.archived} invoice(s) moved to Archived`); load(); } catch (e) { toast.error(apiError(e)); }
+    const restoreStock = window.confirm("Also re-add the invoiced quantities to stock? Choose Cancel to archive without changing stock.");
+    try {
+      const r = await api.post("/invoices/bulk-delete", { ids, restore_stock: restoreStock });
+      toast.success(`${r.archived} invoice(s) moved to Archived${r.stock_restored ? " and stock returned" : ""}`);
+      load();
+    } catch (e) { toast.error(apiError(e)); }
   };
   const archiveMany = async (ids) => {
     if (!window.confirm(`Archive ${ids.length} invoice(s)? They and their payment records will be retained and can be restored.`)) return;
-    try { const r = await api.post("/invoices/bulk-delete", { ids }); toast.success(`${r.archived} invoice(s) archived`); load(); } catch (e) { toast.error(apiError(e)); }
+    const restoreStock = window.confirm("Also re-add the invoiced quantities to stock? Choose Cancel to archive without changing stock.");
+    try {
+      const r = await api.post("/invoices/bulk-delete", { ids, restore_stock: restoreStock });
+      toast.success(`${r.archived} invoice(s) archived${r.stock_restored ? " and stock returned" : ""}`);
+      load();
+    } catch (e) { toast.error(apiError(e)); }
   };
   const restore = async (id) => {
     try {
